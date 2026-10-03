@@ -2,6 +2,7 @@
 	"activityPane": {
 		"title": "活動",
 		"empty": "目前沒有活動",
+		"emptyComments": "尚無留言",
 		"editingComment": "正在編輯留言...",
 		"cancel": "取消",
 		"sendHint": "⌘↵ 傳送",
@@ -11,14 +12,11 @@
 		"delete": "刪除",
 		"viewDiff": "檢視差異",
 		"revert": "還原",
-		"timeAgo": {
-			"justNow": "剛剛",
-			"minutes_one": "{{count}} 分鐘前",
-			"minutes_other": "{{count}} 分鐘前",
-			"hours_one": "{{count}} 小時前",
-			"hours_other": "{{count}} 小時前",
-			"days_one": "{{count}} 天前",
-			"days_other": "{{count}} 天前"
+		"showAllActivity": "顯示所有活動",
+		"filter": {
+			"label": "篩選活動",
+			"comments": "留言",
+			"all": "所有活動"
 		},
 		"errors": {
 			"revertFailed": "還原失敗，請重試。"
@@ -29,7 +27,9 @@
 		"noDifferences": "無文字差異",
 		"changeDiff": "變更差異",
 		"removed": "已刪除",
-		"added": "已新增"
+		"added": "已新增",
+		"diffTooLarge": "差異過大，無法預覽（{{lines}} 行）",
+		"collapsedLines": "已隱藏 {{count}} 行未變更的內容"
 	},
 	"home": {
 		"greeting": {
@@ -61,15 +61,35 @@
 			},
 			"aiAgents": {
 				"label": "AI Agent",
-				"sub": "尚未設定"
+				"sub": "尚未設定",
+				"subActive": "{{count}} 個已設定"
 			}
+		},
+		"updateBanner": {
+			"title": "有可用更新",
+			"upstream": "Paca 已發布 {{version}}。",
+			"fork": "你的版本 {{version}} 已可用。",
+			"current": "你目前使用 {{version}}。",
+			"viewRelease": "檢視版本資訊",
+			"dismiss": "關閉"
+		},
+		"myTasks": {
+			"title": "我的任務",
+			"subtitle": "所有專案中指派給你的未完成任務",
+			"emptyTitle": "你已處理完畢",
+			"emptyDescription": "目前沒有指派給你的未完成任務。",
+			"loadError": "無法載入你的任務，請再試一次。",
+			"loadMore": "載入更多",
+			"loading": "正在載入…"
 		},
 		"projectsSection": {
 			"title": "專案",
 			"countInWorkspace_one": "你的工作區中有 {{count}} 個專案",
 			"countInWorkspace_other": "你的工作區中有 {{count}} 個專案",
 			"newShort": "新增",
-			"newProjectCard": "新增專案"
+			"newProjectCard": "新增專案",
+			"loadMore": "載入更多專案",
+			"loadingMore": "正在載入更多…"
 		},
 		"projectCard": {
 			"public": "公開",

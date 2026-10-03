@@ -17,7 +17,17 @@
 				"backend": "後端",
 				"frontend": "前端",
 				"migrations": "資料庫遷移",
-				"mcp": "MCP"
+				"mcp": "MCP",
+				"skills": "技能"
+			},
+			"errors": {
+				"incompatibleHostVersion": "此外掛需要 Paca {{required}} 或更新版本；你目前使用 {{current}}。",
+				"incompatibleHostVersionGeneric": "此外掛需要比你目前使用版本更新的 Paca。",
+				"alreadyUpToDate": "此外掛已是最新版本。",
+				"downgradeNotAllowed": "無法安裝比目前已安裝版本更舊的版本。",
+				"notFound": "此外掛已不在外掛市集中提供。",
+				"nameTaken": "已安裝同名外掛。",
+				"generic": "發生錯誤，請再試一次。"
 			}
 		}
 	},
@@ -32,7 +42,10 @@
 			"sidebarProject": "側邊欄 — 專案",
 			"taskDetail": "任務詳細資料",
 			"projectSettingsTab": "專案設定標籤頁",
-			"customView": "自訂檢視"
+			"customView": "自訂檢視",
+			"projectPage": "專案頁面",
+			"adminPage": "管理頁面",
+			"userSettingsTab": "使用者設定標籤頁"
 		}
 	}
 }

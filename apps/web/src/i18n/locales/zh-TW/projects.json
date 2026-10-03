@@ -11,22 +11,28 @@
 				"taskTypes": "任務類型",
 				"customFields": "自訂欄位",
 				"dangerZone": "危險區域",
-				"plugins": "外掛"
+				"plugins": "外掛",
+				"jev": "Jev AI"
+			},
+			"pluginTab": {
+				"noPermission": {
+					"title": "你沒有檢視此分頁的權限",
+					"description": "請要求專案擁有者或管理員授予你 {{pluginName}} 的存取權。"
+				}
 			}
 		}
 	},
 	"agents": {
 		"createDialog": {
 			"title": "建立 AI Agent",
-			"step1Description": "設定 AI Agent 的身分和角色",
+			"step1Description": "設定 AI Agent 的身分",
 			"step2Description": "設定驅動AI Agent 的 AI 模型",
-			"stepIndicator": "{{step}} / 2",
+			"stepIndicator": "{{step}} / {{total}}",
 			"startFromPreset": "從預設開始",
 			"nameLabel": "名稱",
 			"handleLabel": "Handle",
 			"handleHint": "自動根據名稱生成，用於留言中的 @提及。",
 			"projectRoleLabel": "專案角色",
-			"projectRolePlaceholder": "選擇專案角色…",
 			"projectRoleHint": "控制 AI Agent 在此專案中可以讀取和修改的內容。",
 			"modelSection": "模型",
 			"providerLabel": "提供者",
@@ -47,19 +53,65 @@
 			"creating": "正在建立…",
 			"createAgent": "建立 AI Agent",
 			"namePlaceholder": "Dev Bot",
-			"systemPromptPlaceholder": "你是一名資深軟體工程師…"
+			"systemPromptPlaceholder": "你是一名資深軟體工程師…",
+			"step3DescriptionGlobal": "{{name}} 已使用預設全域角色建立。你可以保留此角色、選擇其他角色或將其移除。",
+			"step3DescriptionProject": "選擇此 AI Agent 在專案中的角色",
+			"agentTypeLabel": "AI Agent 類型",
+			"agentTypeLLM": "LLM（API 金鑰）",
+			"agentTypeLLMHint": "Paca 會直接呼叫模型 API，並在託管 Paca 的伺服器上，以沙箱容器執行此 AI Agent。",
+			"agentTypeACP": "ACP（本機 CLI）",
+			"agentTypeACPHint": "委派給你自行執行的程式開發 CLI — Claude Code、Codex、Gemini CLI 或自訂 ACP 伺服器。",
+			"agentTypeProviderCLI": "提供者 CLI",
+			"agentTypeProviderCLIHint": "在 Paca 託管的靜態環境中執行 Claude Code、Codex、Cursor 或 Gemini CLI，控制方式與 LLM AI Agent 相同。",
+			"agentTypeProviderCLIGlobalDisabledHint": "僅適用於專案 AI Agent。請改由專案的 AI Agent 頁面建立。",
+			"environmentSection": "環境",
+			"acpSection": "ACP 伺服器",
+			"acpProviderLabel": "提供者",
+			"acpProviderClaudeCode": "Claude Code",
+			"acpProviderCodex": "Codex",
+			"acpProviderGeminiCli": "Gemini CLI",
+			"acpProviderGoose": "Goose",
+			"acpProviderCustom": "自訂…",
+			"acpCommandLabel": "命令",
+			"acpCommandPlaceholder": "npx -y my-acp-server",
+			"acpCommandHint": "用於啟動 ACP 伺服器的指令，各部分以空格分隔。",
+			"acpGuidance": "工具、MCP 伺服器與技能不在這裡設定，而是沿用 ACP 用戶端本身的本機設定，並使用你的 git/gh 憑證執行（可直接 clone、push 及建立 PR）。建立此 AI Agent 後，我們會引導你連接本機橋接器、安裝 Paca 技能並串接 MCP 伺服器。",
+			"cliSection": "提供者 CLI",
+			"cliProviderLabel": "CLI 提供者",
+			"cliProviderClaudeCode": "Claude Code",
+			"cliProviderCodex": "Codex",
+			"cliProviderGeminiCli": "Gemini CLI",
+			"cliProviderCursorAgent": "Cursor",
+			"cliModelLabel": "模型",
+			"cliModelPlaceholder": "例如 sonnet、gpt-5.2-codex",
+			"cliGuidance": "下方設定的 MCP 伺服器會在每次對話時同步至此 CLI 的設定。Goose 只使用此 CLI 執行 AI Agent，不會管理其工具。目前只有 Claude Code 支援技能同步。",
+			"cliEnvironmentHint": "必填 — 此 CLI 的登入狀態必須保留於不同對話之間，而只有靜態環境能做到。",
+			"environmentPlaceholder": "選擇一個環境",
+			"cliAuthModeLabel": "身分驗證",
+			"cliLoginModeHint": "此 CLI 必須在 AI Agent 環境的終端機完成一次登入；此 AI Agent 類型目前尚不支援 API 金鑰驗證。",
+			"cliLoginCommandLabel": "登入命令",
+			"cliOpenTerminal": "開啟終端機",
+			"cliVerifyLogin": "驗證登入",
+			"handleTaken": "該 Handle 已被佔用，請返回並選擇其他 Handle。",
+			"defaultEnvironmentInvalid": "該環境已不可用，請返回並選擇其他環境。",
+			"defaultFolderInvalid": "該資料夾已不可用，請返回並選擇其他資料夾。",
+			"finish": "完成"
 		},
 		"card": {
 			"configure": "設定",
 			"delete": "刪除",
-			"repos": "程式碼儲存庫",
-			"configureAndViewActivity": "設定並檢視活動",
 			"deleteDialog": {
 				"title": "刪除 {{name}}？",
 				"description": "這將永久刪除該 AI Agent 並將其從專案中移除。正在進行的對話將被終止。",
 				"cancel": "取消",
-				"delete": "刪除"
-			}
+				"delete": "刪除",
+				"descriptionGlobal": "這將永久刪除該 AI Agent，並將其從已邀請加入的所有專案中移除。正在進行的對話將被終止。",
+				"deleteFailed": "刪除 AI Agent 失敗，請重試。"
+			},
+			"restricted": "存取受限",
+			"restrictedTooltip": "此 AI Agent 已限制存取 — 請要求專案管理員授予你存取權，才能與其聊天。",
+			"acpStatusConnected": "線上",
+			"acpStatusDisconnected": "離線"
 		},
 		"page": {
 			"title": "AI Agent",
@@ -70,8 +122,10 @@
 				"description": "新增一個 AI Agent 來自動處理任務、審查程式碼、編寫文件等。",
 				"createFirstAgent": "建立你的第一個 AI Agent"
 			},
-			"chatShortcutPrefix": "按一下",
-			"chatShortcutSuffix": "任何AI Agent 即可聊天、檢視對話，並管理 MCP 伺服器和技能。"
+			"noPermission": {
+				"title": "你沒有檢視 AI Agent 的權限",
+				"description": "請要求專案管理員授予你 agents.read 權限。"
+			}
 		},
 		"detail": {
 			"tabs": {
@@ -79,7 +133,9 @@
 				"mcpServers": "MCP 伺服器",
 				"skills": "技能",
 				"envVars": "環境變數",
-				"conversations": "對話"
+				"globalRole": "全域角色",
+				"access": "存取權",
+				"activity": "活動"
 			},
 			"overview": {
 				"nameLabel": "名稱",
@@ -90,17 +146,6 @@
 				"apiKeyUpdateLabel": "更新 API 金鑰",
 				"apiKeyUpdateHint": "（留空以保留目前金鑰）",
 				"baseUrlLabel": "Base URL",
-				"triggerPrompts": {
-					"title": "自動附加的觸發提示詞",
-					"hint": "根據 AI Agent 的呼叫方式，執行時會自動附加到系統提示詞中。",
-					"taskAssignment": "任務指派 / 任務留言",
-					"docCommentMention": "文件留言 @提及",
-					"directChat": "直接聊天",
-					"writeDescription": "使用 AI 編寫任務描述"
-				},
-				"capabilities": "能力",
-				"cloneRepositories": "複製程式碼儲存庫",
-				"cloneRepositoriesHint": "允許 AI Agent 在本機 git clone 程式碼儲存庫",
 				"gitCommitterIdentity": "Git 提交者身分",
 				"gitCommitterHint": "該 AI Agent 提交程式碼時使用的姓名和電子郵件。",
 				"committerNameLabel": "提交者姓名",
@@ -108,7 +153,52 @@
 				"saveChanges": "儲存變更",
 				"saved": "已儲存",
 				"saveFailed": "儲存失敗，請重試。",
-				"systemPromptLabel": "系統提示詞"
+				"systemPromptLabel": "系統提示詞",
+				"descriptionLabel": "描述",
+				"descriptionPlaceholder": "這個 AI Agent 的用途是什麼？",
+				"descriptionHint": "在自動模式下，Jev 會在決定由哪個 AI Agent 處理聊天，或是否將任務指派給它時顯示此內容。提供者與模型會自動加入。",
+				"dockerEnabledLabel": "Docker 存取權限",
+				"dockerEnabledHint": "在此 AI Agent 的沙箱中提供專用的私有 Docker daemon。預設關閉；只有實際會執行 Docker 指令的 AI Agent 才需要啟用，因為這會增加每次對話的啟動時間。",
+				"parallelismLimitLabel": "並行數量上限",
+				"parallelismLimitHint": "此 AI Agent 最多可同時執行的對話數。超出的工作會在佇列中等待，直到有名額釋出。預設為 1，因此任務會依序處理，不會在同一個工作目錄中互相衝突。",
+				"parallelismLimitFixedHint": "此 AI Agent 固定為 1；它在單一共用目錄中工作（ACP AI Agent 的本機 checkout，或靜態預設環境），因此一次只能安全執行一個對話。",
+				"environmentSection": "環境",
+				"defaultEnvironmentLabel": "預設環境",
+				"defaultEnvironmentHint": "將此 AI Agent 的對話連結至靜態環境，而非每次建立新的拋棄式沙箱。",
+				"noDefaultEnvironment": "臨時環境",
+				"defaultFolderLabel": "預設資料夾",
+				"defaultFolderHint": "此 AI Agent 的對話會在預設環境中的哪個資料夾執行。",
+				"defaultEnvironmentInvalid": "該環境已不可用，請選擇其他環境。",
+				"defaultFolderInvalid": "該資料夾已不可用，請選擇其他資料夾。",
+				"noDefaultFolder": "無預設資料夾",
+				"acpConfiguration": "ACP 設定",
+				"acpProviderLabel": "提供者",
+				"acpProviderClaudeCode": "Claude Code",
+				"acpProviderCodex": "Codex",
+				"acpProviderGeminiCli": "Gemini CLI",
+				"acpProviderGoose": "Goose",
+				"acpProviderCustom": "自訂…",
+				"acpCommandLabel": "命令",
+				"acpCommandHint": "用於啟動 ACP 伺服器的指令，各部分以空格分隔。",
+				"acpGuidanceBanner": "此 AI Agent 的工具、MCP 伺服器與技能會在本機 ACP 用戶端中設定，並使用你的 git/gh 憑證執行，而非由 Paca 設定。",
+				"cliConfiguration": "提供者 CLI 設定",
+				"cliProviderLabel": "CLI 提供者",
+				"cliProviderClaudeCode": "Claude Code",
+				"cliProviderCodex": "Codex",
+				"cliProviderGeminiCli": "Gemini CLI",
+				"cliProviderCursorAgent": "Cursor",
+				"cliModelLabel": "模型",
+				"cliModelPlaceholder": "例如 sonnet、gpt-5.2-codex",
+				"cliGuidanceBanner": "下方設定的 MCP 伺服器會在每次對話時同步至此 CLI 的設定。Goose 只負責執行 CLI，不會管理其工具。目前只有 Claude Code 支援技能同步。",
+				"cliLoginPanelTitle": "CLI 登入",
+				"cliLoginPanelDescription": "驗證此 AI Agent 的 CLI 是否已登入，或開啟其環境終端機進行登入。",
+				"cliLoginOpenTerminal": "開啟終端機",
+				"cliLoginVerify": "驗證登入",
+				"cliLoginVerifiedNow": "已通過身分驗證。",
+				"cliLoginNotAuthenticated": "尚未通過驗證 — 請透過終端機登入後再次驗證。",
+				"cliLoginVerifyFailed": "無法檢查登入狀態，請重試。",
+				"cliLoginLastVerified": "上次驗證時間：{{date}}。",
+				"cliLoginNoEnvironment": "該 AI Agent 尚未設定環境 — 請先在上方選擇一個環境。"
 			},
 			"mcp": {
 				"serverCount_one": "已設定 {{count}} 個伺服器",
@@ -129,6 +219,11 @@
 					"urlLabel": "URL",
 					"cancel": "取消",
 					"addServer": "新增伺服器"
+				},
+				"system": {
+					"title": "系統 MCP 伺服器",
+					"description": "由 Paca 提供給所有 AI Agent，無法編輯。",
+					"pacaDetail": "Paca 內建工具（專案、任務、文件）"
 				}
 			},
 			"envVars": {
@@ -147,7 +242,10 @@
 					"keyHint": "（字母、數字、下劃線，必須以字母或下劃線開頭）",
 					"valueLabel": "值",
 					"cancel": "取消",
-					"addVariable": "新增變數"
+					"addVariable": "新增變數",
+					"keyTaken": "此 AI Agent 已有使用該鍵的環境變數。",
+					"keyReserved": "該鍵已被沙箱本身保留，請選擇其他鍵。",
+					"addFailed": "新增環境變數失敗，請重試。"
 				}
 			},
 			"skills": {
@@ -169,33 +267,216 @@
 					"skillContentLabel": "技能內容（Markdown）",
 					"urlLabel": "URL",
 					"cancel": "取消",
-					"addSkill": "新增技能"
+					"addSkill": "新增技能",
+					"nameReserved": "此名稱保留供 Paca 內部使用，請選擇其他名稱。",
+					"nameInvalid": "技能名稱不能是「.」或「..」，也不能包含斜線。",
+					"addFailed": "新增技能失敗，請重試。"
+				},
+				"system": {
+					"title": "系統技能",
+					"description": "隨 Paca 內建並供所有 AI Agent 使用，無法編輯。"
 				}
 			},
-			"conversations": {
-				"triggerChat": "聊天",
-				"triggerWriteDescription": "編寫描述",
-				"triggerTask": "任務",
-				"iterations_one": "{{count}} 次迭代",
-				"iterations_other": "{{count}} 次迭代",
-				"prOpened": "PR 已建立",
-				"watch": "檢視",
-				"empty": {
-					"title": "目前沒有對話",
-					"description": "當任務指派給該 AI Agent 或有人向其傳送訊息時，對話將開始。"
+			"globalRole": {
+				"title": "全域角色",
+				"description": "此設定決定 AI Agent 在全域範圍內可以執行的操作，例如從首頁與管理員聊天中操作。它在專案內可以執行的操作，則取決於它在該專案中的角色。",
+				"none": "無全域角色",
+				"noneHint": "此 AI Agent 沒有全域權限。",
+				"assign": "指派角色",
+				"change": "變更角色",
+				"assigning": "正在指派…",
+				"remove": "移除角色",
+				"removing": "正在移除…",
+				"removeConfirm": "要移除此 AI Agent 的全域角色嗎？它將失去該角色授予的權限。",
+				"cancel": "取消",
+				"readOnly": "你可以檢視此 AI Agent 的全域角色，但沒有變更權限。",
+				"unknownRole": "已指派全域角色。你沒有檢視角色的權限，因此不會顯示角色名稱。",
+				"fullAccessWarning": "此角色擁有完整存取權。AI Agent 將能執行所有操作，包括管理使用者與角色。",
+				"errors": {
+					"generic": "無法更新角色，請重試。",
+					"forbidden": "你無權變更全域角色。",
+					"roleNotFound": "該角色已不存在。請重新整理頁面後重試。"
 				}
+			},
+			"avatar": {
+				"change": "更換頭像",
+				"remove": "移除頭像",
+				"uploading": "上傳中…",
+				"errors": {
+					"invalidType": "請選擇 PNG、JPEG、WEBP 或 GIF 格式的圖片。",
+					"tooLarge": "圖片大小不能超過 5 MB。",
+					"uploadFailed": "頭像上傳失敗，請重試。",
+					"removeFailed": "頭像移除失敗，請重試。"
+				}
+			},
+			"access": {
+				"restrictLabel": "限制存取",
+				"restrictDescription": "啟用後，只有下方獲得存取權的成員可以與此 AI Agent 聊天。所有可管理 AI Agent 的人員仍可檢視並設定此 AI Agent。",
+				"pickMember": "選擇成員…",
+				"grantAccess": "授予存取權",
+				"alreadyGranted": "此成員已有存取權。",
+				"grantFailed": "授予存取權失敗，請重試。",
+				"empty": "尚未授予任何成員存取權。"
+			},
+			"activity": {
+				"commented": "留下了留言",
+				"sourceType": {
+					"task": "任務",
+					"doc": "文件"
+				},
+				"empty": {
+					"title": "尚無活動",
+					"description": "此 AI Agent 執行的任務與文件活動會顯示在這裡。"
+				},
+				"emptyFiltered": {
+					"title": "沒有符合條件的活動",
+					"description": "請嘗試調整篩選條件或搜尋內容。"
+				},
+				"filters": {
+					"title": "篩選",
+					"type": "類型",
+					"dateRange": "日期範圍",
+					"searchPlaceholder": "搜尋活動…",
+					"dateFrom": "起始日期",
+					"dateTo": "結束日期",
+					"clearAll": "清除篩選"
+				}
+			},
+			"system": {
+				"badge": "系統"
 			}
 		},
 		"conversationView": {
-			"thinking": "思考中…",
-			"observation": "觀察結果",
-			"toolLabel": "工具：{{toolName}}",
 			"stop": "停止",
 			"notFound": "找不到對話",
 			"chatSession": "聊天工作階段",
 			"taskSession": "任務工作階段",
 			"pr": "PR",
-			"noMessages": "目前沒有訊息"
+			"noPermission": {
+				"title": "你沒有檢視此對話的權限",
+				"description": "請要求專案管理員授予你 conversations.read 權限。"
+			},
+			"connect": "連線",
+			"conversationEnded": "此對話已結束。",
+			"textOnlyMessage": "僅支援文字訊息。",
+			"agentAccessRestricted": "此 AI Agent 已限制存取。請要求專案管理員授予你存取權後再與其聊天。",
+			"environmentAccessRestricted": "此對話的環境已限制存取。請要求專案管理員授予你存取權後再與此 AI Agent 聊天。",
+			"chatNoPermission": "你沒有權限在此對話中發送訊息。",
+			"failed": "對話失敗",
+			"noOutput": "AI Agent 未產生任何輸出。",
+			"loadingOlder": "載入中…",
+			"newBelow_one": "{{count}} 條新訊息",
+			"newBelow_other": "{{count}} 條新訊息"
+		},
+		"acpSetup": {
+			"dialogTitle": "連接本機 ACP 橋接器",
+			"dialogDescription": "{{name}} 已就緒 — 請在你的電腦上完成下列步驟，讓它上線。",
+			"panelTitle": "本機橋接器",
+			"panelDescription": "在你的電腦上執行此 AI Agent 的 ACP 伺服器，並在這裡連線。",
+			"statusConnected": "已連線",
+			"statusDisconnected": "未連線",
+			"step1Title": "安裝 ACP 橋接器",
+			"step1Description": "將預先建置的二進位檔下載至你的 PATH，不需要 Python、uv 或 Go。",
+			"step2Title": "執行本機橋接器",
+			"step2Description": "產生一個權杖，然後在你的專案資料夾中執行此命令。",
+			"noTokenYet": "產生權杖以顯示執行命令。",
+			"generateToken": "產生權杖",
+			"regenerateToken": "重新產生權杖",
+			"generating": "正在產生…",
+			"generateFailed": "無法產生權杖，請重試。",
+			"tokenWarning": "請立即複製 — 它不會再次顯示。",
+			"claudeSetupTokenHint": "Claude Code 還需要單獨登入一次。請在啟動下方的橋接器前執行此指令，否則橋接器將沒有可用於驗證的憑證：",
+			"claudeOauthExportHint": "此指令只會輸出權杖。請複製並匯出權杖，橋接器才能實際使用：",
+			"localAuthExportHint": "{{provider}} 也必須在橋接器啟動前完成本機驗證，否則沒有可用於驗證的憑證：",
+			"copy": "複製",
+			"copied": "已複製！",
+			"stepSkillMcpTitle": "安裝技能並連接 MCP 伺服器",
+			"stepSkillMcpDescription": "為此 AI Agent 產生專用 MCP 金鑰一次，再執行下方兩個指令，讓工具呼叫顯示為 AI Agent 的活動，而非你的活動。",
+			"stepSkillMcpSkillLabel": "安裝技能：",
+			"stepSkillMcpConnectLabel": "連接 MCP 伺服器：",
+			"step3NotAvailable": "Claude Code、Gemini CLI 與 Codex 支援自動安裝。{{provider}} 目前沒有已知的自訂提示詞安裝程式；即使未安裝，下方的 Paca MCP 工具仍可使用。",
+			"step3ViewContent": "檢視技能說明",
+			"step4NoKeyYet": "產生金鑰以顯示設定命令。",
+			"step4GenerateButton": "產生金鑰",
+			"step4RegenerateButton": "重新產生金鑰",
+			"step4Generating": "正在產生…",
+			"step4GenerateFailed": "無法產生金鑰，請重試。",
+			"step4KeyWarning": "請立即複製 — 它不會再次顯示，並且之前的金鑰將立即失效。",
+			"step4GenericHint": "註冊 MCP 伺服器的確切步驟因 CLI 而異；{{provider}} 通常會從自己的設定檔讀取。請以此指令作為參考：",
+			"customProviderLabel": "你的自訂 ACP 伺服器",
+			"done": "完成"
+		},
+		"busyDialog": {
+			"title": "AI Agent 正忙",
+			"description": "此 AI Agent 目前已執行 {{running}}/{{limit}} 個對話。你可以將此訊息加入佇列，待有名額釋出後自動開始，也可以仍然立即傳送。",
+			"folderDescription": "另一個對話正在此環境資料夾中執行。你可以將此訊息加入佇列，待該對話結束後自動開始，也可以仍然立即傳送。",
+			"cancel": "取消",
+			"queue": "加入佇列",
+			"force": "立即發送",
+			"cancelledError": "訊息未發送。"
+		},
+		"thread": {
+			"composerPlaceholder": "傳訊息給 AI Agent…",
+			"welcomeHeading": "今天我能幫你做些什麼？",
+			"messageInputAriaLabel": "訊息輸入框",
+			"voiceInput": "語音輸入",
+			"startVoiceInputAriaLabel": "開始語音輸入",
+			"stopDictation": "停止語音輸入",
+			"stopVoiceInputAriaLabel": "停止語音輸入",
+			"sendMessage": "發送訊息",
+			"stopGeneratingAriaLabel": "停止產生",
+			"assistantWorkingAriaLabel": "AI Agent 正在處理",
+			"environmentInitializing": "正在設定環境…",
+			"thinking": "正在思考…",
+			"copy": "複製",
+			"refresh": "重新整理",
+			"more": "更多",
+			"edit": "編輯",
+			"previous": "上一個",
+			"next": "下一個",
+			"exportAsMarkdown": "匯出為 Markdown",
+			"scrollToBottom": "滾動到底部",
+			"cancel": "取消",
+			"update": "更新",
+			"reasoning": "推理",
+			"reasoningWithDuration": "推理（{{duration}}秒）",
+			"toolCallCount_one": "{{count}} 次工具呼叫",
+			"toolCallCount_other": "{{count}} 次工具呼叫",
+			"usedTool": "使用的工具",
+			"cancelledTool": "已取消的工具",
+			"resultLabel": "結果：",
+			"errorLabel": "錯誤：",
+			"cancelledReasonLabel": "取消原因：",
+			"approvedByUser": "使用者已批准",
+			"deniedByUser": "使用者拒絕執行該工具",
+			"allow": "允許",
+			"alwaysAllow": "始終允許",
+			"deny": "拒絕",
+			"alwaysDeny": "始終拒絕",
+			"confirm": "確認",
+			"back": "返回",
+			"attachmentPreview": "附件預覽",
+			"attachmentTypeImage": "圖片",
+			"attachmentTypeDocument": "文件",
+			"attachmentTypeFile": "文件",
+			"removeFile": "移除文件",
+			"imageAttachmentPreviewTitle": "圖片附件預覽",
+			"attachmentAriaLabel": "{{type}} 附件",
+			"attachmentAriaLabelError": "{{type}} 附件，上傳失敗",
+			"attachmentAriaLabelUploading": "{{type}} 附件，上傳中",
+			"contextInjection": {
+				"attachContext": "附加情境",
+				"contextSearchPlaceholder": "搜尋任務、文件、對話、自動化…",
+				"removeContextItem": "移除{{title}}",
+				"addCurrent": "附加{{title}}",
+				"contextTypeTask": "任務",
+				"contextTypeDoc": "文件",
+				"contextTypeConversation": "對話",
+				"contextTypeAutomation": "自動化",
+				"contextTypeAnnotation": "留言",
+				"noContextResults": "找不到結果",
+				"contextSearchMinChars": "請輸入至少 2 個字元以進行搜尋"
+			}
 		}
 	},
 	"docs": {
@@ -207,7 +488,11 @@
 			"unsaved": "未儲存",
 			"saving": "正在儲存…",
 			"saved": "已儲存",
-			"commentsAndActivity": "留言和活動"
+			"commentsAndActivity": "留言和活動",
+			"noPermission": {
+				"title": "你沒有檢視此文件的權限",
+				"description": "請要求專案管理員授予你 docs.read 權限。"
+			}
 		},
 		"activity": {
 			"created": "建立了此文件",
@@ -253,13 +538,11 @@
 				"forbidden": "你沒有權限執行此操作。",
 				"internalError": "伺服器出現錯誤，請重試。",
 				"generic": "出現錯誤。"
-			}
+			},
+			"fullAccessBadge": "完整存取權",
+			"fullAccessDescription": "此角色自動包含所有權限，包括將來新增的權限。切換下方任意權限都會將其轉換為目前權限的固定集合。"
 		},
 		"permissions": {
-			"projectsRead": {
-				"label": "檢視專案",
-				"description": "檢視專案詳細資料和設定"
-			},
 			"projectsWrite": {
 				"label": "編輯專案",
 				"description": "更新專案名稱、描述和設定"
@@ -310,21 +593,91 @@
 			},
 			"agentsRead": {
 				"label": "檢視 AI Agent",
-				"description": "瀏覽 AI Agent 並檢視其設定"
+				"description": "瀏覽 AI Agent 及其設定"
 			},
 			"agentsWrite": {
 				"label": "管理 AI Agent",
 				"description": "建立、設定和刪除 AI Agent"
+			},
+			"settingsTaskTypesWrite": {
+				"label": "管理任務類型",
+				"description": "建立、編輯、刪除任務類型並設定預設類型"
+			},
+			"settingsTaskStatusesWrite": {
+				"label": "管理任務狀態",
+				"description": "建立、編輯、刪除、重新排序任務狀態並設定預設狀態"
+			},
+			"settingsCustomFieldsWrite": {
+				"label": "管理自訂欄位",
+				"description": "建立、編輯及刪除自訂欄位定義"
+			},
+			"viewsRead": {
+				"label": "檢視看板",
+				"description": "瀏覽已儲存的看板與清單檢視"
+			},
+			"viewsWrite": {
+				"label": "管理看板",
+				"description": "建立、編輯、刪除及重新排序看板與清單檢視"
+			},
+			"conversationsRead": {
+				"label": "檢視對話",
+				"description": "瀏覽與檢視 AI Agent 對話，但無法發起對話或回覆"
+			},
+			"conversationsWrite": {
+				"label": "管理對話",
+				"description": "發起 AI Agent 對話、回覆訊息，以及停止或暫停對話"
+			},
+			"environmentsRead": {
+				"label": "檢視環境",
+				"description": "瀏覽環境並檢視其設定"
+			},
+			"environmentsWrite": {
+				"label": "管理環境",
+				"description": "建立、設定與刪除環境、SSH 金鑰及連接埠轉送"
+			},
+			"environmentsConnect": {
+				"label": "連線至環境",
+				"description": "在執行中的環境內開啟互動式終端機工作階段"
+			},
+			"annotationsRead": {
+				"label": "檢視註解",
+				"description": "檢視透過瀏覽器擴充功能釘選的頁面留言"
+			},
+			"annotationsWrite": {
+				"label": "管理註解",
+				"description": "建立、編輯及刪除頁面註解"
+			},
+			"annotationsResolve": {
+				"label": "解決註解",
+				"description": "將頁面註解標示為已解決或重新開啟，無須建立或刪除註解"
+			},
+			"workflowsRead": {
+				"label": "檢視自動化",
+				"description": "瀏覽自動化及其設定"
+			},
+			"workflowsWrite": {
+				"label": "管理自動化",
+				"description": "建立、編輯、啟用及刪除自動化"
+			},
+			"activitiesRead": {
+				"label": "檢視活動記錄",
+				"description": "檢視此專案中記錄的所有活動"
 			}
 		},
 		"permissionGroups": {
 			"project": "專案",
 			"members": "成員",
-			"roles": "角色",
 			"tasks": "任務",
 			"sprints": "Sprint",
 			"documents": "文件",
-			"aiAgents": "AI Agent"
+			"aiAgents": "AI Agent",
+			"settings": "設定",
+			"views": "檢視",
+			"conversations": "對話",
+			"environments": "環境",
+			"annotations": "註解",
+			"workflows": "自動化",
+			"plugins": "外掛"
 		}
 	},
 	"settings": {
@@ -348,6 +701,17 @@
 				"nameInvalid": "專案名稱為空或無效。",
 				"prefixInvalid": "前綴必須為 1–10 個大寫字母/數字（例如 PACA）。",
 				"updateFailed": "更新專案失敗，請重試。"
+			},
+			"avatar": {
+				"change": "更換頭像",
+				"remove": "移除頭像",
+				"uploading": "上傳中…",
+				"errors": {
+					"invalidType": "請選擇 PNG、JPEG、WEBP 或 GIF 格式的圖片。",
+					"tooLarge": "圖片大小不能超過 5 MB。",
+					"uploadFailed": "頭像上傳失敗，請重試。",
+					"removeFailed": "頭像移除失敗，請重試。"
+				}
 			}
 		},
 		"roles": {
@@ -370,7 +734,11 @@
 				"permissions": "權限",
 				"created": "建立時間"
 			},
-			"systemRolesNote": "系統角色是共享模闆，無法編輯或刪除。"
+			"systemRolesNote": "系統角色是共享模闆，無法編輯或刪除。",
+			"noPermission": {
+				"title": "你沒有檢視角色的權限",
+				"description": "請要求專案管理員授予你 project.roles.read 權限。"
+			}
 		},
 		"taskStatuses": {
 			"title": "任務狀態",
@@ -390,7 +758,13 @@
 			"default": "預設",
 			"setAsDefault": "設為預設狀態",
 			"editStatus": "編輯狀態",
-			"deleteStatus": "刪除狀態"
+			"deleteStatus": "刪除狀態",
+			"reorderInvalid": "狀態清單已在別處變更。請重新整理頁面後重試。",
+			"noPermission": {
+				"title": "你沒有檢視任務狀態的權限",
+				"description": "請要求專案管理員授予你 project.settings.task_statuses.read 權限。"
+			},
+			"deleteDefaultDisabled": "無法刪除預設狀態。請先將其他狀態設為預設。"
 		},
 		"taskTypes": {
 			"title": "任務類型",
@@ -410,7 +784,12 @@
 			"default": "預設",
 			"setAsDefault": "設為預設類型",
 			"editType": "編輯類型",
-			"deleteType": "刪除類型"
+			"deleteType": "刪除類型",
+			"noPermission": {
+				"title": "你沒有檢視任務類型的權限",
+				"description": "請要求專案管理員授予你 project.settings.task_types.read 權限。"
+			},
+			"deleteDefaultDisabled": "無法刪除預設類型。請先將其他類型設為預設。"
 		},
 		"customFields": {
 			"title": "自訂欄位",
@@ -479,7 +858,13 @@
 				"confirmTextSuffix": "？此欄位中儲存的任務數據將丢失。此操作無法撤銷。",
 				"deleteFailed": "刪除欄位失敗，請重試。",
 				"deleteField": "刪除欄位"
-			}
+			},
+			"noPermission": {
+				"title": "你沒有檢視自訂欄位的權限",
+				"description": "請要求專案管理員授予你 project.settings.custom_fields.read 權限。"
+			},
+			"optionColorLabel": "選項顏色",
+			"noColor": "無顏色"
 		},
 		"dangerZone": {
 			"title": "危險區域",
@@ -496,6 +881,59 @@
 				"cancel": "取消",
 				"deletePermanently": "永久刪除"
 			}
+		},
+		"jev": {
+			"title": "Jev AI",
+			"description": "設定 AI 決策引擎 Jev 為此專案提供協助的方式。",
+			"credentials": {
+				"title": "提供者憑證",
+				"description": "連線你自己的 Jev 相容提供者（預設的 TypeSafe、OpenJev，或實作相同 API 的其他主機），以啟用下列功能。",
+				"configuredBadge": "已設定",
+				"notConfiguredBadge": "未設定",
+				"apiKeyLabel": "API 金鑰",
+				"apiKeyPlaceholder": "輸入 API 金鑰",
+				"apiKeyConfiguredPlaceholder": "留空以保留目前金鑰",
+				"baseUrlLabel": "主機（選填）",
+				"baseUrlPlaceholder": "https://api.typesafe.ai（預設）",
+				"modelLabel": "模型（選填）",
+				"modelPlaceholder": "jev-latest（預設）",
+				"saveButton": "儲存憑證",
+				"testButton": "測試連線",
+				"advancedLabel": "進階",
+				"testSuccess": "連線成功",
+				"testFailed": "無法連線，請檢查憑證後重試。"
+			},
+			"autofill": {
+				"title": "任務自動填入",
+				"description": "建立任務時，Jev 會自動填入建立者留白的下列欄位。",
+				"enabledLabel": "啟用自動填入",
+				"enabledHint": "建立任務後，Jev 很快就會為空白欄位建議值。",
+				"excludedFieldsLabel": "Jev 可以設定的欄位",
+				"excludedFieldsHint": "關閉某個欄位後，Jev 將永遠不會自動設定該欄位。",
+				"fieldImportance": "重要程度",
+				"fieldTaskType": "任務類型",
+				"fieldStoryPoints": "故事點",
+				"fieldTags": "標籤",
+				"fieldEpic": "Epic"
+			},
+			"autoAssign": {
+				"title": "任務自動指派",
+				"description": "讓 Jev 為採用自動指派的任務選擇負責人。",
+				"scopeLabel": "Jev 可以指派給誰",
+				"scopeAll": "所有成員",
+				"scopeHuman": "僅人類成員",
+				"scopeHumanHint": "排除 AI Agent。"
+			},
+			"saveChanges": "儲存變更",
+			"saved": "已儲存 ✓",
+			"noPermission": "你沒有權限編輯此專案。",
+			"errors": {
+				"updateFailed": "更新設定失敗，請重試。"
+			},
+			"notConfigured": {
+				"title": "尚未設定 Jev",
+				"description": "在上方新增提供者憑證，以啟用任務自動填入與自動指派功能。"
+			}
 		}
 	},
 	"taskStatuses": {
@@ -505,7 +943,9 @@
 			"confirmTextSuffix": "？使用此狀態的任務將失去其狀態。此操作無法撤銷。",
 			"deleteFailed": "刪除狀態失敗，請重試。",
 			"cancel": "取消",
-			"deleteStatus": "刪除狀態"
+			"deleteStatus": "刪除狀態",
+			"isDefault": "無法刪除預設狀態。請先將其他狀態設為預設。",
+			"inUseByAutomation": "此狀態正被某條自動化規則使用。請先更新或刪除該規則。"
 		},
 		"formDialog": {
 			"editTitle": "編輯狀態",
@@ -551,12 +991,23 @@
 			"cancel": "取消",
 			"addMember": "新增成員",
 			"errors": {
-				"addFailed": "新增成員失敗，請重試。"
-			}
+				"addFailed": "新增成員失敗，請重試。",
+				"alreadyAdded": "該使用者或 AI Agent 已是該專案的成員。",
+				"roleNotFound": "該角色已不存在，請選擇其他角色。"
+			},
+			"modeUser": "使用者",
+			"modeAgent": "AI Agent",
+			"agentLabel": "AI Agent",
+			"noAgentsAvailable": "沒有可邀請的全域 AI Agent。",
+			"loadingMore": "載入中…"
 		},
 		"roleChip": {
 			"changeRole": "變更角色",
-			"changeFailed": "變更角色失敗。"
+			"errors": {
+				"memberNotFound": "該成員已不再屬於該專案。",
+				"roleNotFound": "該角色已不存在。",
+				"changeFailed": "變更角色失敗。"
+			}
 		},
 		"memberRow": {
 			"removeMember": "移除成員"
@@ -569,18 +1020,42 @@
 			"removeFailed": "移除成員失敗，請重試。",
 			"cancel": "取消",
 			"remove": "移除"
+		},
+		"noPermission": {
+			"title": "你沒有檢視成員的權限",
+			"description": "請要求專案管理員授予你 project.members.read 權限。"
+		},
+		"descriptionChip": {
+			"edit": "編輯描述",
+			"title": "描述",
+			"hint": "在自動模式下，Jev 會在決定是否將任務指派給此人時顯示這段內容。",
+			"placeholder": "此人負責什麼工作？",
+			"save": "儲存",
+			"saveFailed": "儲存描述失敗。"
+		},
+		"filters": {
+			"searchPlaceholder": "依姓名或使用者名稱搜尋…",
+			"searchLabel": "搜尋成員",
+			"roleLabel": "依角色篩選",
+			"allRoles": "全部",
+			"clearSearch": "清除搜尋",
+			"showingOf": "顯示 {{shown}} / {{total}}"
+		},
+		"noMatch": {
+			"title": "沒有符合的成員",
+			"description": "請嘗試其他搜尋詞或角色篩選。",
+			"clear": "清除篩選"
 		}
 	},
 	"aiChat": {
 		"chatWithAgent": "與 AI Agent聊天",
 		"newConversation": "新增對話",
 		"agentLabel": "AI Agent",
-		"noAgentsConfigured": "此專案尚未設定 AI Agent。",
 		"selectAgentPlaceholder": "選擇 AI Agent…",
-		"messageLabel": "訊息",
-		"messageHint": "（按 Enter 傳送，Shift+Enter 換行）",
-		"messagePlaceholder": "你希望AI Agent 幫你做什麼？",
-		"send": "傳送"
+		"selectAgentFirst": "請先選擇一個 AI Agent。",
+		"noAgentsAvailable": "尚無可用的 AI Agent。",
+		"autoAgent": "自動",
+		"resolvingAgent": "正在選擇 AI Agent…"
 	},
 	"taskTypes": {
 		"deleteDialog": {
@@ -589,7 +1064,9 @@
 			"confirmTextSuffix": "？使用此類型的任務將失去其類型指派。此操作無法撤銷。",
 			"deleteFailed": "刪除任務類型失敗，請重試。",
 			"cancel": "取消",
-			"deleteType": "刪除類型"
+			"deleteType": "刪除類型",
+			"isDefault": "無法刪除預設類型。請先將其他類型設為預設。",
+			"isSystem": "系統類型無法刪除。"
 		},
 		"formDialog": {
 			"editTitle": "編輯任務類型",
@@ -610,7 +1087,9 @@
 			"createType": "建立類型",
 			"errors": {
 				"nameInvalid": "類型名稱為空或無效。",
-				"saveFailed": "儲存任務類型失敗，請重試。"
+				"saveFailed": "儲存任務類型失敗，請重試。",
+				"nameReserved": "該名稱已被內建類型保留。",
+				"isSystem": "系統類型無法編輯。"
 			}
 		}
 	},
@@ -645,10 +1124,7 @@
 			"title": "屬性",
 			"status": "狀態",
 			"dates": "日期",
-			"trackTime": "記錄時間",
-			"addTime": "新增時間",
 			"type": "類型",
-			"relationships": "關聯關系",
 			"assignees": "負責人",
 			"importance": "重要程度",
 			"none": "無",
@@ -663,7 +1139,14 @@
 			"parent": "父任務",
 			"viewParent": "檢視父任務",
 			"removeParent": "移除父任務",
-			"addFields": "新增欄位"
+			"addFields": "新增欄位",
+			"autoAssign": "自動",
+			"sprintNotStarted": "（未開始）",
+			"sprintGroup": {
+				"active": "進行中",
+				"planned": "即將開始",
+				"completed": "已完成"
+			}
 		},
 		"description": {
 			"title": "描述",
@@ -681,14 +1164,24 @@
 			"title": "子任務",
 			"addButton": "新增子任務",
 			"titlePlaceholder": "子任務標題…",
-			"empty": "目前沒有子任務"
+			"empty": "目前沒有子任務",
+			"loadMore": "載入更多子任務",
+			"loadingMore": "正在載入…"
 		},
 		"links": {
 			"title": "關聯任務",
 			"addButton": "新增關聯",
 			"openTask": "打開任務",
 			"removeLink": "移除關聯",
-			"empty": "目前沒有關聯任務"
+			"empty": "目前沒有關聯任務",
+			"errors": {
+				"alreadyExists": "該關聯已存在。",
+				"cannotLinkSelf": "任務不能關聯自身。",
+				"crossProject": "只能關聯同一專案內的任務。",
+				"createFailed": "新增關聯失敗，請重試。",
+				"notFound": "該關聯已被移除。",
+				"deleteFailed": "移除關聯失敗，請重試。"
+			}
 		},
 		"attachments": {
 			"title": "附件",
@@ -701,7 +1194,13 @@
 			"unitBytes_one": "{{count}} B",
 			"unitBytes_other": "{{count}} B",
 			"unitKilobytes": "{{value}} KB",
-			"unitMegabytes": "{{value}} MB"
+			"unitMegabytes": "{{value}} MB",
+			"errors": {
+				"invalid": "此檔案無法上傳，請選擇其他檔案。",
+				"uploadFailed": "檔案上傳失敗，請重試。",
+				"notFound": "該附件已被刪除。",
+				"deleteFailed": "刪除附件失敗，請重試。"
+			}
 		},
 		"addFieldDialog": {
 			"title": "建立自訂欄位",
@@ -825,16 +1324,17 @@
 			"startedAiSession": "啟動了一個 AI 工作階段",
 			"watchSession": "檢視工作階段",
 			"madeChange": "進行了變更",
-			"descriptionChangeDiff": "描述變更差異"
+			"descriptionChangeDiff": "描述變更差異",
+			"autoAssignSkippedLowConfidence": "無法以足夠信心選出負責人（信賴度 {{confidence}}%）— 任務仍未指派",
+			"autoAssignSkipped": "已略過自動指派 — 任務仍未指派"
 		},
-		"timeAgo": {
-			"justNow": "剛剛",
-			"minutes_one": "{{count}} 分鐘前",
-			"minutes_other": "{{count}} 分鐘前",
-			"hours_one": "{{count}} 小時前",
-			"hours_other": "{{count}} 小時前",
-			"days_one": "{{count}} 天前",
-			"days_other": "{{count}} 天前"
+		"noPermission": {
+			"title": "你沒有檢視此任務的權限",
+			"description": "請要求專案管理員授予你 tasks.read 權限。"
+		},
+		"searchableList": {
+			"searchPlaceholder": "搜尋…",
+			"noResults": "找不到符合條件的項目"
 		}
 	},
 	"board": {
@@ -854,7 +1354,9 @@
 			"reporterTitle": "回報者",
 			"epicLabel": "Epic",
 			"noEpic": "無 Epic",
-			"storyPointsTitle": "故事點"
+			"storyPointsTitle": "故事點",
+			"moveLeft": "移至上一欄",
+			"moveRight": "移至下一欄"
 		},
 		"listGroup": {
 			"columnHeaders": {
@@ -878,7 +1380,8 @@
 				"startDate": "開始日期",
 				"dueDate": "到期日",
 				"epic": "Epic",
-				"created": "建立時間"
+				"created": "建立時間",
+				"tags": "標籤"
 			},
 			"unassigned": "未指派",
 			"noEpic": "無 Epic"
@@ -895,6 +1398,20 @@
 		"backlog": {
 			"title": "產品待辦清單",
 			"description": "所有未指派到 Sprint的工作項。"
+		},
+		"taskContextMenu": {
+			"open": "開啟任務",
+			"moveTo": "移動到",
+			"status": "狀態",
+			"assignee": "指派人",
+			"unassigned": "未指派",
+			"type": "類型",
+			"priority": "優先順序",
+			"epic": "Epic",
+			"noEpic": "無 Epic",
+			"copyId": "複製任務 ID（{{id}}）",
+			"copyLink": "複製連結",
+			"delete": "刪除任務"
 		}
 	},
 	"layout": {
@@ -903,7 +1420,13 @@
 			"renameView": "重新命名檢視",
 			"deleteView": "刪除檢視",
 			"searchTasksPlaceholder": "搜尋任務…",
-			"pluginNotAvailable": "外掛不可用"
+			"pluginNotAvailable": "外掛不可用",
+			"viewErrors": {
+				"isLastView": "這是最後一個檢視，無法刪除。",
+				"deleteFailed": "刪除檢視失敗，請重試。",
+				"reorderInvalid": "檢視清單已在別處變更，請重新整理頁面後重試。",
+				"reorderFailed": "檢視排序失敗，請重試。"
+			}
 		},
 		"viewSettings": {
 			"viewSettingsAriaLabel": "檢視設定",
@@ -949,6 +1472,28 @@
 				"allNormalTypesDynamic": "所有普通類型（活動）",
 				"systemTypes": "系統類型",
 				"noTaskTypes": "目前沒有任務類型"
+			},
+			"onlyVisibleToYou": "僅自己可見",
+			"startDateLabel": "開始日期",
+			"dueDateLabel": "截止日期",
+			"importanceLabel": "重要程度",
+			"storyPointsLabel": "故事點",
+			"tagsLabel": "標籤",
+			"saveOnlyForMe": "僅為自己儲存",
+			"saveForEveryone": "儲存給所有人",
+			"customFieldFilter": {
+				"allValues": "所有值",
+				"noOptions": "無選項",
+				"min": "最小值",
+				"max": "最大值",
+				"containsPlaceholder": "包含…"
+			},
+			"importanceFilter": {
+				"allLevels": "所有層級"
+			},
+			"tagsFilter": {
+				"addTag": "新增標籤",
+				"addTagPlaceholder": "新增標籤…"
 			}
 		},
 		"roadmap": {
@@ -993,7 +1538,9 @@
 			"endDateLabel": "結束日期",
 			"cancel": "取消",
 			"starting": "正在啟動…",
-			"startSprint": "開始 Sprint"
+			"startSprint": "開始 Sprint",
+			"alreadyActiveWarning": "「{{name}}」在此專案中已處於進行中。開始此 Sprint 不會停止它。",
+			"error": "開始 Sprint 失敗，請重試。"
 		},
 		"timeline": {
 			"title": "時間線",
@@ -1002,7 +1549,7 @@
 		"sprintDetail": {
 			"notFound": "找不到 Sprint或存取被拒絕。",
 			"statusActive": "進行中",
-			"statusPlanned": "已規劃",
+			"statusPlanned": "草稿",
 			"statusCompleted": "已完成",
 			"description": "{{status}} 的 Sprint",
 			"descriptionWithStartDate": "{{status}} 的 Sprint · 開始於 {{date}}",
@@ -1016,7 +1563,34 @@
 				"unassignedHint": "任務將從所有 Sprint中取消指派",
 				"cancel": "取消",
 				"completing": "正在完成…",
-				"completeSprint": "完成 Sprint"
+				"completeSprint": "完成 Sprint",
+				"alreadyComplete": "此 Sprint 已經完成。",
+				"completeFailed": "完成 Sprint 失敗，請重試。"
+			},
+			"editSprint": "編輯 Sprint",
+			"startSprint": "開始 Sprint",
+			"editSprintModal": {
+				"title": "編輯 Sprint",
+				"nameLabel": "名稱",
+				"goalLabel": "目標",
+				"optional": "（選填）",
+				"goalPlaceholder": "此 Sprint 應達成什麼目標？",
+				"startDateLabel": "開始日期",
+				"dueDateLabel": "截止日期",
+				"dateRangeError": "截止日期不能早於開始日期。",
+				"error": "更新 Sprint 失敗，請重試。",
+				"cancel": "取消",
+				"saving": "儲存中…",
+				"save": "儲存變更",
+				"delete": "刪除 Sprint",
+				"deleteError": "無法刪除 Sprint，請重試。"
+			},
+			"deleteSprintModal": {
+				"title": "刪除 Sprint？",
+				"message": "Sprint「{{name}}」將被永久刪除，其任務會返回產品待辦清單。此操作無法復原。",
+				"cancel": "取消",
+				"confirm": "刪除 Sprint",
+				"deleting": "正在刪除…"
 			}
 		},
 		"conversation": {
@@ -1077,7 +1651,844 @@
 			"reporter": "回報者",
 			"startDate": "開始日期",
 			"dueDate": "到期日",
-			"created": "建立時間"
+			"created": "建立時間",
+			"tags": "標籤"
+		}
+	},
+	"environments": {
+		"status": {
+			"creating": "建立中",
+			"starting": "啟動中",
+			"running": "執行中",
+			"stopping": "停止中",
+			"stopped": "已停止",
+			"suspended": "已暫停",
+			"error": "錯誤",
+			"deleting": "刪除中"
+		},
+		"page": {
+			"title": "環境",
+			"subtitle": "可供 AI Agent 跨對話連線使用的具名長期執行沙箱",
+			"newEnvironment": "新增環境",
+			"restricted": "存取受限",
+			"restrictedTooltip": "此環境已限制存取 — 請要求專案管理員授予你存取權後再使用。",
+			"noPermission": {
+				"title": "你沒有檢視環境的權限",
+				"description": "請要求專案管理員授予你 environments.read 權限。"
+			},
+			"empty": {
+				"title": "尚無環境",
+				"description": "建立靜態環境，讓檔案與背景程序可跨對話持續執行，不必每次都使用拋棄式沙箱。",
+				"createFirstEnvironment": "建立你的第一個環境"
+			}
+		},
+		"createDialog": {
+			"title": "建立環境",
+			"description": "可供 AI Agent 連線使用的具名長期執行沙箱。",
+			"nameLabel": "名稱",
+			"namePlaceholder": "staging",
+			"dockerEnabledLabel": "Docker 存取權限",
+			"dockerEnabledHint": "為此環境提供專用的私有 Docker daemon，讓 AI Agent 可在其中建置及執行容器。預設關閉，且建立環境後無法變更。",
+			"advanced": "進階選項",
+			"imageLabel": "映像檔",
+			"imagePlaceholder": "使用預設值（agent-server）",
+			"imageHint": "大多數使用者無需變更此項 — 留空時預設使用平台固定的 agent-server 映像檔。",
+			"resourcesHint": "留空以使用平台預設值（2 vCPU、4 GiB 記憶體、20 GB 磁碟）。",
+			"cpuLimitInvalid": "CPU 必須至少為 0.1（100m）。",
+			"memoryLimitInvalid": "記憶體必須至少為 256 MiB。",
+			"diskLimitInvalid": "磁碟必須是正整數（GB）。",
+			"nameRequired": "請為環境命名。",
+			"createFailed": "建立環境失敗，請重試。",
+			"cancel": "取消",
+			"creating": "建立中…",
+			"create": "建立環境"
+		},
+		"picker": {
+			"placeholder": "選擇環境…",
+			"temporary": "暫時環境",
+			"createNew": "建立新環境…",
+			"folderPlaceholder": "選擇資料夾…",
+			"folderCreateNew": "建立新資料夾…"
+		},
+		"detail": {
+			"tabs": {
+				"overview": "概覽",
+				"folders": "資料夾",
+				"portForwards": "連接埠轉送",
+				"access": "存取權"
+			},
+			"busy": "環境正在啟動、停止或重新啟動，請稍後再試。",
+			"actionFailed": "操作失敗，請重試。",
+			"overview": {
+				"connect": "連線",
+				"start": "啟動",
+				"stop": "停止",
+				"delete": "刪除",
+				"sleepsIn_one": "{{count}} 分鐘後休眠",
+				"sleepsIn_other": "{{count}} 分鐘後休眠",
+				"keptAliveBySSH": "因有作用中的 SSH 工作階段而保持喚醒",
+				"vitals": {
+					"cpu": "CPU",
+					"cpuValue": "{{value}} vCPU",
+					"memory": "記憶體",
+					"disk": "磁碟",
+					"diskValue": "{{value}} GB",
+					"lastActive": "最近活動"
+				},
+				"configuration": "設定",
+				"nameLabel": "名稱",
+				"backendLabel": "後端",
+				"imageLabel": "映像檔",
+				"defaultImage": "預設 (agent-server)",
+				"dockerEnabledLabel": "Docker 存取權限",
+				"dockerEnabledOn": "已啟用",
+				"dockerEnabledOff": "已停用",
+				"idleTimeoutLabel": "閒置逾時（分鐘）",
+				"idleTimeoutHint": "環境持續沒有操作達到此分鐘數後會自動停止。",
+				"portsPendingRestart": "已新增或刪除連接埠轉送。請重新啟動環境以套用變更。",
+				"portsPendingRestartLink": "檢視連接埠轉送",
+				"saveChanges": "儲存變更",
+				"saved": "已儲存",
+				"nameRequired": "請為環境命名。",
+				"saveFailed": "儲存失敗，請重試。",
+				"deleteDialog": {
+					"title": "刪除 {{name}}？",
+					"description": "此操作將永久刪除此環境及其容器與磁碟區，且無法復原。",
+					"deleteFailed": "刪除環境失敗，請重試。",
+					"cancel": "取消",
+					"delete": "刪除"
+				}
+			},
+			"folders": {
+				"count_one": "已設定 {{count}} 個資料夾",
+				"count_other": "已設定 {{count}} 個資料夾",
+				"addFolder": "新增資料夾",
+				"noPermission": {
+					"title": "你沒有此環境的存取權",
+					"description": "請要求專案管理員授予你存取權後再檢視其資料夾。"
+				},
+				"deleteFailed": "刪除資料夾失敗，請重試。",
+				"empty": {
+					"title": "尚未新增資料夾",
+					"addFirstFolder": "新增你的第一個資料夾"
+				},
+				"addDialog": {
+					"title": "新增資料夾",
+					"description": "新增此環境中的 AI Agent 可以使用的工作目錄。",
+					"pathLabel": "路徑",
+					"pathPlaceholder": "/home/paca/workspaces/my-project",
+					"pathHint": "必須是絕對路徑。",
+					"browse": "瀏覽…",
+					"browsing": {
+						"empty": "此資料夾為空",
+						"notRunning": "啟動環境後即可瀏覽其檔案。"
+					},
+					"pathTaken": "該環境中已存在使用此路徑的資料夾。",
+					"pathInvalid": "路徑必須是絕對路徑（以 / 開頭）。",
+					"addFailed": "新增資料夾失敗，請重試。",
+					"cancel": "取消",
+					"addFolder": "新增資料夾"
+				}
+			},
+			"portForwards": {
+				"description": "公開此環境內的任意連接埠（通常是你的開發伺服器），並指派專用位址。",
+				"count_one": "{{count}} 個連接埠轉送",
+				"count_other": "{{count}} 個連接埠轉送",
+				"add": "新增連接埠轉送",
+				"noPermission": {
+					"title": "你沒有此環境的存取權",
+					"description": "請要求專案管理員授予你存取權後再檢視其連接埠轉送。"
+				},
+				"deleteFailed": "刪除連接埠轉送失敗，請重試。",
+				"containerPort": "容器連接埠 {{port}}",
+				"unassigned": "未指派",
+				"open": "開啟",
+				"restart": "重新啟動",
+				"pendingRestartRunning": "已新增或刪除連接埠轉送。請重新啟動環境以套用變更。",
+				"pendingRestartStopped": "已新增或刪除連接埠轉送。變更會在環境下次啟動時套用。",
+				"empty": {
+					"title": "尚無連接埠轉送",
+					"addFirst": "新增一個連接埠轉送"
+				},
+				"addDialog": {
+					"title": "新增連接埠轉送",
+					"description": "將容器連接埠公開至專用的外部連接埠。若環境正在執行，必須重新啟動才能套用此變更。",
+					"portLabel": "容器連接埠",
+					"portHint": "處理程序在環境內監聽的連接埠（例如 3000）。",
+					"labelLabel": "標籤",
+					"labelPlaceholder": "開發伺服器",
+					"cancel": "取消",
+					"add": "新增",
+					"portTaken": "該容器連接埠已在此環境中轉送。",
+					"portOutOfRange": "連接埠必須在 1 到 65535 之間。",
+					"addFailed": "新增連接埠轉送失敗，請重試。"
+				},
+				"restartDialog": {
+					"title": "要重新啟動環境嗎？",
+					"description": "這會重新啟動環境容器以套用更新後的連接埠轉送。容器內正在執行的處理程序會中斷；你的檔案會安全地儲存在獨立的磁碟區。",
+					"cancel": "取消",
+					"confirm": "重新啟動",
+					"restartFailed": "重新啟動環境失敗，請重試。"
+				}
+			},
+			"access": {
+				"restrictLabel": "限制存取",
+				"restrictDescription": "啟用後，只有下方獲得存取權的成員可以瀏覽此環境、透過 SSH 連線、轉送連接埠或開啟終端機。所有可管理環境的人員仍可檢視並設定此環境。",
+				"pickMember": "選擇成員…",
+				"grantAccess": "授予存取權",
+				"alreadyGranted": "此成員已有存取權。",
+				"grantFailed": "授予存取權失敗，請重試。",
+				"empty": "尚未授予任何成員存取權。"
+			},
+			"sshKeys": {
+				"connectHint": "將 <bastion-host> 替換為此部署設定的 SSH 堡壘主機位址。",
+				"connectUnavailable": "此部署尚未設定 SSH 存取。",
+				"count_one": "已設定 {{count}} 個金鑰",
+				"count_other": "已設定 {{count}} 個金鑰",
+				"addKey": "新增金鑰",
+				"deleteFailed": "刪除 SSH 金鑰失敗，請重試。",
+				"empty": {
+					"title": "尚未新增 SSH 金鑰",
+					"addFirst": "新增你的第一個金鑰"
+				},
+				"addDialog": {
+					"title": "新增 SSH 金鑰",
+					"description": "授權公開金鑰，以便透過 SSH 進行結對程式設計存取。",
+					"generateHint": "還沒有 SSH 金鑰？產生一個：",
+					"generateFollowup": "然後將 ~/.ssh/id_ed25519.pub 的內容貼上到下方。",
+					"labelLabel": "標籤",
+					"labelPlaceholder": "我的筆記型電腦",
+					"publicKeyLabel": "公開金鑰",
+					"cancel": "取消",
+					"addKey": "新增金鑰",
+					"keyTaken": "該金鑰已在此環境中註冊。",
+					"keyInvalid": "這似乎不是有效的 SSH 公開金鑰。",
+					"addFailed": "新增 SSH 金鑰失敗，請重試。"
+				}
+			},
+			"terminal": {
+				"notRunning": "請先啟動環境以開啟終端機。",
+				"title": "paca@{{slug}} — bash",
+				"titleLoading": "bash",
+				"connecting": "連線中…",
+				"connected": "已連線",
+				"connectionFailed": "連線失敗",
+				"disconnected": "連線已中斷"
+			}
+		},
+		"connect": {
+			"title": "連線至 {{name}}",
+			"copy": "複製",
+			"copied": "已複製",
+			"tabs": {
+				"webApp": "在網頁應用程式中連線",
+				"ssh": "透過 SSH 連線"
+			},
+			"webApp": {
+				"description": "使用瀏覽器內的終端機連線，不需要本機 SSH 用戶端或金鑰。",
+				"connect": "連線",
+				"notRunning": "請先啟動環境再連線。",
+				"readOnly": "你沒有在此環境開啟終端機的權限。",
+				"restricted": "此環境已限制存取 — 請要求專案管理員授予你存取權後再開啟終端機。",
+				"hint": "將在新的全螢幕分頁中開啟。",
+				"pageTitle": "{{name}} — 終端機",
+				"pageTitleLoading": "終端機",
+				"closeTab": "關閉"
+			},
+			"ssh": {
+				"step1Title": "新增公開金鑰",
+				"step1Description": "註冊你要用於連線之 SSH 金鑰對的公開金鑰。",
+				"step2Title": "從終端機連線",
+				"step2Description": "在終端機執行下列指令：",
+				"notRunning": "請先啟動環境再連線。",
+				"restricted": "此環境已限制存取 — 請要求專案管理員授予你存取權後再透過 SSH 連線。"
+			}
+		}
+	},
+	"portForwardDetail": {
+		"notFound": {
+			"title": "找不到連接埠轉送",
+			"description": "此連接埠轉送可能已刪除，或連結無效。",
+			"ariaLabel": "連接埠轉送詳細資料",
+			"backToEnvironment": "返回環境"
+		},
+		"noPermission": {
+			"title": "你沒有此環境的存取權",
+			"description": "請要求專案管理員授予你存取權後再檢視此連接埠轉送。"
+		},
+		"tabs": {
+			"overview": "概覽",
+			"comments": "留言"
+		},
+		"overview": {
+			"containerPort": "容器連接埠 {{port}}",
+			"hostPort": "主機連接埠",
+			"unassigned": "未指派",
+			"createdAt": "建立於 {{date}}",
+			"open": "開啟",
+			"delete": "刪除",
+			"deleteDialog": {
+				"title": "刪除連接埠轉送？",
+				"description_one": "這也會刪除透過此連接埠轉送發表的 {{count}} 則留言。此操作無法復原。",
+				"description_other": "這也會刪除透過此連接埠轉送發表的 {{count}} 則留言。此操作無法復原。",
+				"cancel": "取消",
+				"confirm": "刪除"
+			}
+		},
+		"comments": {
+			"empty": "尚無留言。安裝 Paca 瀏覽器擴充功能後，即可直接在此連接埠轉送預覽中的元素上新增留言。",
+			"status": {
+				"open": "待處理",
+				"resolved": "已解決"
+			},
+			"replyCount_one": "{{count}} 則回覆",
+			"replyCount_other": "{{count}} 則回覆",
+			"resolve": "標記為已解決",
+			"reopen": "重新開啟",
+			"createTask": "建立任務",
+			"taskCreated": "任務已建立",
+			"errors": {
+				"alreadyHasTask": "該留言已建立過任務。",
+				"creationInProgress": "該留言的任務建立正在進行中。",
+				"createTaskFailed": "建立任務失敗，請重試。"
+			}
+		}
+	},
+	"commentDetail": {
+		"notFound": {
+			"title": "找不到留言",
+			"description": "此留言可能已被刪除，或連結無效。",
+			"ariaLabel": "留言詳細資料",
+			"backToPortForward": "返回連接埠轉送"
+		},
+		"noPermission": {
+			"title": "你沒有檢視此留言的權限",
+			"description": "請要求專案管理員授予你 annotations.read 權限。"
+		},
+		"header": {
+			"createdAt": "留言時間：{{date}}"
+		},
+		"context": {
+			"title": "情境",
+			"pagePath": "頁面",
+			"elementSelector": "元素選擇器",
+			"accessibleName": "無障礙名稱",
+			"consoleErrors": "主控台錯誤",
+			"noConsoleErrors": "未擷取到主控台錯誤",
+			"failedRequests": "失敗的網路要求",
+			"noFailedRequests": "未擷取到失敗的網路要求"
+		},
+		"thread": {
+			"replyPlaceholder": "撰寫回覆…",
+			"reply": "回覆",
+			"errors": {
+				"bodyEmpty": "回覆不能為空。",
+				"replyFailed": "發布回覆失敗，請重試。"
+			}
+		},
+		"actions": {
+			"create": "建立",
+			"createConversation": "建立對話",
+			"copyLink": "複製連結",
+			"linkCopied": "已複製！"
+		}
+	},
+	"epicPicker": {
+		"searchPlaceholder": "搜尋 Epic…",
+		"noEpicsFound": "找不到符合條件的 Epic",
+		"noEpicsYet": "此專案尚無 Epic",
+		"loadingMore": "載入中…"
+	},
+	"conversationsPage": {
+		"back": "返回",
+		"title": "對話",
+		"triggerChat": "聊天",
+		"triggerWriteDescription": "撰寫描述",
+		"triggerTask": "任務",
+		"triggerAutomation": "自動化",
+		"usageTitle": "{{tokens}} 個 Token · {{cost}}",
+		"prOpened": "PR 已建立",
+		"moreActions": "更多操作",
+		"rename": {
+			"menuLabel": "重新命名",
+			"dialogTitle": "重新命名對話",
+			"placeholder": "對話名稱",
+			"cancel": "取消",
+			"confirm": "重新命名",
+			"renaming": "重新命名中…",
+			"error": "無法重新命名對話，請重試。"
+		},
+		"delete": {
+			"menuLabel": "刪除",
+			"dialogTitle": "刪除對話？",
+			"dialogDescription": "此操作將永久刪除「{{title}}」及其歷史記錄，且無法復原。",
+			"cancel": "取消",
+			"confirm": "刪除",
+			"error": "無法刪除對話，請重試。"
+		},
+		"filters": {
+			"title": "篩選",
+			"agent": "AI Agent",
+			"status": "狀態",
+			"type": "類型",
+			"dateRange": "日期範圍",
+			"searchPlaceholder": "搜尋訊息…",
+			"dateFrom": "起始日期",
+			"dateTo": "結束日期",
+			"clearAll": "清除篩選"
+		},
+		"list": {
+			"noPermission": {
+				"title": "你沒有檢視對話的權限",
+				"description": "請要求專案管理員授予你 conversations.read 權限。"
+			},
+			"empty": {
+				"title": "尚無對話",
+				"description": "當任務指派給 AI Agent，或有人傳送訊息給它時，對話就會開始。"
+			},
+			"emptyFiltered": {
+				"title": "沒有符合的對話",
+				"description": "請嘗試調整或清除篩選條件。"
+			}
+		},
+		"detail": {
+			"empty": {
+				"title": "尚未選擇對話",
+				"description": "從清單中選擇一個對話即可檢視。"
+			}
+		}
+	},
+	"automation": {
+		"list": {
+			"title": "自動化",
+			"subtitle": "透過觸發條件、條件判斷與動作回應任務事件",
+			"newAutomation": "新增自動化",
+			"noPermission": {
+				"title": "你沒有檢視自動化的權限",
+				"description": "請要求專案管理員授予你 workflows.read 權限。"
+			},
+			"empty": {
+				"title": "尚無自動化",
+				"description": "建立自動化，透過條件判斷與動作回應任務事件。",
+				"createFirst": "建立你的第一個自動化"
+			},
+			"noDescription": "尚無描述",
+			"updated": "更新時間：{{time}}"
+		},
+		"status": {
+			"active": "已啟用",
+			"inactive": "已停用"
+		},
+		"createDialog": {
+			"title": "新增自動化",
+			"nameLabel": "名稱",
+			"namePlaceholder": "例如：Bug 分診",
+			"descriptionLabel": "描述",
+			"descriptionPlaceholder": "此自動化的選填說明…",
+			"cancel": "取消",
+			"create": "建立"
+		},
+		"deleteDialog": {
+			"title": "刪除自動化",
+			"body": "確定要刪除「{{name}}」嗎？此操作無法復原。",
+			"cancel": "取消",
+			"confirm": "刪除"
+		},
+		"builder": {
+			"toggleActiveLabel": "切換此自動化的啟用狀態",
+			"genericError": "發生錯誤，請重試。",
+			"taskLessTriggerConnectionError": "此觸發條件未設定目標任務，因此只能連接至「呼叫 API」或「觸發 AI Agent」動作；條件與其他動作都需要任務才能執行。",
+			"collapseSidebar": "收合面板",
+			"expandSidebar": "展開面板",
+			"tabGraph": "流程圖",
+			"tabRuns": "執行記錄",
+			"tabDependencyMap": "依賴關係圖"
+		},
+		"palette": {
+			"title": "新增節點",
+			"addTrigger": "新增觸發條件",
+			"addCondition": "新增條件",
+			"addAction": "新增動作",
+			"builtIn": "內建",
+			"plugins": "外掛",
+			"triggerGroups": {
+				"taskEvents": "任務事件",
+				"sprintEvents": "Sprint 事件",
+				"scheduleWebhook": "排程與 Webhook"
+			}
+		},
+		"nodeKind": {
+			"trigger": "觸發條件",
+			"condition": "條件",
+			"action": "動作"
+		},
+		"canvas": {
+			"deleteEdge": "刪除連線",
+			"deleteNode": "刪除節點"
+		},
+		"triggerTypes": {
+			"status_changed": "狀態變更時",
+			"task_created": "任務建立時",
+			"assignee_changed": "負責人變更時",
+			"priority_changed": "優先順序變更時",
+			"tag_added": "新增標籤時",
+			"due_date_reached": "到達截止日期時",
+			"predecessor_done": "前置任務完成時",
+			"cron": "排程",
+			"api_trigger": "Webhook",
+			"sprint_created": "Sprint 建立時",
+			"sprint_started": "Sprint 開始時",
+			"sprint_completed": "Sprint 完成時",
+			"sprint_deleted": "Sprint 刪除時"
+		},
+		"actionTypes": {
+			"update_task": "更新任務",
+			"trigger_ai_agent": "觸發 AI Agent",
+			"call_api": "呼叫 API",
+			"wait": "等待",
+			"update_sprint": "更新 Sprint",
+			"complete_sprint": "完成 Sprint"
+		},
+		"conditionTypes": {
+			"jev_condition": "Jev 條件"
+		},
+		"nodeConfig": {
+			"save": "儲存",
+			"cancel": "取消",
+			"remove": "刪除節點",
+			"removeConfirmTitle": "刪除節點",
+			"removeConfirmBody": "這會從圖表中刪除此節點及其所有連線。",
+			"removeConfirmAction": "刪除",
+			"genericFormHint": "此節點類型來自尚未宣告設定架構的外掛，因此會以原始 JSON 編輯設定。若外掛在資訊清單中宣告 configSchema，這裡就會改為顯示介面欄位。",
+			"trigger": {
+				"anyStatus": "任何狀態",
+				"noConfigNeeded": "此觸發器無需設定——事件發生時會自動觸發。",
+				"statusLabel": "狀態",
+				"tagLabel": "標籤",
+				"anyTag": "任何標籤",
+				"dueDateOffsetLabel": "偏移量（分鐘）",
+				"dueDateOffsetHint": "0 = 截止日期當天，負數 = 提前，正數 = 延後",
+				"watchedTasksLabel": "監看的任務",
+				"watchedTasksHint": "這些任務全部進入「已完成」狀態時觸發",
+				"addWatchedTaskPlaceholder": "新增要監看的任務…",
+				"targetTaskLabel": "目標任務（選填）",
+				"targetTaskHint": "上方所有監看任務完成後，自動化將作用於此任務。此任務與前置任務不同，會依自身目前狀態重新評估。若只要連接至不需要任務的「呼叫 API」或「觸發 AI Agent」動作，可留空。",
+				"selectTaskPlaceholder": "選擇一個任務…",
+				"searchTaskPlaceholder": "搜尋任務…",
+				"noTasksFound": "找不到符合條件的任務",
+				"noTasksYet": "此專案尚無任務",
+				"loadingMore": "載入中…",
+				"clearTargetTask": "清除目標任務",
+				"cronExpressionLabel": "Cron 表達式",
+				"cronExpressionPlaceholder": "*/15 * * * *",
+				"cronExpressionHint": "標準 5 段式 Cron（分、時、日、月、星期），依 UTC 計算",
+				"cronTargetTaskHint": "每次依排程觸發時，自動化將作用於此任務。若只要連接至不需要任務的「呼叫 API」或「觸發 AI Agent」動作，可留空。",
+				"apiTriggerTargetTaskHint": "每次呼叫下方 Webhook 時，自動化將作用於此任務。若只要連接至不需要任務的「呼叫 API」或「觸發 AI Agent」動作，可留空。",
+				"webhookUrlLabel": "Webhook 網址",
+				"webhookTokenLabel": "Webhook 權杖",
+				"generateTokenButton": "產生權杖",
+				"regenerateTokenButton": "重新產生權杖",
+				"tokenShownOnceWarning": "請立即複製此權杖 — 之後將不再顯示。",
+				"copy": "複製",
+				"copied": "已複製",
+				"noTokenYet": "尚未產生權杖"
+			},
+			"condition": {
+				"branchesTitle": "分支",
+				"addBranch": "新增分支",
+				"branchLabel": "分支標籤",
+				"elseLabel": "否則（未符合任何分支）",
+				"removeBranch": "刪除分支",
+				"field": "欄位",
+				"operator": "運算子",
+				"value": "值",
+				"addGroup": "新增群組",
+				"addCondition": "新增條件",
+				"removeCondition": "刪除",
+				"logicAnd": "與",
+				"logicOr": "或",
+				"logicNot": "非",
+				"fields": {
+					"status_id": "狀態",
+					"task_type_id": "任務類型",
+					"importance": "優先順序",
+					"assignee_ids": "負責人",
+					"tags": "標籤",
+					"custom_field": "自訂欄位",
+					"title": "標題",
+					"story_points": "故事點",
+					"sprint_id": "Sprint",
+					"parent_task_id": "父任務",
+					"reporter_id": "回報者",
+					"start_date": "開始日期",
+					"due_date": "截止日期",
+					"sprint_name": "Sprint 名稱",
+					"sprint_status": "Sprint 狀態",
+					"sprint_goal": "Sprint 目標",
+					"sprint_start_date": "Sprint 開始日期",
+					"sprint_end_date": "Sprint 結束日期"
+				}
+			},
+			"jev": {
+				"answerTypeLabel": "回答類型",
+				"answerTypes": {
+					"choice": "選擇 — 從多個選項中選一個",
+					"score": "評分 — 依層級評估",
+					"noul": "是 / 否"
+				},
+				"answerTypeChangeHint": "先前連接至回答類型的分支將不再使用；儲存後請重新連接。",
+				"instructionsLabel": "向 Jev 提出的問題",
+				"instructionsPlaceholder": {
+					"choice": "例如：應由哪個團隊處理此事？",
+					"score": "例如：此問題看起來有多嚴重？",
+					"noul": "例如：客戶正在要求退款。"
+				},
+				"optionsTitle": "選項",
+				"optionKeyPlaceholder": "鍵",
+				"optionDescriptionPlaceholder": "何時選擇此選項",
+				"addOption": "新增選項",
+				"levelsTitle": "層級（由低至高）",
+				"levelPlaceholder": "描述此層級",
+				"addLevel": "新增層級",
+				"confidenceThresholdLabel": "信賴度門檻",
+				"trueThresholdLabel": "「是」門檻",
+				"thresholdHint": "低於此值時，工作流程會採用「否則」分支，而不接受該答案。"
+			},
+			"action": {
+				"memberLabel": "負責人",
+				"agentLabel": "AI Agent",
+				"statusLabel": "狀態",
+				"importanceLabel": "優先順序",
+				"tagLabel": "標籤",
+				"fieldKeyLabel": "欄位",
+				"valueLabel": "值",
+				"messageLabel": "給 AI Agent 的指示",
+				"messagePlaceholder": "例如：總結此任務並建議一個優先順序。",
+				"methodLabel": "方法",
+				"urlLabel": "URL",
+				"urlPlaceholder": "https://example.com/webhook",
+				"headersLabel": "標頭",
+				"headerKeyPlaceholder": "標頭名稱",
+				"headerValuePlaceholder": "值",
+				"addHeader": "新增標頭",
+				"bodyLabel": "要求內容",
+				"waitMinutesLabel": "等待時間（分鐘）",
+				"waitMinutesHint": "繼續下一個節點前要暫停的時間。",
+				"updateSprintHint": "只變更下方填寫的欄位，Sprint 的其餘部分保持不變。",
+				"sprintNameLabel": "名稱",
+				"sprintStartDateLabel": "開始日期",
+				"sprintEndDateLabel": "結束日期",
+				"sprintGoalLabel": "目標",
+				"sprintStatusLabel": "狀態",
+				"sprintStatusUnchanged": "保持不變",
+				"sprintStatusPlanned": "草稿",
+				"sprintStatusActive": "進行中",
+				"sprintStatusCompleted": "已完成",
+				"completeSprintHint": "將 Sprint 標示為已完成，並移動其中未完成的任務。",
+				"moveToSprintLabel": "將未完成的任務移動到",
+				"moveToSprintBacklog": "待辦清單",
+				"moveToSprintHint": "此 Sprint 中未完成的任務會在 Sprint 完成時移至這裡。",
+				"variablesHint": "支援目前這次執行中的 {{task.title}}、{{sprint.name}} 及類似的 {{variable}} 預留位置。",
+				"updateTaskHint": "只有下方啟用的欄位會變更；任務的其餘部分保持不變。",
+				"addFieldToUpdate": "新增要更新的欄位…",
+				"customFieldsLabel": "自訂欄位",
+				"enableField": "設定 {{field}}",
+				"titleLabel": "標題",
+				"storyPointsLabel": "故事點",
+				"sprintLabel": "Sprint",
+				"parentTaskLabel": "父任務",
+				"reporterLabel": "回報者",
+				"startDateLabel": "開始日期",
+				"dueDateLabel": "截止日期",
+				"tagsLabel": "標籤",
+				"tagsPlaceholder": "新增標籤…",
+				"assigneesLabel": "負責人",
+				"noSprint": "無 Sprint",
+				"pluginConditionLabel": "外掛條件",
+				"pluginConditionHint": "由外掛提供的條件判斷此分支是否符合，而非比較任務欄位。",
+				"selectPluginPlaceholder": "選擇外掛條件…",
+				"addCustomField": "新增自訂欄位…"
+			},
+			"target": {
+				"label": "作用目標",
+				"kinds": {
+					"self": "此任務",
+					"parent": "父任務",
+					"children": "子任務",
+					"blocks": "此任務阻擋的任務",
+					"is_blocked_by": "阻擋此任務的任務",
+					"relates_to": "相關任務",
+					"duplicates": "此任務所重複的任務",
+					"is_duplicated_by": "重複此任務的任務",
+					"other": "其他任務…"
+				},
+				"matchMode": {
+					"any": "符合任一條件",
+					"all": "符合所有條件"
+				}
+			},
+			"description": {
+				"dueDateAt": "截止日期當天",
+				"dueDateBefore": "截止日期前 {{minutes}} 分鐘",
+				"dueDateAfter": "截止日期後 {{minutes}} 分鐘",
+				"branches": "{{count}} 個分支",
+				"priority": "優先順序：{{level}}",
+				"fieldValue": "{{field}} → {{value}}",
+				"unassigned": "未指派",
+				"notConfigured": "未設定",
+				"elseShort": "否則",
+				"pluginConditionMatched": "符合",
+				"jevNoulTrue": "是",
+				"branchFallback": "分支 {{n}}",
+				"cronSchedule": "執行時間：{{expression}}",
+				"webhookReady": "已設定 Webhook",
+				"callApiSummary": "{{method}} {{host}}"
+			}
+		},
+		"runHistory": {
+			"title": "執行記錄",
+			"empty": "尚無執行記錄",
+			"status": {
+				"running": "執行中",
+				"completed": "已完成",
+				"failed": "失敗"
+			},
+			"stepStatus": {
+				"completed": "已完成",
+				"failed": "失敗",
+				"skipped": "已略過（已套用）"
+			},
+			"startedAt": "開始時間：{{time}}",
+			"viewSteps": "檢視步驟"
+		},
+		"dependencyMap": {
+			"title": "依賴關係圖",
+			"subtitle": "唯讀檢視，顯示所有正在等待其他任務完成的自動化",
+			"empty": "尚未設定前置任務依賴關係",
+			"watchedTasks": "等待 {{count}} 個任務"
+		}
+	},
+	"activityLog": {
+		"title": "活動",
+		"subtitle": "此專案中發生的一切",
+		"today": "今天",
+		"yesterday": "昨天",
+		"deletedEntity": "此項已被刪除",
+		"noPermission": {
+			"title": "你無法檢視活動記錄",
+			"description": "請向專案管理員申請「檢視活動記錄」權限。"
+		},
+		"empty": {
+			"title": "尚無活動",
+			"description": "此專案中的變更將顯示在這裡。"
+		},
+		"emptyFiltered": {
+			"title": "沒有符合條件的活動",
+			"description": "請嘗試移除部分篩選條件或變更搜尋詞。"
+		},
+		"filters": {
+			"title": "篩選",
+			"searchPlaceholder": "搜尋活動…",
+			"type": "類型",
+			"people": "成員",
+			"source": "來源",
+			"dateRange": "日期範圍",
+			"dateFrom": "起始日期",
+			"dateTo": "結束日期",
+			"clearAll": "清除全部"
+		},
+		"entityTypes": {
+			"task": "任務",
+			"doc": "文件",
+			"sprint": "Sprint",
+			"view": "檢視",
+			"automation": "自動化",
+			"environment": "環境",
+			"member": "成員",
+			"role": "角色",
+			"agent": "AI Agent",
+			"project": "專案"
+		},
+		"origins": {
+			"user": "使用者",
+			"agent": "AI Agent",
+			"automation": "自動化",
+			"jev": "Jev",
+			"annotation": "註解",
+			"system": "系統"
+		},
+		"detail": {
+			"asRole": "身分：{{role}}",
+			"roleChange": "{{from}} → {{to}}",
+			"renamedFrom": "原名「{{name}}」",
+			"member": "對象：{{name}}"
+		},
+		"projectFields": {
+			"name": "名稱",
+			"description": "描述",
+			"task_id_prefix": "任務 ID 前綴",
+			"is_public": "可見性",
+			"settings": "設定",
+			"jev_config": "Jev 設定"
+		},
+		"types": {
+			"sprint_created": "建立了 Sprint",
+			"sprint_updated": "更新了 Sprint",
+			"sprint_deleted": "刪除了 Sprint",
+			"sprint_completed": "完成了 Sprint",
+			"view_created": "建立了檢視",
+			"view_updated": "更新了檢視",
+			"view_deleted": "刪除了檢視",
+			"automation_created": "建立了自動化",
+			"automation_updated": "更新了自動化",
+			"automation_deleted": "刪除了自動化",
+			"automation_activated": "啟用了自動化",
+			"automation_deactivated": "停用了自動化",
+			"automation_node_added": "新增了步驟：",
+			"automation_node_removed": "移除了步驟：",
+			"automation_edge_added": "連接了步驟：",
+			"automation_edge_removed": "中斷了步驟連線：",
+			"environment_created": "建立了環境",
+			"environment_updated": "更新了環境",
+			"environment_deleted": "刪除了環境",
+			"environment_started": "啟動了環境",
+			"environment_stopped": "停止了環境",
+			"environment_restarted": "重新啟動了環境",
+			"environment_ssh_key_added": "新增了 SSH 金鑰「{{label}}」：",
+			"environment_ssh_key_removed": "移除了 SSH 金鑰「{{label}}」：",
+			"environment_access_granted": "授予了存取權限：",
+			"environment_access_revoked": "撤銷了存取權限：",
+			"environment_port_forward_added": "轉送了連接埠 {{port}}：",
+			"environment_port_forward_removed": "停止轉送連接埠 {{port}}：",
+			"annotation_created": "新增了註解：",
+			"annotation_resolved": "將註解標示為已解決：",
+			"annotation_reopened": "重新開啟了註解：",
+			"annotation_commented": "回覆了註解：",
+			"member_added": "新增了成員",
+			"member_role_changed": "變更了角色：",
+			"member_updated": "更新了成員",
+			"member_removed": "移除了成員",
+			"role_created": "建立了角色",
+			"role_updated": "更新了角色",
+			"role_deleted": "刪除了角色",
+			"project_updated": "更新了設定：",
+			"project_task_type_created": "建立了任務類型「{{name}}」：",
+			"project_task_type_updated": "更新了任務類型「{{name}}」：",
+			"project_task_type_deleted": "刪除了任務類型「{{name}}」：",
+			"project_task_type_default_set": "將「{{name}}」設為預設任務類型：",
+			"project_task_status_created": "建立了狀態「{{name}}」：",
+			"project_task_status_updated": "更新了狀態「{{name}}」：",
+			"project_task_status_deleted": "刪除了狀態「{{name}}」：",
+			"project_task_status_default_set": "將「{{name}}」設為預設狀態：",
+			"project_task_status_reordered": "重新排序了狀態：",
+			"project_custom_field_created": "建立了欄位「{{name}}」：",
+			"project_custom_field_updated": "更新了欄位「{{name}}」：",
+			"project_custom_field_deleted": "刪除了欄位「{{name}}」：",
+			"project_agent_created": "新增了 AI Agent",
+			"project_agent_updated": "更新了 AI Agent",
+			"project_agent_deleted": "移除了 AI Agent",
+			"comment": "留下了留言：",
+			"fallback": "執行了 {{type}}："
 		}
 	}
 }

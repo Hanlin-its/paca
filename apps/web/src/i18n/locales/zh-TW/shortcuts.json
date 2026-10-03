@@ -1,0 +1,38 @@
+{
+	"dialog": {
+		"title": "鍵盤快速鍵",
+		"footer": "任務快速鍵會套用到滑鼠指標下方的卡片或列。以滑鼠右鍵點按任何任務，即可使用相同操作。",
+		"menuLabel": "鍵盤快速鍵"
+	},
+	"groups": {
+		"goto": "前往",
+		"general": "一般",
+		"page": "頁面與檢視",
+		"task": "滑鼠指標下的任務",
+		"editor": "描述與文件"
+	},
+	"actions": {
+		"gotoHome": "首頁 / 所有專案",
+		"gotoTimeline": "時間線",
+		"gotoBacklog": "產品待辦清單",
+		"gotoActiveSprint": "目前 Sprint",
+		"gotoAgents": "AI Agent",
+		"gotoConversations": "對話",
+		"gotoAutomation": "自動化",
+		"gotoTeam": "團隊",
+		"gotoDocs": "文件",
+		"gotoSettings": "專案設定",
+		"help": "此說明",
+		"sidebar": "切換側邊欄",
+		"close": "關閉 / 取消",
+		"prevNextView": "上一個 / 下一個檢視",
+		"search": "搜尋任務",
+		"createTask": "建立任務",
+		"viewSettings": "檢視設定",
+		"open": "開啟詳細資料",
+		"epic": "設定 Epic",
+		"moveLeftRight": "向左 / 向右移動欄",
+		"delete": "刪除任務",
+		"save": "儲存"
+	}
+}

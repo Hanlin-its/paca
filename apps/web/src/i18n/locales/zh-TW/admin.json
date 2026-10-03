@@ -1,4 +1,20 @@
 {
+	"agents": {
+		"header": {
+			"title": "全域 AI Agent",
+			"description": "管理可在首頁及管理頁面對話，並可受邀加入任何專案的 AI Agent。",
+			"newAgent": "新增 AI Agent"
+		},
+		"empty": {
+			"title": "尚未建立全域 AI Agent",
+			"description": "建立全域 AI Agent，以供對話及加入專案時邀請。",
+			"createAgent": "建立 AI Agent"
+		},
+		"noPermission": {
+			"title": "你沒有權限檢視 AI Agent",
+			"description": "你仍可以使用上方的按鈕建立新的 AI Agent。"
+		}
+	},
 	"users": {
 		"header": {
 			"title": "使用者管理",
@@ -34,6 +50,7 @@
 			"noFullName": "—",
 			"resetPasswordAction": "重設密碼",
 			"editAction": "編輯使用者",
+			"changeRoleAction": "變更角色",
 			"deleteAction": "刪除使用者"
 		},
 		"formDialog": {
@@ -47,25 +64,34 @@
 			"done": "完成",
 			"editTitle": "編輯使用者",
 			"createTitle": "建立使用者",
-			"editDescription": "更新使用者的顯示名稱和角色指派。",
+			"editDescription": "更新使用者的顯示名稱和電子郵件。",
 			"createDescription": "系統將自動生成一個安全的暫時密碼。使用者將在首次登入時被要求修改密碼。",
+			"roleStepDescription": "已使用 {{role}} 角色建立 {{username}}。保留此角色，或選擇其他角色。",
+			"stepIndicator": "第 {{step}} / {{total}} 步",
 			"usernameLabel": "使用者名稱",
 			"usernamePlaceholder": "例如：john.doe",
 			"fullNameLabel": "姓名",
 			"fullNamePlaceholder": "例如：John Doe",
-			"roleLabel": "角色",
-			"roleOptionalHint": "（可選 — 預設為 USER）",
-			"rolePlaceholder": "選擇角色…",
+			"emailLabel": "電子郵件",
+			"emailOptionalHint": "（選填 — 將寄送含有設定密碼連結的歡迎電子郵件）",
+			"emailPlaceholder": "例如：john.doe@example.com",
+			"roleStep": {
+				"title": "角色"
+			},
 			"cancel": "取消",
+			"continue": "繼續",
 			"saving": "正在儲存…",
 			"creating": "正在建立…",
 			"saveChanges": "儲存變更",
 			"createUser": "建立使用者",
 			"errors": {
 				"fullNameRequired": "姓名不可為空。",
+				"invalidEmail": "請輸入有效的電子郵件地址。",
 				"usernameTaken": "該使用者名稱已被占用。",
+				"emailTaken": "此電子郵件已被使用。",
 				"userNotFound": "找不到該使用者，可能已被刪除。",
 				"forbidden": "你沒有權限執行此操作。",
+				"noDefaultRole": "沒有可指派給新帳號的預設角色。請先在「全域角色」頁面設定一個角色，再試一次。",
 				"internalError": "伺服器出現錯誤，請重試。",
 				"generic": "出現錯誤。"
 			}
@@ -106,6 +132,31 @@
 				"internalError": "出現錯誤，請重試。",
 				"generic": "出現錯誤。"
 			}
+		},
+		"roleDialog": {
+			"title": "變更角色",
+			"description": "為 {{username}} 選擇角色。從下一次請求起套用。",
+			"assign": "指派角色",
+			"assigning": "正在指派…",
+			"fullAccessWarning": "此角色擁有完整存取權，可執行所有操作，包括管理使用者和角色。",
+			"selfWarning": "這是你自己的帳號。變更角色可能使你失去這個頁面的存取權。",
+			"errors": {
+				"roleNotFound": "該角色已不存在。請關閉此對話方塊後再試一次。"
+			}
+		},
+		"filters": {
+			"searchPlaceholder": "依姓名、使用者名稱或電子郵件搜尋…",
+			"searchLabel": "搜尋使用者",
+			"roleLabel": "依角色篩選",
+			"allRoles": "所有角色",
+			"clearSearch": "清除搜尋",
+			"resultsCount": "結果：{{count}}",
+			"clearAll": "清除篩選條件"
+		},
+		"noMatch": {
+			"title": "找不到符合的使用者",
+			"description": "嘗試其他搜尋條件或角色篩選。",
+			"clear": "清除篩選條件"
 		}
 	},
 	"globalRoles": {
@@ -136,10 +187,13 @@
 		"table": {
 			"columnName": "名稱",
 			"columnPermissions": "權限",
-			"columnCreated": "建立時間",
+			"columnDefault": "預設",
 			"noPermissionsAssigned": "未指派權限",
+			"default": "預設",
+			"setDefaultAction": "設為預設角色",
 			"editAction": "編輯角色",
-			"deleteAction": "刪除角色"
+			"deleteAction": "刪除角色",
+			"deleteDefaultDisabled": "無法刪除預設角色。請先將其他角色設為預設角色。"
 		},
 		"formDialog": {
 			"editTitle": "編輯角色",
@@ -176,6 +230,7 @@
 			"errors": {
 				"roleNotFound": "該角色已不存在。",
 				"hasUsersWarning": "該角色仍被指派給一個或多個使用者，無法刪除。",
+				"isDefault": "無法刪除預設角色。請先將其他角色設為預設角色。",
 				"forbidden": "你沒有權限刪除該角色。",
 				"internalError": "出現錯誤，請重試。",
 				"generic": "出現錯誤。"
@@ -237,13 +292,44 @@
 			"projectRolesWrite": {
 				"label": "編輯專案角色",
 				"description": "在任何專案中建立和更新角色"
+			},
+			"settingsWrite": {
+				"label": "編輯工作區設定",
+				"description": "更新工作區的標誌、Favicon 與主要色彩"
+			},
+			"settingsSsoWrite": {
+				"label": "管理 SSO 提供者",
+				"description": "設定使用者可用來登入的身分提供者。此權限可讓人以其他使用者身分登入，應視為完整管理員存取權。"
 			}
 		},
 		"permissionGroups": {
 			"globalRoles": "全域角色",
 			"users": "使用者",
-			"projects": "專案"
+			"projects": "專案",
+			"plugins": "外掛",
+			"settings": "設定"
+		},
+		"defaultDialog": {
+			"title": "設定預設角色",
+			"description": "新使用者與新的全域 AI Agent 一開始都會使用 {{role}} 角色。現有帳號會保留目前的角色。",
+			"fullAccessWarning": "此角色授予所有權限，因此之後建立的每個帳號一開始都會擁有完整存取權。請確認這正是你想要的。",
+			"cancel": "取消",
+			"confirm": "設為預設",
+			"confirming": "儲存中…",
+			"errors": {
+				"roleNotFound": "該角色已不存在。",
+				"forbidden": "你沒有權限變更預設角色。",
+				"generic": "發生錯誤，請再試一次。"
+			}
 		}
+	},
+	"rolePicker": {
+		"current": "目前",
+		"fullAccess": "完整存取權",
+		"loadFailed": "無法載入角色。",
+		"retry": "再試一次",
+		"empty": "尚未建立任何角色。",
+		"default": "預設"
 	},
 	"plugins": {
 		"title": "外掛設定",
@@ -259,6 +345,115 @@
 		"layout": {
 			"title": "擴充點版面設定",
 			"description": "拖動以重新排列各擴充點內的外掛面闆。切換可見性以為所有使用者顯示或隱藏面闆。"
+		}
+	},
+	"changelog": {
+		"title": "最新消息",
+		"description": "掌握最新 Paca 版本的改進與重點。",
+		"current": "目前版本",
+		"error": "目前無法載入更新日誌，請稍後再試。",
+		"empty": "尚無版本說明。"
+	},
+	"settings": {
+		"title": "工作區設定",
+		"description": "此工作區的品牌與登入選項。",
+		"images": {
+			"title": "標誌與 Favicon",
+			"logo": {
+				"label": "標誌",
+				"change": "變更標誌",
+				"remove": "移除標誌",
+				"uploading": "上傳中…"
+			},
+			"favicon": {
+				"label": "Favicon",
+				"change": "變更 Favicon",
+				"remove": "移除 Favicon",
+				"uploading": "上傳中…"
+			},
+			"errors": {
+				"invalidType": "請選擇 PNG、JPEG、WEBP 或 GIF 圖片。",
+				"tooLarge": "圖片大小不得超過 5 MB。",
+				"uploadFailed": "圖片上傳失敗，請再試一次。",
+				"removeFailed": "圖片移除失敗，請再試一次。"
+			}
+		},
+		"general": {
+			"title": "一般",
+			"brandNameLabel": "品牌名稱",
+			"brandNamePlaceholder": "Paca",
+			"colorsLabel": "主要色彩",
+			"colorsDescription": "選擇全站按鈕與醒目提示所用的強調色 — 系統會自動調整以適應淺色和深色模式。",
+			"colorPresets": {
+				"green": "綠色",
+				"blue": "藍色",
+				"teal": "藍綠色",
+				"indigo": "靛藍色",
+				"purple": "紫色",
+				"pink": "粉紅色",
+				"red": "紅色",
+				"orange": "橘色"
+			},
+			"save": "儲存變更",
+			"saved": "已儲存",
+			"errors": {
+				"updateFailed": "儲存失敗，請再試一次。"
+			}
+		},
+		"sso": {
+			"title": "單一登入（SSO）",
+			"description": "讓使用者可透過 Google、Microsoft Entra ID、Okta 或 Keycloak 等 OpenID Connect 身分提供者登入。",
+			"add": "新增提供者",
+			"empty": "尚未設定 SSO 提供者。使用者以使用者名稱和密碼登入。",
+			"enabled": "已啟用",
+			"disabled": "已停用",
+			"edit": "編輯 {{name}}",
+			"delete": "刪除 {{name}}",
+			"copy": "複製",
+			"dialog": {
+				"createTitle": "新增 SSO 提供者",
+				"editTitle": "編輯 SSO 提供者",
+				"description": "在你的身分提供者中將 Paca 註冊為 OpenID Connect 用戶端，然後輸入其提供的詳細資訊。",
+				"cancel": "取消",
+				"save": "儲存"
+			},
+			"fields": {
+				"displayName": "顯示名稱",
+				"displayNamePlaceholder": "公司 SSO",
+				"slug": "Slug",
+				"slugHint": "用於登入及回呼 URL。變更後，已在提供者註冊的回呼 URL 將失效。",
+				"callbackUrl": "回呼 URL",
+				"callbackUrlHint": "請在身分提供者中將此網址註冊為重新導向 URI。",
+				"issuerUrl": "Issuer URL",
+				"issuerUrlHint": "OpenID Connect 發行者。Paca 伺服器必須能存取其探索文件。",
+				"clientId": "用戶端 ID",
+				"clientSecret": "用戶端密鑰",
+				"clientSecretKeepHint": "已有儲存的密鑰。若要保留原值，請留白。",
+				"scopes": "範圍",
+				"scopesHint": "以空格分隔；一律包含 \"openid\"。",
+				"allowedDomains": "允許的電子郵件網域",
+				"allowedDomainsHint": "以逗號分隔。留白即可允許任何網域。僅接受已驗證的電子郵件。",
+				"enabled": "啟用",
+				"enabledHint": "在登入頁面顯示此提供者。",
+				"autoProvision": "自動建立帳號",
+				"autoProvisionHint": "首次登入的使用者會取得套用預設角色的新帳號。",
+				"linkByEmail": "依電子郵件連結現有帳號",
+				"linkByEmailHint": "首次登入的使用者，若其已驗證的電子郵件與現有帳號相符，將以該帳號登入。",
+				"linkByEmailWarning": "僅對你完全信任的提供者啟用此選項：控制該提供者的人可使用符合的電子郵件登入任何帳號，包括管理員帳號。"
+			},
+			"deleteDialog": {
+				"title": "刪除 SSO 提供者",
+				"description": "刪除「{{name}}」？使用者將無法再透過它登入，且由它建立的帳號會失去與它的連結；帳號本身仍會保留。",
+				"confirm": "刪除"
+			},
+			"errors": {
+				"slugTaken": "此 Slug 已由其他提供者使用。",
+				"discoveryFailed": "無法存取發行者的 OpenID Connect 探索文件。請檢查 Issuer URL。",
+				"invalid": "部分欄位無效。請檢查 Slug、Issuer URL、用戶端 ID 與電子郵件網域。",
+				"saveFailed": "儲存提供者失敗，請再試一次。",
+				"loadFailed": "載入 SSO 提供者失敗。",
+				"deleteFailed": "刪除提供者失敗，請再試一次。"
+			}
 		}
 	}
 }

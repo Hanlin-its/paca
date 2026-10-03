@@ -1,0 +1,93 @@
+{
+	"description": "升級 v0.18.4 時將上游已停用的翻譯鍵移至此處保留。runtime 語系遵循新版英文結構；本封存不載入應用。",
+	"source_commit": "79f3419",
+	"namespaces": {
+		"admin.json": {
+			"users.formDialog.roleLabel": "角色",
+			"users.formDialog.roleOptionalHint": "（可選 — 預設為 USER）",
+			"users.formDialog.rolePlaceholder": "選擇角色…",
+			"globalRoles.table.columnCreated": "建立時間"
+		},
+		"appShell.json": {
+			"notifications.timeAgo": {
+				"justNow": "剛剛",
+				"minutes_one": "{{count}} 分鐘前",
+				"minutes_other": "{{count}} 分鐘前",
+				"hours_one": "{{count}} 小時前",
+				"hours_other": "{{count}} 小時前",
+				"days_one": "{{count}} 天前",
+				"days_other": "{{count}} 天前"
+			}
+		},
+		"projects.json": {
+			"agents.createDialog.projectRolePlaceholder": "選擇專案角色…",
+			"agents.card.repos": "程式碼儲存庫",
+			"agents.card.configureAndViewActivity": "設定並檢視活動",
+			"agents.page.chatShortcutPrefix": "按一下",
+			"agents.page.chatShortcutSuffix": "任何AI Agent 即可聊天、檢視對話，並管理 MCP 伺服器和技能。",
+			"agents.detail.tabs.conversations": "對話",
+			"agents.detail.overview.triggerPrompts": {
+				"title": "自動附加的觸發提示詞",
+				"hint": "根據 AI Agent 的呼叫方式，執行時會自動附加到系統提示詞中。",
+				"taskAssignment": "任務指派 / 任務留言",
+				"docCommentMention": "文件留言 @提及",
+				"directChat": "直接聊天",
+				"writeDescription": "使用 AI 編寫任務描述"
+			},
+			"agents.detail.overview.capabilities": "能力",
+			"agents.detail.overview.cloneRepositories": "複製程式碼儲存庫",
+			"agents.detail.overview.cloneRepositoriesHint": "允許 AI Agent 在本機 git clone 程式碼儲存庫",
+			"agents.detail.conversations": {
+				"triggerChat": "聊天",
+				"triggerWriteDescription": "編寫描述",
+				"triggerTask": "任務",
+				"iterations_one": "{{count}} 次迭代",
+				"iterations_other": "{{count}} 次迭代",
+				"prOpened": "PR 已建立",
+				"watch": "檢視",
+				"empty": {
+					"title": "目前沒有對話",
+					"description": "當任務指派給該 AI Agent 或有人向其傳送訊息時，對話將開始。"
+				}
+			},
+			"agents.conversationView.thinking": "思考中…",
+			"agents.conversationView.observation": "觀察結果",
+			"agents.conversationView.toolLabel": "工具：{{toolName}}",
+			"agents.conversationView.noMessages": "目前沒有訊息",
+			"roles.permissions.projectsRead": {
+				"label": "檢視專案",
+				"description": "檢視專案詳細資料和設定"
+			},
+			"roles.permissionGroups.roles": "角色",
+			"team.roleChip.changeFailed": "變更角色失敗。",
+			"aiChat.noAgentsConfigured": "此專案尚未設定 AI Agent。",
+			"aiChat.messageLabel": "訊息",
+			"aiChat.messageHint": "（按 Enter 傳送，Shift+Enter 換行）",
+			"aiChat.messagePlaceholder": "你希望AI Agent 幫你做什麼？",
+			"aiChat.send": "傳送",
+			"taskDetail.properties.trackTime": "記錄時間",
+			"taskDetail.properties.addTime": "新增時間",
+			"taskDetail.properties.relationships": "關聯關系",
+			"taskDetail.timeAgo": {
+				"justNow": "剛剛",
+				"minutes_one": "{{count}} 分鐘前",
+				"minutes_other": "{{count}} 分鐘前",
+				"hours_one": "{{count}} 小時前",
+				"hours_other": "{{count}} 小時前",
+				"days_one": "{{count}} 天前",
+				"days_other": "{{count}} 天前"
+			}
+		},
+		"shared.json": {
+			"activityPane.timeAgo": {
+				"justNow": "剛剛",
+				"minutes_one": "{{count}} 分鐘前",
+				"minutes_other": "{{count}} 分鐘前",
+				"hours_one": "{{count}} 小時前",
+				"hours_other": "{{count}} 小時前",
+				"days_one": "{{count}} 天前",
+				"days_other": "{{count}} 天前"
+			}
+		}
+	}
+}

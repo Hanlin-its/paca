@@ -25,18 +25,26 @@
 		"project": "專案",
 		"agents": "AI Agent",
 		"team": "團隊",
-		"settings": "設定"
+		"settings": "設定",
+		"environments": "環境",
+		"conversations": "對話",
+		"automation": "自動化",
+		"changelog": "最新消息",
+		"activity": "動態"
 	},
 	"projectSwitcher": {
 		"projects": "專案",
 		"yourProjects": "我的專案",
 		"noProjectsYet": "目前沒有專案",
-		"newProject": "新增專案"
+		"newProject": "新增專案",
+		"loadingMore": "正在載入更多…"
 	},
 	"interactions": {
 		"title": "互動",
 		"timeline": "時間線",
-		"productBacklog": "產品待辦清單"
+		"productBacklog": "產品待辦清單",
+		"plannedSprints": "草稿 Sprint",
+		"completedSprints": "已完成的 Sprint"
 	},
 	"docs": {
 		"documentation": "文件",
@@ -49,24 +57,23 @@
 		"newSubfolder": "新增子資料夾",
 		"rename": "重新命名",
 		"delete": "刪除",
-		"untitled": "無標題"
+		"untitled": "無標題",
+		"errors": {
+			"titleInvalid": "標題無效。",
+			"folderNameInvalid": "資料夾名稱無效。",
+			"renameFailed": "重新命名失敗，請再試一次。"
+		}
 	},
 	"notifications": {
 		"title": "通知",
 		"empty": "目前沒有通知",
 		"markAllAsRead": "全部標示為已讀",
+		"loadingMore": "正在載入…",
+		"muteSound": "靜音通知提示音",
+		"unmuteSound": "取消靜音通知提示音",
 		"text": {
 			"assigned": "{{actor}} 將任務 #{{taskNumber}} — {{taskTitle}} 指派給你",
 			"mentioned": "{{actor}} 在 #{{taskNumber}} — {{taskTitle}} 中提及你"
-		},
-		"timeAgo": {
-			"justNow": "剛剛",
-			"minutes_one": "{{count}} 分鐘前",
-			"minutes_other": "{{count}} 分鐘前",
-			"hours_one": "{{count}} 小時前",
-			"hours_other": "{{count}} 小時前",
-			"days_one": "{{count}} 天前",
-			"days_other": "{{count}} 天前"
 		}
 	},
 	"userMenu": {

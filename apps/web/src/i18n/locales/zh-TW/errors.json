@@ -1,4 +1,6 @@
 {
 	"pluginLoadFailedPrefix": "外掛",
-	"pluginLoadFailedSuffix": "載入失敗"
+	"pluginLoadFailedSuffix": "載入失敗",
+	"pluginNoPermissionTitle": "你沒有權限檢視此頁面",
+	"pluginNoPermissionDescription": "請要求專案擁有者或管理員授予你 {{pluginName}} 的存取權。"
 }

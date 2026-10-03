@@ -1,0 +1,40 @@
+# @file docker-compose.minio.yml
+# @description 升級 Paca 時沿用既有 MinIO 與附件 volume，並讓新版閘道維持正確的 S3 簽章主機。
+# @dependencies docker-compose.prod.yml、.env.local、既有 minio_data volume。
+# 用法：docker compose --env-file deploy/.env.local -f deploy/docker-compose.prod.yml -f deploy/docker-compose.minio.yml up -d
+services:
+  rustfs-init:
+    profiles: [rustfs-migration]
+
+  rustfs:
+    profiles: [rustfs-migration]
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${STORAGE_ACCESS_KEY_ID:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${STORAGE_SECRET_ACCESS_KEY:-minioadmin}
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    environment:
+      STORAGE_PROVIDER: minio
+      STORAGE_ENDPOINT: minio:9000
+    depends_on:
+      minio:
+        condition: service_healthy
+
+  gateway:
+    environment:
+      STORAGE_UPSTREAM: minio:9000
+
+volumes:
+  minio_data:
