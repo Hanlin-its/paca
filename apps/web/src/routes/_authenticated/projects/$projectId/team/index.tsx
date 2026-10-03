@@ -1,4 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+	useInfiniteQuery,
+	useMutation,
+	useQuery,
+	useQueryClient,
+} from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import {
 	Bot,
@@ -6,6 +11,7 @@ import {
 	ChevronDown,
 	Loader2,
 	MoreHorizontal,
+	PenLine,
 	Plus,
 	Search,
 	Shield,
@@ -15,7 +21,10 @@ import {
 } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { MembersFilters } from "@/components/projects/team/MembersFilters";
+import { HighlightMatch } from "@/components/shared/highlight-match";
+import { NoPermissionState } from "@/components/shared/no-permission-state";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import {
 	Dialog,
@@ -45,9 +54,17 @@ import {
 	SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Textarea } from "@/components/ui/textarea";
 import { usePermissions } from "@/hooks/use-permissions";
-import { getUsers, type User } from "@/lib/admin-api";
-import { currentUserQueryOptions } from "@/lib/auth-api";
+import { useProjectPermissions } from "@/hooks/use-project-permissions";
+import { type User, usersInfiniteQueryOptions } from "@/lib/admin-api";
+import { type Agent, chattableAgentsQueryOptions } from "@/lib/agent-api";
+import {
+	ApiErrorCode,
+	getApiErrorCode,
+	isForbiddenError,
+} from "@/lib/api-error";
+import { filterProjectMembers } from "@/lib/filter-project-members";
 import {
 	addProjectMember,
 	type ProjectMember,
@@ -58,16 +75,26 @@ import {
 	removeProjectMember,
 	updateProjectMemberRole,
 } from "@/lib/project-api";
+import {
+	resolveAgentAvatarUrl,
+	resolveMemberAvatarUrl,
+} from "@/lib/provider-logos";
+import { createLoadMoreScrollHandler } from "@/lib/scroll-pagination";
 
 export const Route = createFileRoute(
 	"/_authenticated/projects/$projectId/team/",
 )({
-	loader: async ({ context: { queryClient }, params: { projectId } }) => {
-		await Promise.all([
-			queryClient.ensureQueryData(projectMembersQueryOptions(projectId)),
-			queryClient.ensureQueryData(projectRolesQueryOptions(projectId)),
-		]);
-	},
+	// Neither roles nor the member list itself is prefetched here. Roles are
+	// only needed for the role-switcher dropdown and the add-member dialog
+	// (both gated behind project.members.write/project.roles.write already);
+	// TeamPage's own useQuery already defaults roles to [] while
+	// loading/erroring. The member list needs project.members.read, which
+	// this page's own canManageMembers check (project.members.write) doesn't
+	// imply — prefetching it unconditionally meant every visit without that
+	// read permission threw from both the loader *and* the component's own
+	// useQuery on mount, hitting the API twice per visit for a request that
+	// was always going to 403. Gated on canRead + NoPermissionState below
+	// instead, same as the agents/environments/automation list pages.
 	component: TeamPage,
 });
 
@@ -100,6 +127,9 @@ function UserPickerItem({
 			onClick={() => onSelect(user)}
 		>
 			<Avatar className="size-7 shrink-0">
+				{user.avatar_thumb_url ? (
+					<AvatarImage src={user.avatar_thumb_url} />
+				) : null}
 				<AvatarFallback className="text-xs bg-primary/10 text-primary font-semibold">
 					{getInitials(display)}
 				</AvatarFallback>
@@ -123,31 +153,61 @@ function AddMemberDialog({
 	projectId,
 	roles,
 	existingMemberIds,
+	existingAgentIds,
 }: {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 	projectId: string;
 	roles: ProjectRole[];
 	existingMemberIds: Set<string>;
+	existingAgentIds: Set<string>;
 }) {
 	const { t } = useTranslation("projects");
 	const queryClient = useQueryClient();
 	const { hasPermission: can } = usePermissions();
+	const [mode, setMode] = useState<"user" | "agent">("user");
 	const [selectedUser, setSelectedUser] = useState<User | null>(null);
+	const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
 	const [selectedRoleId, setSelectedRoleId] = useState<string>("");
 	const [userSearch, setUserSearch] = useState("");
+	const [description, setDescription] = useState("");
 	const [error, setError] = useState<string | null>(null);
 	const searchRef = useRef<HTMLInputElement>(null);
 	const canReadUsers = can("users.read");
+	const selectedAgentAvatarUrl = selectedAgent
+		? resolveAgentAvatarUrl(selectedAgent)
+		: undefined;
 
-	const { data: usersData, isLoading: isLoadingUsers } = useQuery({
-		queryKey: ["admin", "users", "all"],
-		queryFn: () => getUsers(1, 500),
+	const { data: allAgents = [], isLoading: isLoadingAgents } = useQuery({
+		...chattableAgentsQueryOptions,
+		enabled: open && mode === "agent",
+	});
+	const availableAgents = allAgents.filter((a) => !existingAgentIds.has(a.id));
+
+	const {
+		data: usersPages,
+		isLoading: isLoadingUsers,
+		fetchNextPage,
+		hasNextPage,
+		isFetchingNextPage,
+	} = useInfiniteQuery({
+		...usersInfiniteQueryOptions(),
 		enabled: open && canReadUsers,
 	});
 
+	const usersData = useMemo(
+		() => usersPages?.pages.flatMap((page) => page.items) ?? [],
+		[usersPages],
+	);
+
+	const handleUsersListScroll = createLoadMoreScrollHandler({
+		hasMore: !!hasNextPage,
+		isLoadingMore: isFetchingNextPage,
+		onLoadMore: () => void fetchNextPage(),
+	});
+
 	const filteredUsers = useMemo<User[]>(() => {
-		const items: User[] = usersData?.items ?? [];
+		const items: User[] = usersData;
 		const q = userSearch.toLowerCase();
 		return items
 			.filter((u) => !existingMemberIds.has(u.id))
@@ -161,13 +221,25 @@ function AddMemberDialog({
 
 	const addMutation = useMutation({
 		mutationFn: () => {
-			if (!selectedUser || !selectedRoleId) {
-				return Promise.reject(new Error("User and role are required"));
+			if (!selectedRoleId) {
+				return Promise.reject(new Error("Role is required"));
 			}
-
+			if (mode === "agent") {
+				if (!selectedAgent) {
+					return Promise.reject(new Error("Agent is required"));
+				}
+				return addProjectMember(projectId, {
+					agent_id: selectedAgent.id,
+					project_role_id: selectedRoleId,
+				});
+			}
+			if (!selectedUser) {
+				return Promise.reject(new Error("User is required"));
+			}
 			return addProjectMember(projectId, {
 				user_id: selectedUser.id,
 				project_role_id: selectedRoleId,
+				description: description.trim(),
 			});
 		},
 		onSuccess: async () => {
@@ -177,22 +249,32 @@ function AddMemberDialog({
 			handleClose();
 		},
 		onError: (err: unknown) => {
-			const e = err as { response?: { data?: { error?: string } } };
+			const code = getApiErrorCode(err);
 			setError(
-				e?.response?.data?.error ?? t("team.addMemberDialog.errors.addFailed"),
+				code === ApiErrorCode.ProjectMemberAlreadyAdded
+					? t("team.addMemberDialog.errors.alreadyAdded")
+					: code === ApiErrorCode.ProjectRoleNotFound
+						? t("team.addMemberDialog.errors.roleNotFound")
+						: t("team.addMemberDialog.errors.addFailed"),
 			);
 		},
 	});
 
 	function handleClose() {
+		setMode("user");
 		setSelectedUser(null);
+		setSelectedAgent(null);
 		setSelectedRoleId("");
 		setUserSearch("");
+		setDescription("");
 		setError(null);
 		onOpenChange(false);
 	}
 
-	const canSubmit = selectedUser && selectedRoleId && !addMutation.isPending;
+	const canSubmit =
+		!!selectedRoleId &&
+		!addMutation.isPending &&
+		(mode === "agent" ? !!selectedAgent : !!selectedUser);
 	const selectedUserId = selectedUser?.id ?? null;
 
 	return (
@@ -214,79 +296,197 @@ function AddMemberDialog({
 				</DialogHeader>
 
 				<div className="space-y-4 py-1">
-					{/* User search */}
-					<div className="space-y-1.5">
-						<p className="text-sm font-medium">
-							{t("team.addMemberDialog.userLabel")}
-						</p>
-						{selectedUser ? (
-							<div className="flex items-center gap-3 rounded-lg border border-primary/40 bg-primary/5 px-3 py-2">
-								<Avatar className="size-7 shrink-0">
-									<AvatarFallback className="text-xs bg-primary/10 text-primary font-semibold">
-										{getInitials(
-											selectedUser.full_name || selectedUser.username,
-										)}
-									</AvatarFallback>
-								</Avatar>
-								<div className="min-w-0 flex-1">
-									<span className="text-sm font-medium">
-										{selectedUser.full_name || selectedUser.username}
-									</span>
-									{selectedUser.full_name && (
-										<span className="ml-2 text-xs text-muted-foreground">
-											@{selectedUser.username}
-										</span>
-									)}
-								</div>
+					{/* Mode toggle: invite a human user, or invite a global agent */}
+					<div className="grid grid-cols-2 gap-2">
+						{(["user", "agent"] as const).map((m) => {
+							const isSelected = mode === m;
+							return (
 								<button
+									key={m}
 									type="button"
-									className="text-xs text-muted-foreground hover:text-foreground"
 									onClick={() => {
+										setMode(m);
 										setSelectedUser(null);
-										setTimeout(() => searchRef.current?.focus(), 50);
+										setSelectedAgent(null);
+										setError(null);
 									}}
+									className={`flex items-center justify-center gap-1.5 rounded-lg border p-2.5 text-xs font-medium transition-all ${
+										isSelected
+											? "border-primary/40 bg-primary/5 ring-1 ring-primary/20"
+											: "border-border/60 hover:border-border hover:bg-muted/30"
+									}`}
 								>
-									{t("team.addMemberDialog.change")}
+									{m === "user" ? (
+										<UserRound className="size-3.5" />
+									) : (
+										<Bot className="size-3.5" />
+									)}
+									{m === "user"
+										? t("team.addMemberDialog.modeUser")
+										: t("team.addMemberDialog.modeAgent")}
 								</button>
-							</div>
-						) : (
-							<div className="rounded-lg border border-border overflow-hidden">
-								<div className="flex items-center gap-2 px-3 py-2 border-b border-border/50">
-									<Search className="size-3.5 shrink-0 text-muted-foreground" />
-									<input
-										ref={searchRef}
-										className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-										placeholder={t("team.addMemberDialog.searchPlaceholder")}
-										value={userSearch}
-										onChange={(e) => setUserSearch(e.target.value)}
-										autoFocus
-									/>
+							);
+						})}
+					</div>
+
+					{mode === "agent" ? (
+						<div className="space-y-1.5">
+							<p className="text-sm font-medium">
+								{t("team.addMemberDialog.agentLabel")}
+							</p>
+							{selectedAgent ? (
+								<div className="flex items-center gap-3 rounded-lg border border-primary/40 bg-primary/5 px-3 py-2">
+									<Avatar className="size-7 shrink-0">
+										{selectedAgentAvatarUrl ? (
+											<AvatarImage src={selectedAgentAvatarUrl} />
+										) : null}
+										<AvatarFallback className="text-xs bg-primary/10 text-primary font-semibold">
+											<Bot className="size-3.5" />
+										</AvatarFallback>
+									</Avatar>
+									<div className="min-w-0 flex-1">
+										<span className="text-sm font-medium">
+											{selectedAgent.name}
+										</span>
+										<span className="ml-2 text-xs text-muted-foreground">
+											@{selectedAgent.handle}
+										</span>
+									</div>
+									<button
+										type="button"
+										className="text-xs text-muted-foreground hover:text-foreground"
+										onClick={() => setSelectedAgent(null)}
+									>
+										{t("team.addMemberDialog.change")}
+									</button>
 								</div>
-								<div className="max-h-44 overflow-y-auto p-1">
-									{isLoadingUsers ? (
+							) : (
+								<div className="rounded-lg border border-border overflow-hidden max-h-44 overflow-y-auto p-1">
+									{isLoadingAgents ? (
 										<div className="flex items-center justify-center py-4">
 											<Loader2 className="size-4 animate-spin text-muted-foreground" />
 										</div>
-									) : filteredUsers.length === 0 ? (
+									) : availableAgents.length === 0 ? (
 										<p className="py-4 text-center text-xs text-muted-foreground">
-											{userSearch
-												? t("team.addMemberDialog.noUsersMatch")
-												: t("team.addMemberDialog.noUsersAvailable")}
+											{t("team.addMemberDialog.noAgentsAvailable")}
 										</p>
 									) : (
-										filteredUsers.map((user: User) => (
-											<UserPickerItem
-												key={user.id}
-												user={user}
-												selected={selectedUserId === user.id}
-												onSelect={setSelectedUser}
-											/>
-										))
+										availableAgents.map((agent) => {
+											const avatarUrl = resolveAgentAvatarUrl(agent);
+											return (
+												<button
+													key={agent.id}
+													type="button"
+													className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm transition-colors hover:bg-accent"
+													onClick={() => setSelectedAgent(agent)}
+												>
+													<Avatar className="size-7 shrink-0">
+														{avatarUrl ? <AvatarImage src={avatarUrl} /> : null}
+														<AvatarFallback className="text-xs bg-primary/10 text-primary font-semibold">
+															<Bot className="size-3.5" />
+														</AvatarFallback>
+													</Avatar>
+													<div className="min-w-0 flex-1">
+														<span className="font-medium truncate block">
+															{agent.name}
+														</span>
+														<span className="text-xs text-muted-foreground truncate block">
+															@{agent.handle}
+														</span>
+													</div>
+												</button>
+											);
+										})
 									)}
 								</div>
-							</div>
-						)}
-					</div>
+							)}
+						</div>
+					) : (
+						<div className="space-y-1.5">
+							<p className="text-sm font-medium">
+								{t("team.addMemberDialog.userLabel")}
+							</p>
+							{selectedUser ? (
+								<div className="flex items-center gap-3 rounded-lg border border-primary/40 bg-primary/5 px-3 py-2">
+									<Avatar className="size-7 shrink-0">
+										{selectedUser.avatar_thumb_url ? (
+											<AvatarImage src={selectedUser.avatar_thumb_url} />
+										) : null}
+										<AvatarFallback className="text-xs bg-primary/10 text-primary font-semibold">
+											{getInitials(
+												selectedUser.full_name || selectedUser.username,
+											)}
+										</AvatarFallback>
+									</Avatar>
+									<div className="min-w-0 flex-1">
+										<span className="text-sm font-medium">
+											{selectedUser.full_name || selectedUser.username}
+										</span>
+										{selectedUser.full_name && (
+											<span className="ml-2 text-xs text-muted-foreground">
+												@{selectedUser.username}
+											</span>
+										)}
+									</div>
+									<button
+										type="button"
+										className="text-xs text-muted-foreground hover:text-foreground"
+										onClick={() => {
+											setSelectedUser(null);
+											setTimeout(() => searchRef.current?.focus(), 50);
+										}}
+									>
+										{t("team.addMemberDialog.change")}
+									</button>
+								</div>
+							) : (
+								<div className="rounded-lg border border-border overflow-hidden">
+									<div className="flex items-center gap-2 px-3 py-2 border-b border-border/50">
+										<Search className="size-3.5 shrink-0 text-muted-foreground" />
+										<input
+											ref={searchRef}
+											className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+											placeholder={t("team.addMemberDialog.searchPlaceholder")}
+											value={userSearch}
+											onChange={(e) => setUserSearch(e.target.value)}
+											autoFocus
+										/>
+									</div>
+									<div
+										className="max-h-44 overflow-y-auto p-1"
+										onScroll={handleUsersListScroll}
+									>
+										{isLoadingUsers ? (
+											<div className="flex items-center justify-center py-4">
+												<Loader2 className="size-4 animate-spin text-muted-foreground" />
+											</div>
+										) : filteredUsers.length === 0 ? (
+											<p className="py-4 text-center text-xs text-muted-foreground">
+												{userSearch
+													? t("team.addMemberDialog.noUsersMatch")
+													: t("team.addMemberDialog.noUsersAvailable")}
+											</p>
+										) : (
+											filteredUsers.map((user: User) => (
+												<UserPickerItem
+													key={user.id}
+													user={user}
+													selected={selectedUserId === user.id}
+													onSelect={setSelectedUser}
+												/>
+											))
+										)}
+										{isFetchingNextPage && (
+											<div className="flex items-center justify-center gap-1.5 py-2 text-xs text-muted-foreground">
+												<Loader2 className="size-3 animate-spin" />
+												{t("team.addMemberDialog.loadingMore")}
+											</div>
+										)}
+									</div>
+								</div>
+							)}
+						</div>
+					)}
 
 					{/* Role picker */}
 					<div className="space-y-1.5">
@@ -317,6 +517,26 @@ function AddMemberDialog({
 							</SelectContent>
 						</Select>
 					</div>
+
+					{/* Only for humans — an invited agent's description lives on the
+					    agent itself, edited from the agent's own detail page. */}
+					{mode === "user" && (
+						<div className="space-y-1.5">
+							<p className="text-sm font-medium">
+								{t("team.descriptionChip.title")}
+							</p>
+							<Textarea
+								value={description}
+								onChange={(e) => setDescription(e.target.value)}
+								placeholder={t("team.descriptionChip.placeholder")}
+								rows={2}
+								className="text-sm"
+							/>
+							<p className="text-xs text-muted-foreground">
+								{t("team.descriptionChip.hint")}
+							</p>
+						</div>
+					)}
 
 					{error && (
 						<p className="text-xs text-destructive bg-destructive/10 rounded-lg px-3 py-2">
@@ -401,15 +621,21 @@ function RoleChip({
 			}
 			return { previous };
 		},
-		onError: (_err, _vars, context) => {
+		onError: (err: unknown, _roleId, context) => {
 			if (context?.previous) {
 				queryClient.setQueryData(
 					projectMembersQueryOptions(projectId).queryKey,
 					context.previous,
 				);
 			}
-			const e = _err as { response?: { data?: { error?: string } } };
-			setError(e?.response?.data?.error ?? t("team.roleChip.changeFailed"));
+			const code = getApiErrorCode(err);
+			setError(
+				code === ApiErrorCode.ProjectMemberNotFound
+					? t("team.roleChip.errors.memberNotFound")
+					: code === ApiErrorCode.ProjectRoleNotFound
+						? t("team.roleChip.errors.roleNotFound")
+						: t("team.roleChip.errors.changeFailed"),
+			);
 		},
 		onSuccess: () => {
 			setOpen(false);
@@ -487,6 +713,98 @@ function RoleChip({
 	);
 }
 
+// DescriptionChip lets a manager set a human member's Jev-facing
+// description — shown to Jev (the AI decision API) when deciding whether to
+// assign this member a task in Auto mode. Agent members don't get one here:
+// their description lives on the Agent itself (edited from the agent's own
+// detail page) since it doesn't vary per project.
+function DescriptionChip({
+	member,
+	projectId,
+}: {
+	member: ProjectMember;
+	projectId: string;
+}) {
+	const { t } = useTranslation("projects");
+	const queryClient = useQueryClient();
+	const [open, setOpen] = useState(false);
+	const [value, setValue] = useState(member.description);
+	const [error, setError] = useState<string | null>(null);
+
+	const mutation = useMutation({
+		mutationFn: () =>
+			updateProjectMemberRole(projectId, member.id, {
+				description: value.trim(),
+			}),
+		onError: () => {
+			setError(t("team.descriptionChip.saveFailed"));
+		},
+		onSuccess: () => {
+			setOpen(false);
+			setError(null);
+		},
+		onSettled: () => {
+			queryClient.invalidateQueries({
+				queryKey: projectMembersQueryOptions(projectId).queryKey,
+			});
+		},
+	});
+
+	return (
+		<Popover
+			open={open}
+			onOpenChange={(v) => {
+				setOpen(v);
+				if (v) setValue(member.description);
+				else setError(null);
+			}}
+		>
+			<PopoverTrigger
+				type="button"
+				aria-label={t("team.descriptionChip.edit")}
+				title={member.description || t("team.descriptionChip.edit")}
+				className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+			>
+				<PenLine className="size-3.5" />
+			</PopoverTrigger>
+			<PopoverContent className="w-72 p-3" align="end">
+				<p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+					{t("team.descriptionChip.title")}
+				</p>
+				<p className="mt-1 text-xs text-muted-foreground">
+					{t("team.descriptionChip.hint")}
+				</p>
+				<Textarea
+					value={value}
+					onChange={(e) => setValue(e.target.value)}
+					rows={3}
+					className="mt-2 text-sm"
+					placeholder={t("team.descriptionChip.placeholder")}
+					disabled={mutation.isPending}
+				/>
+				{error && (
+					<p className="mt-1.5 rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
+						{error}
+					</p>
+				)}
+				<div className="mt-2 flex justify-end">
+					<Button
+						size="sm"
+						onClick={() => mutation.mutate()}
+						disabled={mutation.isPending || value === member.description}
+					>
+						{mutation.isPending ? (
+							<Loader2 className="size-3.5 animate-spin" />
+						) : (
+							t("team.descriptionChip.save")
+						)}
+					</Button>
+				</div>
+			</PopoverContent>
+		</Popover>
+	);
+}
+
 // ── Member Row ─────────────────────────────────────────────────────────────────
 
 function MemberRow({
@@ -494,12 +812,15 @@ function MemberRow({
 	projectId,
 	roles,
 	canManage,
+	highlight = "",
 	onRemove,
 }: {
 	member: ProjectMember;
 	projectId: string;
 	roles: ProjectRole[];
 	canManage: boolean;
+	/** Search text to highlight in the member's name and handle. */
+	highlight?: string;
 	onRemove: (member: ProjectMember) => void;
 }) {
 	const { t } = useTranslation("projects");
@@ -508,20 +829,27 @@ function MemberRow({
 		member.member_type === "agent" ||
 		member.username.startsWith("bot-") ||
 		member.role_name.toLowerCase().includes("agent");
+	const memberAvatarUrl = resolveMemberAvatarUrl(member);
 
 	return (
 		<div className="flex items-center gap-3 rounded-xl border border-border/50 bg-card px-4 py-3 transition-colors hover:bg-muted/30">
 			<Avatar className="size-9 shrink-0">
+				{memberAvatarUrl ? <AvatarImage src={memberAvatarUrl} /> : null}
 				<AvatarFallback className="text-xs bg-primary/10 text-primary font-semibold">
 					{isBot ? <Bot className="size-4" /> : getInitials(display)}
 				</AvatarFallback>
 			</Avatar>
 			<div className="min-w-0 flex-1">
-				<p className="text-sm font-medium truncate">{display}</p>
+				<p className="text-sm font-medium truncate">
+					<HighlightMatch text={display} query={highlight} />
+				</p>
 				<p className="text-xs text-muted-foreground truncate">
-					@{member.username}
+					@<HighlightMatch text={member.username} query={highlight} />
 				</p>
 			</div>
+			{canManage && !isBot ? (
+				<DescriptionChip member={member} projectId={projectId} />
+			) : null}
 			{canManage ? (
 				<RoleChip member={member} projectId={projectId} roles={roles} />
 			) : (
@@ -557,34 +885,80 @@ function TeamPage() {
 	const { projectId } = Route.useParams();
 	const queryClient = useQueryClient();
 	const [addMemberOpen, setAddMemberOpen] = useState(false);
+	const [search, setSearch] = useState("");
+	const [roleFilter, setRoleFilter] = useState("");
 	const [removingMember, setRemovingMember] = useState<ProjectMember | null>(
 		null,
 	);
 
-	const { hasPermission } = usePermissions();
-	const { data: currentUser } = useQuery(currentUserQueryOptions);
+	const { hasPermission, isLoading: isGlobalPermissionsLoading } =
+		usePermissions();
+	const { hasProjectPermission, isLoading: isProjectPermissionsLoading } =
+		useProjectPermissions(projectId);
+	// Wait for both permission sources — canReadMembers can come from either
+	// one, so resolving just one of them isn't enough to know the real
+	// answer yet.
+	const isPermissionsLoading =
+		isGlobalPermissionsLoading || isProjectPermissionsLoading;
 	const { data: project } = useQuery(projectQueryOptions(projectId));
-	const { data: members, isLoading } = useQuery(
-		projectMembersQueryOptions(projectId),
-	);
+	const canReadMembers =
+		hasPermission("project.members.read") ||
+		hasProjectPermission("project.members.read");
+	const {
+		data: members,
+		isLoading: isDataLoading,
+		isError,
+		error,
+	} = useQuery({
+		...projectMembersQueryOptions(projectId),
+		enabled: canReadMembers,
+	});
+	// While permissions are still loading, canReadMembers defaults to false
+	// same as a confirmed denial — guard on isPermissionsLoading (and fold
+	// it into isLoading) so the page shows the skeleton instead of flashing
+	// NoPermissionState first.
+	const isLoading = isPermissionsLoading || isDataLoading;
+	const noPermission =
+		!isPermissionsLoading &&
+		(!canReadMembers || (isError && isForbiddenError(error)));
 	const { data: roles = [] } = useQuery(projectRolesQueryOptions(projectId));
 
-	const myMembership = (members ?? []).find(
-		(m) => m.user_id === currentUser?.id,
-	);
-	const myRole = roles.find((r) => r.id === myMembership?.project_role_id);
-	const hasProjectMembersWrite = Boolean(
-		(myRole?.permissions as Record<string, boolean> | undefined)?.[
-			"project.members.write"
-		],
-	);
 	const canManageMembers =
-		hasPermission("project.members.write") || hasProjectMembersWrite;
+		hasPermission("project.members.write") ||
+		hasProjectPermission("project.members.write");
 
 	const existingMemberIds = useMemo(
 		() => new Set((members ?? []).map((m) => m.user_id)),
 		[members],
 	);
+	const existingAgentIds = useMemo(
+		() =>
+			new Set(
+				(members ?? [])
+					.filter((m) => m.member_type === "agent" && m.agent_id)
+					.map((m) => m.agent_id as string),
+			),
+		[members],
+	);
+
+	const visibleMembers = useMemo(
+		() => filterProjectMembers(members ?? [], search, roleFilter),
+		[members, search, roleFilter],
+	);
+
+	const roleChips = useMemo(
+		() =>
+			roles.map((r) => ({
+				name: r.role_name,
+				count: (members ?? []).filter((m) => m.role_name === r.role_name)
+					.length,
+			})),
+		[roles, members],
+	);
+	const clearFilters = () => {
+		setSearch("");
+		setRoleFilter("");
+	};
 
 	const removeMutation = useMutation({
 		mutationFn: () => {
@@ -637,7 +1011,13 @@ function TeamPage() {
 
 			{/* Content */}
 			<div className="p-6">
-				{isLoading ? (
+				{noPermission ? (
+					<NoPermissionState
+						icon={Users}
+						title={t("team.noPermission.title")}
+						description={t("team.noPermission.description")}
+					/>
+				) : isLoading ? (
 					<div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
 						{[...Array(4)].map((_, i) => (
 							<div
@@ -683,23 +1063,53 @@ function TeamPage() {
 					</div>
 				) : (
 					<div>
+						<MembersFilters
+							search={search}
+							roles={roleChips}
+							totalCount={members.length}
+							selectedRole={roleFilter}
+							shownCount={visibleMembers.length}
+							onSearchChange={setSearch}
+							onRoleChange={setRoleFilter}
+							onClear={clearFilters}
+						/>
 						<div className="mb-3 flex items-center justify-between">
 							<p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-								{t("team.memberCount", { count: members.length })}
+								{t("team.memberCount", { count: visibleMembers.length })}
 							</p>
 						</div>
-						<div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
-							{members.map((member) => (
-								<MemberRow
-									key={member.id}
-									member={member}
-									projectId={projectId}
-									roles={roles}
-									canManage={canManageMembers}
-									onRemove={setRemovingMember}
-								/>
-							))}
-						</div>
+						{visibleMembers.length === 0 ? (
+							<div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-border/60 bg-muted/10 py-14">
+								<div className="flex size-12 items-center justify-center rounded-xl bg-muted">
+									<Search className="size-6 text-muted-foreground/60" />
+								</div>
+								<div className="text-center">
+									<p className="text-sm font-medium">
+										{t("team.noMatch.title")}
+									</p>
+									<p className="mt-0.5 text-xs text-muted-foreground">
+										{t("team.noMatch.description")}
+									</p>
+								</div>
+								<Button size="sm" variant="outline" onClick={clearFilters}>
+									{t("team.noMatch.clear")}
+								</Button>
+							</div>
+						) : (
+							<div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
+								{visibleMembers.map((member) => (
+									<MemberRow
+										key={member.id}
+										member={member}
+										projectId={projectId}
+										roles={roles}
+										canManage={canManageMembers}
+										highlight={search}
+										onRemove={setRemovingMember}
+									/>
+								))}
+							</div>
+						)}
 					</div>
 				)}
 			</div>
@@ -711,6 +1121,7 @@ function TeamPage() {
 				projectId={projectId}
 				roles={roles}
 				existingMemberIds={existingMemberIds}
+				existingAgentIds={existingAgentIds}
 			/>
 
 			{/* Remove confirmation dialog */}

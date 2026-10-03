@@ -1,4 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+	useInfiniteQuery,
+	useMutation,
+	useQuery,
+	useQueryClient,
+} from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import {
 	ArrowRight,
@@ -14,9 +19,11 @@ import {
 	Users,
 	Zap,
 } from "lucide-react";
-import { type ComponentType, useState } from "react";
+import { type ComponentType, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-
+import { AssignedTasksList } from "@/components/home/assigned-tasks-list";
+import { UpdateBanner } from "@/components/home/UpdateBanner";
+import { EntityAvatarContent } from "@/components/shared/entity-avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -37,16 +44,23 @@ import { Textarea } from "@/components/ui/textarea";
 import { usePermissions } from "@/hooks/use-permissions";
 import { ApiErrorCode, getApiErrorCode } from "@/lib/api-error";
 import { currentUserQueryOptions } from "@/lib/auth-api";
+import { assignedTasksQueryOptions } from "@/lib/interaction-api";
 import {
 	createProject,
+	getProjectInitials,
 	type Project,
-	projectsQueryOptions,
+	projectsInfiniteQueryOptions,
+	workspaceStatsQueryOptions,
 } from "@/lib/project-api";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_authenticated/home/")({
 	loader: async ({ context: { queryClient } }) => {
-		await queryClient.ensureQueryData(projectsQueryOptions());
+		await Promise.all([
+			queryClient.ensureInfiniteQueryData(projectsInfiniteQueryOptions()),
+			queryClient.ensureQueryData(workspaceStatsQueryOptions()),
+			queryClient.ensureInfiniteQueryData(assignedTasksQueryOptions()),
+		]);
 	},
 	component: HomePage,
 });
@@ -321,12 +335,7 @@ function CreateProjectDialog({
 
 function ProjectCard({ project }: { project: Project }) {
 	const { t } = useTranslation("shared");
-	const initials = project.name
-		.split(/\s+/)
-		.filter(Boolean)
-		.slice(0, 2)
-		.map((w) => w[0].toUpperCase())
-		.join("");
+	const initials = getProjectInitials(project.name);
 
 	const formattedDate = new Date(project.created_at).toLocaleDateString(
 		"en-US",
@@ -342,7 +351,9 @@ function ProjectCard({ project }: { project: Project }) {
 			<div className="absolute inset-x-0 top-0 h-px rounded-t-xl bg-primary/40 opacity-0 transition-opacity duration-200 group-hover:opacity-100" />
 			<div className="flex items-start gap-3.5 mb-4">
 				<div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 border border-primary/15 font-[Syne] text-sm font-bold text-primary">
-					{initials || <FolderKanban className="size-4" />}
+					<EntityAvatarContent avatarUrl={project.avatar_thumb_url}>
+						{initials || <FolderKanban className="size-4" />}
+					</EntityAvatarContent>
 				</div>
 				<div className="min-w-0 flex-1">
 					<div className="flex items-center gap-2 mb-0.5">
@@ -443,14 +454,26 @@ const GETTING_STARTED = [
 function HomePage() {
 	const { t } = useTranslation("shared");
 	const { data: user } = useQuery(currentUserQueryOptions);
-	const { data: projectsResult } = useQuery(projectsQueryOptions());
+	const {
+		data: projectsData,
+		fetchNextPage,
+		hasNextPage,
+		isFetchingNextPage,
+	} = useInfiniteQuery(projectsInfiniteQueryOptions());
+	const { data: workspaceStats } = useQuery(workspaceStatsQueryOptions());
 	const { hasPermission } = usePermissions();
 	const [createOpen, setCreateOpen] = useState(false);
 
 	const canCreate = hasPermission("projects.create");
 
-	const projects = projectsResult?.items ?? [];
-	const projectCount = projectsResult?.total ?? 0;
+	const projects = useMemo(
+		() => projectsData?.pages.flatMap((p) => p.items) ?? [],
+		[projectsData],
+	);
+	const projectCount = projectsData?.pages[0]?.total ?? 0;
+	const openTaskCount = workspaceStats?.open_task_count ?? 0;
+	const teamMemberCount = workspaceStats?.team_member_count ?? 0;
+	const aiAgentCount = workspaceStats?.ai_agent_count ?? 0;
 
 	const greeting = (() => {
 		const hour = new Date().getHours();
@@ -464,6 +487,7 @@ function HomePage() {
 
 	return (
 		<div className="flex flex-col">
+			<UpdateBanner />
 			{/* Hero banner */}
 			<div className="relative overflow-hidden border-b border-border/50">
 				<div
@@ -538,25 +562,44 @@ function HomePage() {
 					<StatCard
 						icon={Layers}
 						label={t("home.stats.openTasks.label")}
-						value={0}
+						value={openTaskCount}
 						sub={t("home.stats.openTasks.sub")}
 						iconClass="bg-primary/10 text-primary"
 					/>
 					<StatCard
 						icon={Users}
 						label={t("home.stats.teamMembers.label")}
-						value={1}
+						value={teamMemberCount}
 						sub={t("home.stats.teamMembers.sub")}
 						iconClass="bg-muted text-muted-foreground"
 					/>
 					<StatCard
 						icon={Bot}
 						label={t("home.stats.aiAgents.label")}
-						value={0}
-						sub={t("home.stats.aiAgents.sub")}
+						value={aiAgentCount}
+						sub={
+							aiAgentCount === 0
+								? t("home.stats.aiAgents.sub")
+								: t("home.stats.aiAgents.subActive", { count: aiAgentCount })
+						}
 						iconClass="bg-muted text-muted-foreground"
 					/>
 				</div>
+
+				{/* My Tasks — assigned to the current user across every project */}
+				{projectCount > 0 ? (
+					<div>
+						<div className="mb-4">
+							<h2 className="font-[Syne] text-base font-bold tracking-tight">
+								{t("home.myTasks.title")}
+							</h2>
+							<p className="text-xs text-muted-foreground mt-0.5">
+								{t("home.myTasks.subtitle")}
+							</p>
+						</div>
+						<AssignedTasksList />
+					</div>
+				) : null}
 
 				{/* Projects section or empty state */}
 				{projectCount > 0 ? (
@@ -604,6 +647,24 @@ function HomePage() {
 								</button>
 							) : null}
 						</div>
+						{hasNextPage ? (
+							<div className="mt-4 flex justify-center">
+								<Button
+									size="sm"
+									variant="outline"
+									className="gap-1.5 border-border/60"
+									disabled={isFetchingNextPage}
+									onClick={() => fetchNextPage()}
+								>
+									{isFetchingNextPage ? (
+										<Loader2 className="size-3.5 animate-spin" />
+									) : null}
+									{isFetchingNextPage
+										? t("home.projectsSection.loadingMore")
+										: t("home.projectsSection.loadMore")}
+								</Button>
+							</div>
+						) : null}
 					</div>
 				) : (
 					<div className="grid gap-6 lg:grid-cols-[1fr_300px]">

@@ -17,7 +17,17 @@
 				"backend": "Backend",
 				"frontend": "Frontend",
 				"migrations": "Migrations",
-				"mcp": "MCP"
+				"mcp": "MCP",
+				"skills": "Compétences"
+			},
+			"errors": {
+				"incompatibleHostVersion": "Ce plugin nécessite Paca {{required}} ou une version ultérieure. Vous utilisez actuellement {{current}}.",
+				"incompatibleHostVersionGeneric": "Ce plugin nécessite une version de Paca plus récente que celle que vous utilisez.",
+				"alreadyUpToDate": "Ce plugin est déjà à jour.",
+				"downgradeNotAllowed": "Impossible d'installer une version antérieure à celle déjà installée.",
+				"notFound": "Ce plugin n'est plus disponible dans la marketplace.",
+				"nameTaken": "Un plugin portant ce nom est déjà installé.",
+				"generic": "Une erreur s'est produite. Veuillez réessayer."
 			}
 		}
 	},
@@ -31,8 +41,11 @@
 			"sidebarGeneral": "Barre latérale — Général",
 			"sidebarProject": "Barre latérale — Projet",
 			"taskDetail": "Détail de la tâche",
-			"projectSettingsTab": "Onglet Paramètres du projet",
-			"customView": "Vue personnalisée"
+			"projectSettingsTab": "Onglet Paramètres du Projet",
+			"customView": "Vue personnalisée",
+			"projectPage": "Page du Projet",
+			"adminPage": "Page d'Administration",
+			"userSettingsTab": "Onglet Paramètres Utilisateur"
 		}
 	}
 }

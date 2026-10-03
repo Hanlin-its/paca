@@ -4,8 +4,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/Paca-AI/api/internal/platform/storage"
 	"github.com/google/uuid"
+
+	"github.com/Paca-AI/api/internal/platform/storage"
 )
 
 // TaskOwnerChecker validates that a task belongs to a given project.
@@ -36,6 +37,19 @@ type Service interface {
 	// Set forceDownload true to embed Content-Disposition: attachment so the
 	// browser downloads the file rather than previewing it inline.
 	GetDownloadURL(ctx context.Context, projectID, taskID, attachmentID uuid.UUID, ttl time.Duration, forceDownload bool) (string, error)
+
+	// GetAttachmentContent reads the file's bytes directly from the object
+	// store and returns them along with its content type. Unlike
+	// GetDownloadURL (which hands back a presigned object-store URL meant for
+	// a browser), this goes through the API itself — the right path for
+	// server-side callers such as the MCP server, which may not have network
+	// access to the object store's public-facing endpoint (e.g. when running
+	// inside an agent sandbox container that can reach `api`/`gateway` by
+	// their internal Docker hostnames but not the browser-facing public URL
+	// presigned URLs are rewritten to). Verifies the attachment belongs to
+	// taskID and that taskID belongs to projectID. Returns
+	// ErrAttachmentContentTooLarge if the file exceeds MaxAttachmentContentSize.
+	GetAttachmentContent(ctx context.Context, projectID, taskID, attachmentID uuid.UUID) (data []byte, contentType string, err error)
 
 	// ListTaskAttachments returns all confirmed attachments for the given task.
 	// Verifies taskID belongs to projectID before proceeding.

@@ -11,30 +11,29 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/google/uuid"
+
 	attachmentdom "github.com/Paca-AI/api/internal/domain/attachment"
+	docdom "github.com/Paca-AI/api/internal/domain/doc"
 	taskdom "github.com/Paca-AI/api/internal/domain/task"
 	"github.com/Paca-AI/api/internal/platform/storage"
-	"github.com/google/uuid"
 )
 
-const (
-	// presignedUploadTTL is how long a presigned upload URL remains valid.
-	presignedUploadTTL = 1 * time.Hour
-	// presignedDownloadTTL is how long a presigned download URL remains valid.
-	presignedDownloadTTL = 15 * time.Minute
-)
+// presignedUploadTTL is how long a presigned upload URL remains valid.
+const presignedUploadTTL = 1 * time.Hour
 
 // Service is the concrete implementation of attachmentdom.Service.
 type Service struct {
 	repo        attachmentdom.Repository
 	taskChecker attachmentdom.TaskOwnerChecker
+	docChecker  attachmentdom.DocOwnerChecker
 	store       storage.Client
 	bucket      string
 }
 
 // New returns a configured attachment service.
-func New(repo attachmentdom.Repository, taskChecker attachmentdom.TaskOwnerChecker, store storage.Client, bucket string) *Service {
-	return &Service{repo: repo, taskChecker: taskChecker, store: store, bucket: bucket}
+func New(repo attachmentdom.Repository, taskChecker attachmentdom.TaskOwnerChecker, docChecker attachmentdom.DocOwnerChecker, store storage.Client, bucket string) *Service {
+	return &Service{repo: repo, taskChecker: taskChecker, docChecker: docChecker, store: store, bucket: bucket}
 }
 
 // InitiateUpload creates a pending File record and returns a presigned upload
@@ -226,6 +225,53 @@ func (s *Service) GetDownloadURL(ctx context.Context, projectID, taskID, attachm
 	return url, nil
 }
 
+// GetAttachmentContent reads the attachment's bytes directly from the object
+// store (bypassing the presigned-URL flow) and returns them along with the
+// file's content type. See the interface doc for why this exists.
+func (s *Service) GetAttachmentContent(ctx context.Context, projectID, taskID, attachmentID uuid.UUID) ([]byte, string, error) {
+	if err := s.taskChecker.TaskBelongsToProject(ctx, projectID, taskID); err != nil {
+		return nil, "", err
+	}
+	a, err := s.repo.FindTaskAttachmentByID(ctx, attachmentID)
+	if err != nil {
+		return nil, "", err
+	}
+	if a.TaskID != taskID {
+		return nil, "", attachmentdom.ErrAttachmentNotFound
+	}
+
+	f, err := s.repo.FindFileByID(ctx, a.FileID)
+	if err != nil {
+		return nil, "", err
+	}
+	if f.FileSize > attachmentdom.MaxAttachmentContentSize {
+		return nil, "", attachmentdom.ErrAttachmentContentTooLarge
+	}
+
+	bucket := f.Bucket
+	if bucket == "" {
+		bucket = s.bucket
+	}
+
+	// f.FileSize is declared by the client at upload-initiation time, but the
+	// presigned PUT enforces nothing about the actual object it accepts — a
+	// client can declare a small file_size and upload a larger object (see
+	// CompleteUpload above, which never re-verifies actual size). Bound the
+	// read itself by capping one byte over the limit: if the object is
+	// larger, GetObject's io.LimitReader truncates the read at
+	// MaxAttachmentContentSize+1 bytes with no error, so the post-read
+	// length check below is what actually catches it. Mirrors
+	// avatar_service.go's identical guard against the same presigned-PUT gap.
+	data, err := s.store.GetObject(ctx, bucket, f.StorageKey, attachmentdom.MaxAttachmentContentSize+1)
+	if err != nil {
+		return nil, "", fmt.Errorf("attachment svc: get object: %w", err)
+	}
+	if int64(len(data)) > attachmentdom.MaxAttachmentContentSize {
+		return nil, "", attachmentdom.ErrAttachmentContentTooLarge
+	}
+	return data, f.ContentType, nil
+}
+
 // ListTaskAttachments returns all confirmed attachments for the given task.
 func (s *Service) ListTaskAttachments(ctx context.Context, projectID, taskID uuid.UUID) ([]*attachmentdom.TaskAttachment, error) {
 	if err := s.taskChecker.TaskBelongsToProject(ctx, projectID, taskID); err != nil {
@@ -292,6 +338,32 @@ func (c *taskOwnerChecker) TaskBelongsToProject(ctx context.Context, projectID, 
 	}
 	if t.ProjectID != projectID {
 		return attachmentdom.ErrTaskNotInProject
+	}
+	return nil
+}
+
+// --- Doc ownership checker --------------------------------------------------
+
+type docOwnerChecker struct {
+	repo docdom.DocumentRepository
+}
+
+// NewDocOwnerChecker returns a attachmentdom.DocOwnerChecker that validates
+// document→project ownership via the document repository.
+func NewDocOwnerChecker(repo docdom.DocumentRepository) attachmentdom.DocOwnerChecker {
+	return &docOwnerChecker{repo: repo}
+}
+
+func (c *docOwnerChecker) DocBelongsToProject(ctx context.Context, projectID, docID uuid.UUID) error {
+	d, err := c.repo.FindDocumentByID(ctx, docID)
+	if err != nil {
+		if errors.Is(err, docdom.ErrDocNotFound) {
+			return attachmentdom.ErrDocNotInProject
+		}
+		return err
+	}
+	if d.ProjectID != projectID {
+		return attachmentdom.ErrDocNotInProject
 	}
 	return nil
 }

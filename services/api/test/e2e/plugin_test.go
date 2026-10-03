@@ -67,6 +67,10 @@ func newPluginE2EEnv(t *testing.T) *pluginE2EEnv {
 func (p *pluginE2EEnv) issueAdminToken(t *testing.T) string {
 	t.Helper()
 	seedUser(t, p.env, "plugin-admin", "Admin1234!", "Plugin Admin")
+	// The account must actually hold the ADMIN role: authorization grants only
+	// what the caller's role row stores, never anything implied by the "ADMIN"
+	// name in the token below.
+	assignGlobalRolesByName(t, p.env, "plugin-admin", "ADMIN")
 	admin, err := p.env.userRepo.FindByUsername(p.env.ctx, "plugin-admin")
 	if err != nil {
 		t.Fatalf("find admin user: %v", err)
@@ -150,6 +154,7 @@ func installPluginViaAPI(t *testing.T, p *pluginE2EEnv, token, name string) stri
 // ---------------------------------------------------------------------------
 
 func TestE2EPlugin_ListPlugins_AllowsAnonymous(t *testing.T) {
+	t.Parallel()
 	p := newPluginE2EEnv(t)
 
 	resp := p.doPlugin(t, http.MethodGet, "/api/v1/plugins", "", nil)
@@ -158,6 +163,7 @@ func TestE2EPlugin_ListPlugins_AllowsAnonymous(t *testing.T) {
 }
 
 func TestE2EPlugin_ListPlugins_EmptyInitially(t *testing.T) {
+	t.Parallel()
 	p := newPluginE2EEnv(t)
 	token := p.issueUserToken(t)
 
@@ -179,6 +185,7 @@ func TestE2EPlugin_ListPlugins_EmptyInitially(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestE2EPlugin_Install_RequiresAuth(t *testing.T) {
+	t.Parallel()
 	p := newPluginE2EEnv(t)
 
 	payload := map[string]any{
@@ -192,6 +199,7 @@ func TestE2EPlugin_Install_RequiresAuth(t *testing.T) {
 }
 
 func TestE2EPlugin_Install_Success(t *testing.T) {
+	t.Parallel()
 	p := newPluginE2EEnv(t)
 	token := p.issueAdminToken(t)
 
@@ -214,6 +222,7 @@ func TestE2EPlugin_Install_Success(t *testing.T) {
 }
 
 func TestE2EPlugin_Install_DuplicateName_409(t *testing.T) {
+	t.Parallel()
 	p := newPluginE2EEnv(t)
 	token := p.issueAdminToken(t)
 
@@ -231,6 +240,7 @@ func TestE2EPlugin_Install_DuplicateName_409(t *testing.T) {
 }
 
 func TestE2EPlugin_Install_MissingFields_400(t *testing.T) {
+	t.Parallel()
 	p := newPluginE2EEnv(t)
 	token := p.issueAdminToken(t)
 
@@ -249,6 +259,7 @@ func TestE2EPlugin_Install_MissingFields_400(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestE2EPlugin_Update_Success(t *testing.T) {
+	t.Parallel()
 	p := newPluginE2EEnv(t)
 	token := p.issueAdminToken(t)
 
@@ -268,6 +279,7 @@ func TestE2EPlugin_Update_Success(t *testing.T) {
 }
 
 func TestE2EPlugin_Update_NotFound_404(t *testing.T) {
+	t.Parallel()
 	p := newPluginE2EEnv(t)
 	token := p.issueAdminToken(t)
 
@@ -280,6 +292,7 @@ func TestE2EPlugin_Update_NotFound_404(t *testing.T) {
 }
 
 func TestE2EPlugin_Update_Disable(t *testing.T) {
+	t.Parallel()
 	p := newPluginE2EEnv(t)
 	token := p.issueAdminToken(t)
 
@@ -304,6 +317,7 @@ func TestE2EPlugin_Update_Disable(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestE2EPlugin_Delete_Success(t *testing.T) {
+	t.Parallel()
 	p := newPluginE2EEnv(t)
 	token := p.issueAdminToken(t)
 
@@ -327,6 +341,7 @@ func TestE2EPlugin_Delete_Success(t *testing.T) {
 }
 
 func TestE2EPlugin_Delete_NotFound_404(t *testing.T) {
+	t.Parallel()
 	p := newPluginE2EEnv(t)
 	token := p.issueAdminToken(t)
 
@@ -342,6 +357,7 @@ func TestE2EPlugin_Delete_NotFound_404(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestE2EPlugin_UpdateExtensionSetting_Success(t *testing.T) {
+	t.Parallel()
 	p := newPluginE2EEnv(t)
 	adminToken := p.issueAdminToken(t)
 
@@ -365,6 +381,7 @@ func TestE2EPlugin_UpdateExtensionSetting_Success(t *testing.T) {
 }
 
 func TestE2EPlugin_UpdateExtensionSetting_RequiresAuth(t *testing.T) {
+	t.Parallel()
 	p := newPluginE2EEnv(t)
 
 	resp := p.doPlugin(t, http.MethodPatch, "/api/v1/admin/plugin-extension-settings", "", map[string]any{})
@@ -373,6 +390,7 @@ func TestE2EPlugin_UpdateExtensionSetting_RequiresAuth(t *testing.T) {
 }
 
 func TestE2EPlugin_UpdateExtensionSetting_RequiresAdmin(t *testing.T) {
+	t.Parallel()
 	p := newPluginE2EEnv(t)
 	userToken := p.issueUserToken(t)
 
@@ -386,6 +404,7 @@ func TestE2EPlugin_UpdateExtensionSetting_RequiresAdmin(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestE2EPlugin_FullLifecycle(t *testing.T) {
+	t.Parallel()
 	p := newPluginE2EEnv(t)
 	token := p.issueAdminToken(t)
 
@@ -454,6 +473,7 @@ func TestE2EPlugin_FullLifecycle(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestE2EPlugin_ListPlugins_Multiple(t *testing.T) {
+	t.Parallel()
 	p := newPluginE2EEnv(t)
 	token := p.issueAdminToken(t)
 

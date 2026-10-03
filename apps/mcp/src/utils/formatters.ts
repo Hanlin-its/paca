@@ -1,3 +1,4 @@
+import { ZodError } from "zod";
 import type {
 	Attachment,
 	CustomFieldDefinition,
@@ -14,6 +15,71 @@ import type {
 import { blocknoteToMarkdown } from "./converters.js";
 
 /**
+ * Formats a thrown error for the calling agent. A raw ZodError's .message is
+ * a JSON dump of every issue — for an array of N invalid items that's N
+ * near-identical blocks (e.g. 8 nodes missing posX/posY renders as 16+
+ * repeated issues), which buries the one actionable fact under noise. This
+ * collapses issues that differ only by array index into a single deduped
+ * line with a count, so the caller sees e.g. "nodes.set.*.posX: Required
+ * (x8)" instead of the same message eight times over.
+ */
+export function formatToolError(error: unknown): string {
+	if (error instanceof ZodError) {
+		const counts = new Map<string, number>();
+		for (const issue of error.issues) {
+			const path = issue.path
+				.map((segment) => (typeof segment === "number" ? "*" : segment))
+				.join(".");
+			const key = path ? `${path}: ${issue.message}` : issue.message;
+			counts.set(key, (counts.get(key) ?? 0) + 1);
+		}
+		const lines = [...counts.entries()].map(([key, count]) =>
+			count > 1 ? `${key} (x${count})` : key,
+		);
+		return `Invalid arguments:\n${lines.join("\n")}`;
+	}
+	return error instanceof Error ? error.message : "Unknown error";
+}
+
+/**
+ * Turns a non-ok API response into an error message for the calling agent.
+ * The backend's error envelope is JSON ({ error, error_code, ... }); when the
+ * body parses as that shape, this surfaces its `error` message directly —
+ * prefixed with "Permission denied" for 403s — instead of dumping the raw
+ * status/body, so a permission failure reads as an actionable instruction
+ * ("you don't have permission to do that") rather than looking like a server
+ * malfunction the agent might retry. Falls back to the raw status/body when
+ * the response isn't that JSON shape (e.g. a proxy error page).
+ */
+export function formatApiRequestError(
+	status: number,
+	statusText: string,
+	errorText: string,
+): string {
+	let apiMessage: string | undefined;
+	try {
+		const parsed = JSON.parse(errorText);
+		if (
+			parsed &&
+			typeof parsed === "object" &&
+			typeof parsed.error === "string"
+		) {
+			apiMessage = parsed.error;
+		}
+	} catch {
+		// Not the JSON error envelope — fall through to the raw-text format below.
+	}
+
+	if (apiMessage) {
+		return status === 403
+			? `Permission denied: ${apiMessage}`
+			: `${apiMessage} (HTTP ${status})`;
+	}
+
+	return `API request failed: ${status} ${statusText} - ${errorText}`;
+}
+
+/**
  * Formats a task object into a readable string.
  * @param task - The task object to format
  * @returns Formatted task string with description in Markdown
@@ -28,7 +94,7 @@ ID: ${task.id}
 Status: ${task.status_id || "None"}
 Type: ${task.task_type_id || "None"}
 Sprint: ${task.sprint_id || "None"}
-Assignee: ${task.assignee_id || "Unassigned"}
+Assignees: ${task.assignee_ids && task.assignee_ids.length > 0 ? task.assignee_ids.join(", ") : "Unassigned"}
 Parent Task: ${task.parent_task_id || "None"}
 Importance: ${task.importance}
 Story Points: ${task.story_points ?? "None"}
@@ -49,7 +115,7 @@ ${description}`;
  * @param status - The task status object (if available)
  * @param taskType - The task type object (if available)
  * @param sprint - The sprint object (if available)
- * @param assignee - The assignee member object (if available)
+ * @param assignees - The assignee member objects (if available)
  * @param reporter - The reporter member object (if available)
  * @param parentTask - The parent task object (if available)
  * @param subtasks - Array of subtasks (if available)
@@ -72,7 +138,7 @@ export function formatTaskDetail(
 	status?: TaskStatus,
 	taskType?: TaskType,
 	sprint?: Sprint,
-	assignee?: ProjectMember,
+	assignees?: ProjectMember[],
 	reporter?: ProjectMember,
 	parentTask?: Task,
 	subtasks?: Task[],
@@ -113,10 +179,17 @@ export function formatTaskDetail(
 		);
 	}
 
-	if (assignee || task.assignee_id) {
-		sections.push(
-			`**Assignee:** ${assignee ? `${assignee.full_name || assignee.username} (@${assignee.username})` : task.assignee_id || "Unassigned"}`,
-		);
+	if (
+		(assignees && assignees.length > 0) ||
+		(task.assignee_ids && task.assignee_ids.length > 0)
+	) {
+		const label =
+			assignees && assignees.length > 0
+				? assignees
+						.map((a) => `${a.full_name || a.username} (@${a.username})`)
+						.join(", ")
+				: (task.assignee_ids ?? []).join(", ") || "Unassigned";
+		sections.push(`**Assignees:** ${label}`);
 	}
 
 	if (reporter || task.reporter_id) {
@@ -172,7 +245,7 @@ export function formatTaskDetail(
 		sections.push("## Subtasks");
 		subtasks.forEach((subtask, index) => {
 			sections.push(
-				`${index + 1}. **${subtask.title}** (#${subtask.task_number}) - Status ID: ${subtask.status_id || "None"}, Type ID: ${subtask.task_type_id || "None"}, Assignee ID: ${subtask.assignee_id || "Unassigned"}`,
+				`${index + 1}. **${subtask.title}** (#${subtask.task_number}) - Status ID: ${subtask.status_id || "None"}, Type ID: ${subtask.task_type_id || "None"}, Assignee IDs: ${subtask.assignee_ids && subtask.assignee_ids.length > 0 ? subtask.assignee_ids.join(", ") : "Unassigned"}`,
 			);
 		});
 	}
@@ -182,7 +255,7 @@ export function formatTaskDetail(
 		sections.push("## Attachments");
 		attachments.forEach((attachment) => {
 			sections.push(
-				`- **${attachment.file.file_name}** (${formatFileSize(attachment.file.file_size)}) - Uploaded: ${attachment.created_at}`,
+				`- **${attachment.file.file_name}** (${formatFileSize(attachment.file.file_size)}) - ID: ${attachment.id}, Uploaded: ${attachment.created_at}`,
 			);
 		});
 	}
@@ -240,7 +313,7 @@ function formatCustomFieldValue(value: unknown, fieldType: string): string {
 	}
 }
 
-function formatFileSize(bytes: number): string {
+export function formatFileSize(bytes: number): string {
 	if (bytes === 0) return "0 Bytes";
 	const k = 1024;
 	const sizes = ["Bytes", "KB", "MB", "GB"];

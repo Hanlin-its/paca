@@ -2,6 +2,13 @@
 	"activityPane": {
 		"title": "Hoạt động",
 		"empty": "Chưa có hoạt động nào",
+		"emptyComments": "Chưa có bình luận nào",
+		"showAllActivity": "Xem tất cả hoạt động",
+		"filter": {
+			"label": "Lọc hoạt động",
+			"comments": "Bình luận",
+			"all": "Tất cả hoạt động"
+		},
 		"editingComment": "Đang chỉnh sửa bình luận...",
 		"cancel": "Hủy",
 		"sendHint": "⌘↵ để gửi",
@@ -11,15 +18,6 @@
 		"delete": "Xóa",
 		"viewDiff": "Xem thay đổi",
 		"revert": "Hoàn tác",
-		"timeAgo": {
-			"justNow": "vừa xong",
-			"minutes_one": "{{count}} phút trước",
-			"minutes_other": "{{count}} phút trước",
-			"hours_one": "{{count}} giờ trước",
-			"hours_other": "{{count}} giờ trước",
-			"days_one": "{{count}} ngày trước",
-			"days_other": "{{count}} ngày trước"
-		},
 		"errors": {
 			"revertFailed": "Hoàn tác thất bại. Vui lòng thử lại."
 		}
@@ -27,11 +25,21 @@
 	"contentDiff": {
 		"emptyLine": "(dòng trống)",
 		"noDifferences": "Không có khác biệt về văn bản",
+		"diffTooLarge": "Khác biệt quá lớn để xem trước ({{lines}} dòng)",
+		"collapsedLines": "Đã ẩn {{count}} dòng không thay đổi",
 		"changeDiff": "Thay đổi nội dung",
 		"removed": "Đã xóa",
 		"added": "Đã thêm"
 	},
 	"home": {
+		"updateBanner": {
+			"title": "Có bản cập nhật",
+			"upstream": "Paca đã phát hành {{version}}.",
+			"fork": "Phiên bản {{version}} của bạn đã có sẵn.",
+			"current": "Bạn đang dùng {{version}}.",
+			"viewRelease": "Xem bản phát hành",
+			"dismiss": "Bỏ qua"
+		},
 		"greeting": {
 			"morning": "Chào buổi sáng",
 			"afternoon": "Chào buổi chiều",
@@ -61,15 +69,27 @@
 			},
 			"aiAgents": {
 				"label": "AI Agent",
-				"sub": "Chưa cấu hình"
+				"sub": "Chưa cấu hình",
+				"subActive": "{{count}} đã cấu hình"
 			}
+		},
+		"myTasks": {
+			"title": "Nhiệm vụ của tôi",
+			"subtitle": "Nhiệm vụ đang mở được giao cho bạn, trên tất cả dự án",
+			"emptyTitle": "Bạn đã xử lý xong hết",
+			"emptyDescription": "Hiện không có nhiệm vụ đang mở nào được giao cho bạn.",
+			"loadError": "Không thể tải nhiệm vụ của bạn. Vui lòng thử lại.",
+			"loadMore": "Tải thêm",
+			"loading": "Đang tải…"
 		},
 		"projectsSection": {
 			"title": "Dự án",
 			"countInWorkspace_one": "{{count}} dự án trong không gian làm việc của bạn",
 			"countInWorkspace_other": "{{count}} dự án trong không gian làm việc của bạn",
 			"newShort": "Mới",
-			"newProjectCard": "Dự án mới"
+			"newProjectCard": "Dự án mới",
+			"loadMore": "Tải thêm dự án",
+			"loadingMore": "Đang tải thêm…"
 		},
 		"projectCard": {
 			"public": "Công khai",

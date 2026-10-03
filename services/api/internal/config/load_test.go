@@ -32,6 +32,22 @@ func TestRequireEnv(t *testing.T) {
 	}
 }
 
+func TestParseCORSOrigins(t *testing.T) {
+	if got := parseCORSOrigins("*"); len(got) != 1 || got[0] != "*" {
+		t.Fatalf("expected [\"*\"], got %v", got)
+	}
+	got := parseCORSOrigins("https://a.example.com, https://b.example.com ,,")
+	want := []string{"https://a.example.com", "https://b.example.com"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %v, got %v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("expected %v, got %v", want, got)
+		}
+	}
+}
+
 func TestParseDuration(t *testing.T) {
 	d, err := parseDuration("15m")
 	if err != nil {
@@ -91,6 +107,7 @@ func TestLoad_Success(t *testing.T) {
 	t.Setenv("ADMIN_PASSWORD", "password")
 	t.Setenv("STORAGE_ACCESS_KEY_ID", "access-key")
 	t.Setenv("STORAGE_SECRET_ACCESS_KEY", "secret-key")
+	t.Setenv("AI_AGENT_INTERNAL_KEY", "internal-key")
 
 	cfg, err := Load()
 	if err != nil {
@@ -167,8 +184,8 @@ func TestLoad_PluginLimits_Defaults(t *testing.T) {
 	if cfg.Plugins.Limits.MaxMemoryPages != 1024 {
 		t.Fatalf("expected default MaxMemoryPages 1024, got %d", cfg.Plugins.Limits.MaxMemoryPages)
 	}
-	if cfg.Plugins.Limits.MaxRequestBodyBytes != 10*1024*1024 {
-		t.Fatalf("expected default MaxRequestBodyBytes 10MiB, got %d", cfg.Plugins.Limits.MaxRequestBodyBytes)
+	if cfg.Plugins.Limits.MaxRequestBodyBytes != 1*1024*1024 {
+		t.Fatalf("expected default MaxRequestBodyBytes 1MiB, got %d", cfg.Plugins.Limits.MaxRequestBodyBytes)
 	}
 }
 
@@ -256,4 +273,28 @@ func setLoadDefaults(t *testing.T) {
 	t.Setenv("ADMIN_PASSWORD", "password")
 	t.Setenv("STORAGE_ACCESS_KEY_ID", "access-key")
 	t.Setenv("STORAGE_SECRET_ACCESS_KEY", "secret-key")
+	t.Setenv("AI_AGENT_INTERNAL_KEY", "internal-key")
+}
+
+func TestLoadAuthRateLimit(t *testing.T) {
+	setLoadDefaults(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.AuthRateLimit != 20 {
+		t.Fatalf("default AuthRateLimit = %d, want 20", cfg.Server.AuthRateLimit)
+	}
+
+	t.Setenv("AUTH_RATE_LIMIT_PER_MINUTE", "0")
+	if cfg, err = Load(); err != nil || cfg.Server.AuthRateLimit != 0 {
+		t.Fatalf("AUTH_RATE_LIMIT_PER_MINUTE=0: cfg=%v err=%v", cfg, err)
+	}
+
+	for _, bad := range []string{"-1", "lots"} {
+		t.Setenv("AUTH_RATE_LIMIT_PER_MINUTE", bad)
+		if _, err := Load(); err == nil {
+			t.Fatalf("AUTH_RATE_LIMIT_PER_MINUTE=%q: want error", bad)
+		}
+	}
 }

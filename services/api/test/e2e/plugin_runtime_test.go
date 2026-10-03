@@ -150,6 +150,8 @@ func newPluginRuntimeE2EEnv(t *testing.T, limits pluginrt.ResourceLimits) *plugi
 func (p *pluginRuntimeE2EEnv) issueAdminToken(t *testing.T) string {
 	t.Helper()
 	seedUser(t, p.env, "plugin-rt-admin", "Admin1234!", "Plugin Runtime Admin")
+	// See pluginE2EEnv.issueAdminToken: the account must really hold ADMIN.
+	assignGlobalRolesByName(t, p.env, "plugin-rt-admin", "ADMIN")
 	admin, err := p.env.userRepo.FindByUsername(p.env.ctx, "plugin-rt-admin")
 	if err != nil {
 		t.Fatalf("find admin user: %v", err)
@@ -301,6 +303,7 @@ func authnRoute(method, path string) map[string]any {
 // ---------------------------------------------------------------------------
 
 func TestE2EPluginRuntime_InstallAndLoad_ServesRequest(t *testing.T) {
+	t.Parallel()
 	p := newPluginRuntimeE2EEnv(t, pluginrt.DefaultResourceLimits())
 	token := p.issueAdminToken(t)
 
@@ -324,6 +327,7 @@ func TestE2EPluginRuntime_InstallAndLoad_ServesRequest(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestE2EPluginRuntime_APICall_EchoesRequestBody(t *testing.T) {
+	t.Parallel()
 	p := newPluginRuntimeE2EEnv(t, pluginrt.DefaultResourceLimits())
 	token := p.issueAdminToken(t)
 
@@ -343,7 +347,39 @@ func TestE2EPluginRuntime_APICall_EchoesRequestBody(t *testing.T) {
 	}
 }
 
+// TestE2EPluginRuntime_APICall_QueryParamsPropagate is a regression test for
+// a bug where the host silently dropped the incoming request's URL query
+// string instead of forwarding it to the plugin: PluginHandler.ProxyRequest
+// built pluginrt.HTTPRequest without ever reading r.URL.Query(), so
+// req.QueryParam(...) inside every plugin always saw an empty map regardless
+// of what the caller sent. Query-string-driven filtering/pagination on any
+// plugin route was silently a no-op until this was fixed.
+func TestE2EPluginRuntime_APICall_QueryParamsPropagate(t *testing.T) {
+	t.Parallel()
+	p := newPluginRuntimeE2EEnv(t, pluginrt.DefaultResourceLimits())
+	token := p.issueAdminToken(t)
+
+	p.installAndLoad(t, token, "com.paca.rt-query", []map[string]any{
+		publicRoute(http.MethodGet, "/query"),
+	}, true)
+
+	resp := p.doPlugin(t, http.MethodGet,
+		"/api/v1/plugins/com.paca.rt-query/query?member_id=abc&date_from=2026-07-01", "", nil)
+	defer func() { _ = resp.Body.Close() }()
+	assertStatus(t, resp, http.StatusOK)
+
+	var got map[string]string
+	decodeJSON(t, resp, &got)
+	if got["member_id"] != "abc" {
+		t.Errorf("expected member_id=abc, got %v", got)
+	}
+	if got["date_from"] != "2026-07-01" {
+		t.Errorf("expected date_from=2026-07-01, got %v", got)
+	}
+}
+
 func TestE2EPluginRuntime_APICall_CallerIdentityPropagates(t *testing.T) {
+	t.Parallel()
 	p := newPluginRuntimeE2EEnv(t, pluginrt.DefaultResourceLimits())
 	adminToken := p.issueAdminToken(t)
 
@@ -367,6 +403,7 @@ func TestE2EPluginRuntime_APICall_CallerIdentityPropagates(t *testing.T) {
 }
 
 func TestE2EPluginRuntime_APICall_AuthnRoute_RequiresToken(t *testing.T) {
+	t.Parallel()
 	p := newPluginRuntimeE2EEnv(t, pluginrt.DefaultResourceLimits())
 	token := p.issueAdminToken(t)
 
@@ -380,6 +417,7 @@ func TestE2EPluginRuntime_APICall_AuthnRoute_RequiresToken(t *testing.T) {
 }
 
 func TestE2EPluginRuntime_APICall_UnmatchedPath_PluginReturns404(t *testing.T) {
+	t.Parallel()
 	p := newPluginRuntimeE2EEnv(t, pluginrt.DefaultResourceLimits())
 	token := p.issueAdminToken(t)
 
@@ -397,6 +435,7 @@ func TestE2EPluginRuntime_APICall_UnmatchedPath_PluginReturns404(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestE2EPluginRuntime_DisabledPlugin_Returns404(t *testing.T) {
+	t.Parallel()
 	p := newPluginRuntimeE2EEnv(t, pluginrt.DefaultResourceLimits())
 	token := p.issueAdminToken(t)
 
@@ -411,6 +450,7 @@ func TestE2EPluginRuntime_DisabledPlugin_Returns404(t *testing.T) {
 }
 
 func TestE2EPluginRuntime_NonexistentPlugin_Returns404(t *testing.T) {
+	t.Parallel()
 	p := newPluginRuntimeE2EEnv(t, pluginrt.DefaultResourceLimits())
 
 	resp := p.doPlugin(t, http.MethodGet, "/api/v1/plugins/com.paca.does-not-exist/hello", "", nil)
@@ -428,6 +468,7 @@ func TestE2EPluginRuntime_NonexistentPlugin_Returns404(t *testing.T) {
 // with 413 before it ever reaches the plugin, and the plugin keeps serving
 // normal requests afterward.
 func TestE2EPluginRuntime_OversizedBody_Returns413AndStaysHealthy(t *testing.T) {
+	t.Parallel()
 	limits := pluginrt.DefaultResourceLimits()
 	limits.MaxRequestBodyBytes = 1024
 	p := newPluginRuntimeE2EEnv(t, limits)
@@ -458,6 +499,7 @@ func TestE2EPluginRuntime_OversizedBody_Returns413AndStaysHealthy(t *testing.T) 
 // request after, even a tiny one, failed the same way. This test fails
 // against the pre-fix runtime.go and passes against the fix.
 func TestE2EPluginRuntime_AllocatorRecovery_AfterOversizedWrite(t *testing.T) {
+	t.Parallel()
 	limits := pluginrt.ResourceLimits{
 		MaxCallDuration: 5 * time.Second,
 		// The echoplugin's actual WASM memory is ~7.25 MiB (116 pages) once

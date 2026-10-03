@@ -1,15 +1,35 @@
 import type { CallToolRequest, Tool } from "@modelcontextprotocol/sdk/types.js";
 import type {
+	PacaAPIAnnotationClient,
+	PacaAPIAutomationClient,
 	PacaAPIClient,
+	PacaAPIConversationClient,
 	PacaAPIDocClient,
 	PacaAPIExtendedClient,
 	PacaAPITaskExtendedClient,
 	PacaAPIViewsClient,
 } from "../api/index.js";
+import { formatToolError } from "../utils/index.js";
+import {
+	getAnnotationTools,
+	handleAnnotationTool,
+} from "./annotation-tools.js";
 import {
 	getAttachmentTools,
 	handleAttachmentTool,
 } from "./attachment-tools.js";
+import {
+	getAutomationTools,
+	handleAutomationTool,
+} from "./automation-tools.js";
+import {
+	getConversationTools,
+	handleConversationTool,
+} from "./conversation-tools.js";
+import {
+	getDocActivityTools,
+	handleDocActivityTool,
+} from "./doc-activity-tools.js";
 import {
 	getFilesystemDocTools,
 	handleFilesystemDocTool,
@@ -20,15 +40,14 @@ import {
 	handleProjectMemberTool,
 } from "./member-tools.js";
 import { getProjectTools, handleProjectTool } from "./project-tools.js";
+import { getRepoTools, handleRepoTool } from "./repo-tools.js";
+import { getSearchTools, handleSearchTool } from "./search-tools.js";
 import { getSprintTools, handleSprintTool } from "./sprint-tools.js";
 import {
 	getTaskActivityTools,
 	handleTaskActivityTool,
 } from "./task-activity-tools.js";
-import {
-	getTaskLinkTools,
-	handleTaskLinkTool,
-} from "./task-link-tools.js";
+import { getTaskLinkTools, handleTaskLinkTool } from "./task-link-tools.js";
 import { getTaskTools, handleTaskTool } from "./task-tools.js";
 import {
 	getTaskStatusTools,
@@ -50,6 +69,7 @@ export function getAllTools(): Tool[] {
 		...getTaskTools(),
 		...getSprintTools(),
 		...getFilesystemDocTools(),
+		...getSearchTools(),
 		...getProjectMemberTools(),
 		...getProjectRoleTools(),
 		...getTaskTypeTools(),
@@ -59,6 +79,11 @@ export function getAllTools(): Tool[] {
 		...getAttachmentTools(),
 		...getTaskActivityTools(),
 		...getTaskLinkTools(),
+		...getAutomationTools(),
+		...getDocActivityTools(),
+		...getRepoTools(),
+		...getConversationTools(),
+		...getAnnotationTools(),
 	];
 }
 
@@ -74,7 +99,11 @@ export async function handleToolCall(
 		viewsClient: PacaAPIViewsClient;
 		taskExtendedClient: PacaAPITaskExtendedClient;
 		docClient: PacaAPIDocClient;
+		automationClient: PacaAPIAutomationClient;
+		conversationClient: PacaAPIConversationClient;
+		annotationClient: PacaAPIAnnotationClient;
 	},
+	repoPluginIds: string[] = [],
 ): Promise<any> {
 	const { name, arguments: args } = request.params;
 
@@ -136,6 +165,11 @@ export async function handleToolCall(
 			);
 		}
 
+		// Search tools
+		if (name === "search_docs" || name === "search_tasks") {
+			return handleSearchTool(name, args, clients.apiClient, clients.docClient);
+		}
+
 		// Project member and role tools
 		if (
 			name === "list_project_members" ||
@@ -189,8 +223,10 @@ export async function handleToolCall(
 
 		// Attachment tools
 		if (
+			name === "upload_task_attachment" ||
 			name === "list_task_attachments" ||
 			name === "get_attachment_download_url" ||
+			name === "read_task_attachment" ||
 			name === "delete_task_attachment"
 		) {
 			return handleAttachmentTool(name, args, clients.viewsClient);
@@ -215,15 +251,52 @@ export async function handleToolCall(
 			return handleTaskLinkTool(name, args, clients.taskExtendedClient);
 		}
 
+		// Automation tools
+		if (
+			name === "get_automation" ||
+			name === "create_automation" ||
+			name === "update_automation" ||
+			name === "delete_automation"
+		) {
+			return handleAutomationTool(name, args, clients.automationClient);
+		}
+
+		// Document activity tools
+		if (
+			name === "list_doc_activities" ||
+			name === "add_doc_comment" ||
+			name === "update_doc_comment" ||
+			name === "delete_doc_comment"
+		) {
+			return handleDocActivityTool(name, args, clients.docClient);
+		}
+
+		// Repository tools
+		if (
+			name === "list_repositories" ||
+			name === "clone_repository" ||
+			name === "push_branch"
+		) {
+			return handleRepoTool(name, args, clients.apiClient, repoPluginIds);
+		}
+
+		// Conversation tools
+		if (name === "read_conversation") {
+			return handleConversationTool(name, args, clients.conversationClient);
+		}
+
+		// Page annotation ("comment") tools
+		if (name === "list_annotations" || name === "get_annotation") {
+			return handleAnnotationTool(name, args, clients.annotationClient);
+		}
+
 		throw new Error(`Unknown tool: ${name}`);
 	} catch (error) {
-		const errorMessage =
-			error instanceof Error ? error.message : "Unknown error";
 		return {
 			content: [
 				{
 					type: "text",
-					text: `Error: ${errorMessage}`,
+					text: `Error: ${formatToolError(error)}`,
 				},
 			],
 			isError: true,

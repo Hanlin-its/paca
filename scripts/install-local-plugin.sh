@@ -48,11 +48,20 @@ Options:
   --api-key KEY       API key for authentication (required)
   --skip-build        Skip building (only install)
   --skip-install      Skip installing (only build)
+  --go-toolchain TOOL "tinygo" (default) or "go" — most plugins build with
+                      TinyGo for a much smaller binary; use "go" (the
+                      standard compiler) only if your plugin hits a TinyGo
+                      stdlib limitation, e.g. it uses html/template or
+                      text/template — TinyGo's reflect package doesn't fully
+                      support what those need and the plugin will panic at
+                      runtime the first time it's actually invoked, not at
+                      build time.
 
 Environment Variables:
   PACA_DIR            Same as --paca-dir
   API_URL             Same as --api-url
   API_KEY             Same as --api-key (required)
+  GO_TOOLCHAIN        Same as --go-toolchain
 
 Examples:
   # Basic usage with API key
@@ -75,6 +84,7 @@ EOF
 # Parse arguments
 SKIP_BUILD=false
 SKIP_INSTALL=false
+GO_TOOLCHAIN="${GO_TOOLCHAIN:-tinygo}"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -102,6 +112,10 @@ while [[ $# -gt 0 ]]; do
             SKIP_INSTALL=true
             shift
             ;;
+        --go-toolchain)
+            GO_TOOLCHAIN="$2"
+            shift 2
+            ;;
         -*)
             print_error "Unknown option: $1"
             show_usage
@@ -128,18 +142,20 @@ if [[ ! -f "$PLUGIN_DIR/plugin.json" ]]; then
     exit 1
 fi
 
-if [[ ! -d "$PLUGIN_DIR/backend" ]]; then
-    print_error "backend directory not found in $PLUGIN_DIR"
-    exit 1
-fi
-
-if [[ ! -d "$PLUGIN_DIR/frontend" ]]; then
-    print_error "frontend directory not found in $PLUGIN_DIR"
-    exit 1
-fi
+# backend/, frontend/, mcp/ and skills/ are all optional: a plugin may ship any
+# combination of them (e.g. a skills-only plugin has none of the first three).
+HAS_BACKEND=false
+HAS_FRONTEND=false
+[[ -d "$PLUGIN_DIR/backend" ]] && HAS_BACKEND=true
+[[ -d "$PLUGIN_DIR/frontend" ]] && HAS_FRONTEND=true
 
 if ! command -v jq >/dev/null 2>&1; then
     print_error "jq is required but not installed"
+    exit 1
+fi
+
+if [[ "$GO_TOOLCHAIN" != "tinygo" && "$GO_TOOLCHAIN" != "go" ]]; then
+    print_error "--go-toolchain must be \"tinygo\" or \"go\", got: $GO_TOOLCHAIN"
     exit 1
 fi
 
@@ -173,9 +189,10 @@ fi
 BACKEND_DIR="$PACA_DIR/plugins/local/backend/$PLUGIN_ID"
 FRONTEND_DIR="$PACA_DIR/plugins/local/frontend/$PLUGIN_ID"
 MCP_DIR="$PACA_DIR/plugins/local/mcp/$PLUGIN_ID"
+SKILLS_DIR="$PACA_DIR/plugins/local/skills/$PLUGIN_ID"
 
 # Build backend
-if [[ "$SKIP_BUILD" = false ]]; then
+if [[ "$HAS_BACKEND" = true && "$SKIP_BUILD" = false ]]; then
     print_step "Building backend WASM..."
     cd "$PLUGIN_DIR/backend"
     
@@ -184,8 +201,20 @@ if [[ "$SKIP_BUILD" = false ]]; then
         print_error "go.mod not found in backend directory"
         exit 1
     fi
-    
-    GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o backend.wasm .
+
+    if [[ "$GO_TOOLCHAIN" = "tinygo" ]]; then
+        if ! command -v tinygo >/dev/null 2>&1; then
+            print_error "tinygo is required but not installed (see https://tinygo.org/getting-started/install/), or pass --go-toolchain go"
+            exit 1
+        fi
+        tinygo build -target=wasip1 -buildmode=c-shared -o backend.wasm .
+    else
+        if ! command -v go >/dev/null 2>&1; then
+            print_error "go is required but not installed"
+            exit 1
+        fi
+        GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o backend.wasm .
+    fi
     
     if [[ ! -f "backend.wasm" ]]; then
         print_error "backend.wasm build failed"
@@ -193,6 +222,8 @@ if [[ "$SKIP_BUILD" = false ]]; then
     fi
     
     print_success "Backend WASM built successfully"
+elif [[ "$HAS_BACKEND" = false ]]; then
+    print_info "No backend directory found — skipping backend build (plugin has no backend)"
 else
     print_step "Skipping backend build (--skip-build)"
 fi
@@ -201,16 +232,16 @@ fi
 print_step "Populating backend store..."
 mkdir -p "$BACKEND_DIR/migrations"
 
-if [[ "$SKIP_BUILD" = false ]]; then
-    cp backend.wasm "$BACKEND_DIR/backend.wasm"
-    cp migrations/*.sql "$BACKEND_DIR/migrations/" 2>/dev/null || true
+if [[ "$HAS_BACKEND" = true && "$SKIP_BUILD" = false ]]; then
+    cp "$PLUGIN_DIR/backend/backend.wasm" "$BACKEND_DIR/backend.wasm"
+    cp "$PLUGIN_DIR"/backend/migrations/*.sql "$BACKEND_DIR/migrations/" 2>/dev/null || true
 fi
 
 cp "$PLUGIN_DIR/plugin.json" "$BACKEND_DIR/plugin.json"
 print_success "Backend store populated"
 
 # Build frontend
-if [[ "$SKIP_BUILD" = false ]]; then
+if [[ "$HAS_FRONTEND" = true && "$SKIP_BUILD" = false ]]; then
     print_step "Building frontend..."
     cd "$PLUGIN_DIR/frontend"
     
@@ -234,19 +265,23 @@ if [[ "$SKIP_BUILD" = false ]]; then
     fi
     
     print_success "Frontend built successfully"
+elif [[ "$HAS_FRONTEND" = false ]]; then
+    print_info "No frontend directory found — skipping frontend build (plugin has no frontend)"
 else
     print_step "Skipping frontend build (--skip-build)"
 fi
 
 # Populate frontend store
-print_step "Populating frontend store..."
-mkdir -p "$FRONTEND_DIR"
+if [[ "$HAS_FRONTEND" = true ]]; then
+    print_step "Populating frontend store..."
+    mkdir -p "$FRONTEND_DIR"
 
-if [[ "$SKIP_BUILD" = false ]]; then
-    cp -r dist/. "$FRONTEND_DIR/"
+    if [[ "$SKIP_BUILD" = false ]]; then
+        cp -r "$PLUGIN_DIR/frontend/dist/." "$FRONTEND_DIR/"
+    fi
+
+    print_success "Frontend store populated"
 fi
-
-print_success "Frontend store populated"
 
 # Build and populate MCP bundle (optional — not every plugin has MCP tools)
 if [[ -d "$PLUGIN_DIR/mcp" ]]; then
@@ -286,6 +321,18 @@ if [[ -d "$PLUGIN_DIR/mcp" ]]; then
     print_success "MCP store populated"
 else
     print_info "No mcp directory found — skipping MCP bundle (plugin has no MCP tools)"
+fi
+
+# Populate skills store (optional — not every plugin has Agent Skills).
+# Skills are plain SKILL.md files, not compiled artifacts, so there's no
+# build step — just copy the directory tree as-is, unlike backend/frontend/mcp.
+if [[ -d "$PLUGIN_DIR/skills" ]]; then
+    print_step "Populating skills store..."
+    mkdir -p "$SKILLS_DIR"
+    cp -r "$PLUGIN_DIR/skills/." "$SKILLS_DIR/"
+    print_success "Skills store populated"
+else
+    print_info "No skills directory found — skipping skills (plugin has no Agent Skills)"
 fi
 
 # Install plugin via API
@@ -425,8 +472,13 @@ fi
 echo ""
 print_success "Plugin $PLUGIN_ID v$PLUGIN_VERSION build and installation complete!"
 print_info "Backend artifacts: $BACKEND_DIR"
-print_info "Frontend artifacts: $FRONTEND_DIR"
+if [[ "$HAS_FRONTEND" = true ]]; then
+    print_info "Frontend artifacts: $FRONTEND_DIR"
+fi
 if [[ -d "$PLUGIN_DIR/mcp" ]]; then
     print_info "MCP artifacts: $MCP_DIR"
+fi
+if [[ -d "$PLUGIN_DIR/skills" ]]; then
+    print_info "Skills artifacts: $SKILLS_DIR"
 fi
 print_info "If the plugin is enabled, it will be available after restarting the Paca services"

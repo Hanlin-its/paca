@@ -5,11 +5,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
-	docdom "github.com/Paca-AI/api/internal/domain/doc"
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+
+	docdom "github.com/Paca-AI/api/internal/domain/doc"
 )
 
 // =============================================================================
@@ -52,21 +55,6 @@ type docSnapshotRecord struct {
 
 	// Joined from project_members → users.
 	CreatedByName *string `db:"created_by_name"`
-}
-
-type docActivityRecord struct {
-	ID           string           `db:"id"`
-	DocumentID   string           `db:"document_id"`
-	ActorID      *string          `db:"actor_id"`
-	ActivityType string           `db:"activity_type"`
-	Content      *json.RawMessage `db:"content"`
-	CreatedAt    time.Time        `db:"created_at"`
-	UpdatedAt    time.Time        `db:"updated_at"`
-	DeletedAt    *time.Time       `db:"deleted_at"`
-
-	// Joined from project_members + users.
-	ActorFullName *string `db:"actor_full_name"`
-	ActorUsername *string `db:"actor_username"`
 }
 
 // =============================================================================
@@ -204,31 +192,6 @@ func snapshotFromRecord(r docSnapshotRecord) *docdom.DocSnapshot {
 	return s
 }
 
-func activityFromDocRecord(r docActivityRecord) *docdom.Activity {
-	a := &docdom.Activity{
-		ID:           uuid.MustParse(r.ID),
-		DocumentID:   uuid.MustParse(r.DocumentID),
-		ActivityType: docdom.ActivityType(r.ActivityType),
-		CreatedAt:    r.CreatedAt,
-		UpdatedAt:    r.UpdatedAt,
-		DeletedAt:    r.DeletedAt,
-	}
-	if r.Content != nil {
-		a.Content = *r.Content
-	}
-	if r.ActorID != nil {
-		id := uuid.MustParse(*r.ActorID)
-		a.ActorID = &id
-	}
-	if r.ActorFullName != nil {
-		a.ActorName = *r.ActorFullName
-	}
-	if r.ActorUsername != nil {
-		a.ActorUsername = *r.ActorUsername
-	}
-	return a
-}
-
 // =============================================================================
 // Folder CRUD
 // =============================================================================
@@ -294,15 +257,71 @@ func (r *DocumentRepository) DeleteFolder(ctx context.Context, id uuid.UUID) err
 
 const documentCols = `id, project_id, folder_id, title, content, position, created_by, updated_by, created_at, updated_at, deleted_at`
 
-// ListDocuments returns non-deleted documents for a project.
-func (r *DocumentRepository) ListDocuments(_ context.Context, projectID uuid.UUID, folderID *uuid.UUID) ([]*docdom.Document, error) {
-	var records []documentRecord
-	var err error
+// ListDocuments returns non-deleted documents for a project, optionally
+// filtered to a folder and/or a case-insensitive title search, and
+// optionally keyset-paginated — see docdom.Repository.ListDocuments's doc
+// comment for the limit/cursor/hasMore contract and why pagination mode
+// sorts title ASC, id ASC instead of the tree's position ASC, title ASC.
+func (r *DocumentRepository) ListDocuments(ctx context.Context, projectID uuid.UUID, folderID *uuid.UUID, search *string, cursor *string, limit *int) ([]*docdom.Document, bool, error) {
+	query := `SELECT ` + documentCols + ` FROM documents WHERE project_id = $1 AND deleted_at IS NULL`
+	args := []any{projectID.String()}
 	if folderID != nil {
-		err = r.db.Select(&records, `SELECT `+documentCols+` FROM documents WHERE project_id = $1 AND folder_id = $2 AND deleted_at IS NULL ORDER BY position ASC, title ASC`, projectID.String(), folderID.String())
-	} else {
-		err = r.db.Select(&records, `SELECT `+documentCols+` FROM documents WHERE project_id = $1 AND deleted_at IS NULL ORDER BY position ASC, title ASC`, projectID.String())
+		args = append(args, folderID.String())
+		query += fmt.Sprintf(" AND folder_id = $%d", len(args))
 	}
+	if search != nil {
+		if q := strings.TrimSpace(*search); q != "" {
+			args = append(args, "%"+escapeLikePattern(q)+"%")
+			query += fmt.Sprintf(" AND title ILIKE $%d", len(args))
+		}
+	}
+
+	paginating := limit != nil
+	if paginating {
+		if cursor != nil {
+			if cur, ok := docdom.DecodeDocumentCursor(*cursor); ok {
+				args = append(args, cur.Title, cur.ID)
+				query += fmt.Sprintf(" AND (title, id) > ($%d, $%d)", len(args)-1, len(args))
+			}
+		}
+		query += " ORDER BY title ASC, id ASC"
+		args = append(args, *limit+1)
+		query += fmt.Sprintf(" LIMIT $%d", len(args))
+	} else {
+		query += " ORDER BY position ASC, title ASC"
+	}
+
+	var records []documentRecord
+	if err := r.db.SelectContext(ctx, &records, query, args...); err != nil {
+		return nil, false, err
+	}
+
+	hasMore := false
+	if paginating && len(records) > *limit {
+		hasMore = true
+		records = records[:*limit]
+	}
+	out := make([]*docdom.Document, 0, len(records))
+	for _, rec := range records {
+		out = append(out, documentFromRecord(rec))
+	}
+	return out, hasMore, nil
+}
+
+// SearchDocuments matches query (literally, case-insensitively) against the
+// title or any inline "text" node inside the BlockNote JSON content. The
+// jsonpath walk restricts body matching to visible text so structural keys
+// like "type":"paragraph" never match.
+func (r *DocumentRepository) SearchDocuments(ctx context.Context, projectID uuid.UUID, query string, limit int) ([]*docdom.Document, error) {
+	pattern := "%" + escapeLikePattern(strings.TrimSpace(query)) + "%"
+	var records []documentRecord
+	err := r.db.SelectContext(ctx, &records, `SELECT `+documentCols+` FROM documents
+		WHERE project_id = $1 AND deleted_at IS NULL
+		  AND (title ILIKE $2 OR EXISTS (
+		        SELECT 1 FROM jsonb_path_query(COALESCE(content, 'null'::jsonb), 'lax $.**.text') AS t
+		        WHERE jsonb_typeof(t) = 'string' AND (t #>> '{}') ILIKE $2))
+		ORDER BY updated_at DESC, id ASC
+		LIMIT $3`, projectID.String(), pattern, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -427,78 +446,5 @@ func (r *DocumentRepository) DeleteRecentSnapshotsExcept(ctx context.Context, do
 		DELETE FROM doc_snapshots WHERE document_id = $1 AND id != $2 AND created_at >= $3`,
 		documentID.String(), excludeID.String(), since,
 	)
-	return err
-}
-
-// =============================================================================
-// Activity CRUD
-// =============================================================================
-
-const docActivityJoinSQL = `
-	SELECT da.id, da.document_id, da.actor_id, da.activity_type, da.content, da.created_at, da.updated_at, da.deleted_at,
-	       COALESCE(u.full_name, ag.name) AS actor_full_name,
-	       COALESCE(u.username, ag.handle) AS actor_username
-	FROM doc_activities da
-	LEFT JOIN project_members pm ON pm.id = da.actor_id
-	LEFT JOIN users u ON u.id = pm.user_id
-	LEFT JOIN agents ag ON ag.id = pm.agent_id`
-
-// ListActivities returns non-deleted activities for a document, oldest first.
-func (r *DocumentRepository) ListActivities(_ context.Context, documentID uuid.UUID) ([]*docdom.Activity, error) {
-	var records []docActivityRecord
-	if err := r.db.Select(&records, docActivityJoinSQL+` WHERE da.document_id = $1 AND da.deleted_at IS NULL ORDER BY da.created_at ASC`, documentID.String()); err != nil {
-		return nil, err
-	}
-	out := make([]*docdom.Activity, 0, len(records))
-	for _, rec := range records {
-		out = append(out, activityFromDocRecord(rec))
-	}
-	return out, nil
-}
-
-// FindActivityByID returns a single activity (including soft-deleted).
-func (r *DocumentRepository) FindActivityByID(_ context.Context, id uuid.UUID) (*docdom.Activity, error) {
-	var rec docActivityRecord
-	if err := r.db.Get(&rec, docActivityJoinSQL+` WHERE da.id = $1`, id.String()); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, docdom.ErrActivityNotFound
-		}
-		return nil, err
-	}
-	return activityFromDocRecord(rec), nil
-}
-
-// CreateActivity persists a new activity record.
-func (r *DocumentRepository) CreateActivity(ctx context.Context, a *docdom.Activity) error {
-	content := a.Content
-	if content == nil {
-		content = json.RawMessage("{}")
-	}
-	var actorID *string
-	if a.ActorID != nil {
-		s := a.ActorID.String()
-		actorID = &s
-	}
-	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO doc_activities (id, document_id, actor_id, activity_type, content, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		a.ID.String(), a.DocumentID.String(), actorID, string(a.ActivityType), content, a.CreatedAt, a.UpdatedAt,
-	)
-	return err
-}
-
-// UpdateActivity persists mutable changes to an activity.
-func (r *DocumentRepository) UpdateActivity(ctx context.Context, a *docdom.Activity) error {
-	content := a.Content
-	if content == nil {
-		content = json.RawMessage("{}")
-	}
-	_, err := r.db.ExecContext(ctx, `UPDATE doc_activities SET content = $1, updated_at = $2 WHERE id = $3`, content, a.UpdatedAt, a.ID.String())
-	return err
-}
-
-// DeleteActivity soft-deletes an activity.
-func (r *DocumentRepository) DeleteActivity(ctx context.Context, id uuid.UUID) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE doc_activities SET deleted_at = $1 WHERE id = $2`, time.Now(), id.String())
 	return err
 }

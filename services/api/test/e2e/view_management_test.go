@@ -68,6 +68,7 @@ func deleteViewViaAPI(t *testing.T, env *e2eEnv, client *http.Client, token, pro
 }
 
 func TestE2EViewManagement_CRUD(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "view-crud-user", "viewpass1")
 	client, token := taskMemberLogin(t, env, "view-crud-user", "viewpass1")
@@ -190,6 +191,7 @@ func TestE2EViewManagement_CRUD(t *testing.T) {
 }
 
 func TestE2ETaskPositionManagement(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "view-pos-user", "pospass1")
 	client, token := taskMemberLogin(t, env, "view-pos-user", "pospass1")
@@ -197,8 +199,10 @@ func TestE2ETaskPositionManagement(t *testing.T) {
 	sprintID := createSprintViaAPI(t, env, client, token, projID, "Sprint for Positions")
 	viewID := createViewViaAPI(t, env, client, token, projID, sprintID, "Position View", "table")
 
-	// Use a fixed task UUID (doesn't need to exist in DB for position tracking)
-	taskID := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	// MoveTask/BulkMoveTasks verify the task belongs to projID (see
+	// view_service.go), so a fixed/non-existent UUID 404s — a real task is
+	// required.
+	taskID := createTaskViaAPI(t, env, client, token, projID, "Position Task")
 
 	t.Run("move_task", func(t *testing.T) {
 		url := fmt.Sprintf("%s/api/v1/projects/%s/views/%s/task-positions/%s",
@@ -342,6 +346,7 @@ func deleteBacklogViewViaAPI(t *testing.T, env *e2eEnv, client *http.Client, tok
 // ---------------------------------------------------------------------------
 
 func TestE2EBacklogViewManagement_CRUD(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "backlog-view-crud-user", "backlogpass1")
 	client, token := taskMemberLogin(t, env, "backlog-view-crud-user", "backlogpass1")
@@ -429,13 +434,16 @@ func TestE2EBacklogViewManagement_CRUD(t *testing.T) {
 }
 
 func TestE2EBacklogTaskPositionManagement(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "backlog-pos-user", "backlogpospass1")
 	client, token := taskMemberLogin(t, env, "backlog-pos-user", "backlogpospass1")
 	projID := createProjectForTasksViaAPI(t, env, client, token)
 	viewID := createBacklogViewViaAPI(t, env, client, token, projID, "Backlog Position View", "table")
 
-	taskID := "cccccccc-dddd-eeee-ffff-aaaaaaaaaaaa"
+	// MoveTask verifies the task belongs to projID (see view_service.go), so
+	// a fixed/non-existent UUID 404s — a real task is required.
+	taskID := createTaskViaAPI(t, env, client, token, projID, "Backlog Position Task")
 
 	t.Run("move_task", func(t *testing.T) {
 		url := fmt.Sprintf("%s/api/v1/projects/%s/views/%s/task-positions/%s",
@@ -509,6 +517,7 @@ func TestE2EBacklogTaskPositionManagement(t *testing.T) {
 }
 
 func TestE2EBulkTaskPositionManagement(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "bulk-pos-user", "bulkpass1")
 	client, token := taskMemberLogin(t, env, "bulk-pos-user", "bulkpass1")
@@ -516,10 +525,12 @@ func TestE2EBulkTaskPositionManagement(t *testing.T) {
 	sprintID := createSprintViaAPI(t, env, client, token, projID, "Sprint for Bulk Positions")
 	viewID := createViewViaAPI(t, env, client, token, projID, sprintID, "Bulk Position View", "table")
 
-	// Fixed UUIDs — do not need to exist as actual tasks for position tracking
-	task1 := "11111111-1111-1111-1111-111111111111"
-	task2 := "22222222-2222-2222-2222-222222222222"
-	task3 := "33333333-3333-3333-3333-333333333333"
+	// BulkMoveTasks verifies every task belongs to projID (see
+	// view_service.go), so fixed/non-existent UUIDs 404 — real tasks are
+	// required.
+	task1 := createTaskViaAPI(t, env, client, token, projID, "Bulk Position Task 1")
+	task2 := createTaskViaAPI(t, env, client, token, projID, "Bulk Position Task 2")
+	task3 := createTaskViaAPI(t, env, client, token, projID, "Bulk Position Task 3")
 
 	bulkURL := fmt.Sprintf("%s/api/v1/projects/%s/views/%s/task-positions",
 		env.base, projID, viewID)
@@ -603,14 +614,18 @@ func TestE2EBulkTaskPositionManagement(t *testing.T) {
 }
 
 func TestE2EBulkBacklogTaskPositionManagement(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "bulk-backlog-user", "bulkblpass1")
 	client, token := taskMemberLogin(t, env, "bulk-backlog-user", "bulkblpass1")
 	projID := createProjectForTasksViaAPI(t, env, client, token)
 	viewID := createBacklogViewViaAPI(t, env, client, token, projID, "Bulk Backlog View", "table")
 
-	task1 := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-	task2 := "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	// BulkMoveTasks verifies every task belongs to projID (see
+	// view_service.go), so fixed/non-existent UUIDs 404 — real tasks are
+	// required.
+	task1 := createTaskViaAPI(t, env, client, token, projID, "Bulk Backlog Task 1")
+	task2 := createTaskViaAPI(t, env, client, token, projID, "Bulk Backlog Task 2")
 
 	bulkURL := fmt.Sprintf("%s/api/v1/projects/%s/views/%s/task-positions",
 		env.base, projID, viewID)
@@ -716,6 +731,7 @@ func deleteTimelineViewViaAPI(t *testing.T, env *e2eEnv, client *http.Client, to
 // ---------------------------------------------------------------------------
 
 func TestE2ETimelineViewManagement_CRUD(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "timeline-crud-user", "timelinepass1")
 	client, token := taskMemberLogin(t, env, "timeline-crud-user", "timelinepass1")
@@ -802,6 +818,7 @@ func TestE2ETimelineViewManagement_CRUD(t *testing.T) {
 }
 
 func TestE2ETimelineViewManagement_DeleteLastViewRejected(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "timeline-last-user", "timelinepass2")
 	client, token := taskMemberLogin(t, env, "timeline-last-user", "timelinepass2")
@@ -848,6 +865,7 @@ func TestE2ETimelineViewManagement_DeleteLastViewRejected(t *testing.T) {
 }
 
 func TestE2ETimelineViewManagement_ContextIsolation(t *testing.T) {
+	t.Parallel()
 	// Verifies that creating timeline and backlog views for the same project
 	// does not mix them up in their respective list endpoints.
 	env := newE2EEnv(t)
@@ -903,6 +921,7 @@ func TestE2ETimelineViewManagement_ContextIsolation(t *testing.T) {
 // config.filters.task_types FilterConfig (using the "normal" virtual group)
 // persists through PATCH and is returned by a subsequent GET.
 func TestE2EViewFilters_TaskTypesRoundtrip(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "vf-mode-user", "vfmodepass1")
 	client, token := taskMemberLogin(t, env, "vf-mode-user", "vfmodepass1")
@@ -962,6 +981,7 @@ func TestE2EViewFilters_TaskTypesRoundtrip(t *testing.T) {
 // config.filters persist correctly (covers the previously-missing SprintIDs
 // DTO field serialisation bug).
 func TestE2EViewFilters_SprintIDsRoundtrip(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "vf-sprintids-user", "vfsprintpass1")
 	client, token := taskMemberLogin(t, env, "vf-sprintids-user", "vfsprintpass1")

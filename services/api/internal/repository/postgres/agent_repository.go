@@ -6,11 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
-	agentdom "github.com/Paca-AI/api/internal/domain/agent"
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+
+	agentdom "github.com/Paca-AI/api/internal/domain/agent"
 )
 
 // -------------------------------------------------------------------------
@@ -18,31 +21,61 @@ import (
 // -------------------------------------------------------------------------
 
 type agentRecord struct {
-	ID                            string     `db:"id"`
-	ProjectID                     string     `db:"project_id"`
-	Name                          string     `db:"name"`
-	Handle                        string     `db:"handle"`
-	AvatarURL                     *string    `db:"avatar_url"`
-	LLMProvider                   string     `db:"llm_provider"`
-	LLMModel                      string     `db:"llm_model"`
-	LLMAPIKeySecret               string     `db:"llm_api_key_secret"`
-	LLMBaseURL                    string     `db:"llm_base_url"`
-	SystemPrompt                  string     `db:"system_prompt"`
-	TaskTriggerPrompt             string     `db:"task_trigger_prompt"`
-	DocCommentTriggerPrompt       string     `db:"doc_comment_trigger_prompt"`
-	ChatTriggerPrompt             string     `db:"chat_trigger_prompt"`
-	DescriptionWriteTriggerPrompt string     `db:"description_write_trigger_prompt"`
-	CanCloneRepos                 bool       `db:"can_clone_repos"`
-	CanCreatePRs                  bool       `db:"can_create_prs"`
-	MaxIterations                 int        `db:"max_iterations"`
-	TimeoutMinutes                int        `db:"timeout_minutes"`
-	GitCommitterName              string     `db:"git_committer_name"`
-	GitCommitterEmail             string     `db:"git_committer_email"`
-	CreatedBy                     *string    `db:"created_by"`
-	CreatedAt                     time.Time  `db:"created_at"`
-	UpdatedAt                     time.Time  `db:"updated_at"`
-	DeletedAt                     *time.Time `db:"deleted_at"`
-	MemberID                      *string    `db:"member_id"` // populated when joining with project_members
+	ID                 string  `db:"id"`
+	ProjectID          *string `db:"project_id"` // NULL for global-scope agents
+	AgentScope         string  `db:"agent_scope"`
+	GlobalRoleID       *string `db:"global_role_id"`
+	Name               string  `db:"name"`
+	Handle             string  `db:"handle"`
+	Description        string  `db:"description"`
+	AvatarKey          *string `db:"avatar_key"`
+	AvatarThumbKey     *string `db:"avatar_thumb_key"`
+	AgentType          string  `db:"agent_type"`
+	LLMProvider        string  `db:"llm_provider"`
+	LLMModel           string  `db:"llm_model"`
+	LLMAPIKeySecret    string  `db:"llm_api_key_secret"`
+	LLMBaseURL         string  `db:"llm_base_url"`
+	ACPProvider        *string `db:"acp_provider"`
+	ACPCommand         []byte  `db:"acp_command"`
+	ACPBridgeTokenHash *string `db:"acp_bridge_token_hash"`
+	MCPAPIKeyHash      *string `db:"mcp_api_key_hash"`
+	// CLIProvider/CLIModel/CLIAuthMode/CLIAPIKeySecret/CLILoginVerifiedAt
+	// are provider_cli-only — see agentdom.Agent.CLIProvider's doc comment.
+	CLIProvider        *string    `db:"cli_provider"`
+	CLIModel           string     `db:"cli_model"`
+	CLIAuthMode        string     `db:"cli_auth_mode"`
+	CLIAPIKeySecret    string     `db:"cli_api_key_secret"`
+	CLILoginVerifiedAt *time.Time `db:"cli_login_verified_at"`
+	SystemPrompt       string     `db:"system_prompt"`
+	MaxIterations      int        `db:"max_iterations"`
+	TimeoutMinutes     int        `db:"timeout_minutes"`
+	GitCommitterName   string     `db:"git_committer_name"`
+	GitCommitterEmail  string     `db:"git_committer_email"`
+	DockerEnabled      bool       `db:"docker_enabled"`
+	ParallelismLimit   int        `db:"parallelism_limit"`
+	// DefaultEnvironmentID references environments(id) — see
+	// agentdom.Agent.DefaultEnvironmentID's doc comment. NULL for global-scope
+	// agents (enforced by the service layer, not a DB constraint).
+	DefaultEnvironmentID *string `db:"default_environment_id"`
+	// DefaultFolderID references environment_folders(id) — see
+	// agentdom.Agent.DefaultFolderID's doc comment. NULL unless
+	// DefaultEnvironmentID is also set (enforced by the service layer, not
+	// a DB constraint).
+	DefaultFolderID *string    `db:"default_folder_id"`
+	AccessMode      string     `db:"access_mode"`
+	CreatedBy       *string    `db:"created_by"`
+	CreatedAt       time.Time  `db:"created_at"`
+	UpdatedAt       time.Time  `db:"updated_at"`
+	DeletedAt       *time.Time `db:"deleted_at"`
+	MemberID        *string    `db:"member_id"` // populated when joining with project_members
+}
+
+type agentAccessGrantRecord struct {
+	ID        string    `db:"id"`
+	AgentID   string    `db:"agent_id"`
+	MemberID  string    `db:"member_id"`
+	GrantedBy *string   `db:"granted_by"`
+	CreatedAt time.Time `db:"created_at"`
 }
 
 type agentMCPServerRecord struct {
@@ -82,24 +115,34 @@ type agentSkillRecord struct {
 }
 
 type agentConversationRecord struct {
-	ID                  string     `db:"id"`
-	AgentID             string     `db:"agent_id"`
-	ProjectID           string     `db:"project_id"`
-	TriggerType         string     `db:"trigger_type"`
-	TaskID              *string    `db:"task_id"`
-	CommentID           *string    `db:"comment_id"`
-	ChatSessionID       *string    `db:"chat_session_id"`
-	TriggeredByMemberID string     `db:"triggered_by_member_id"`
-	Status              string     `db:"status"`
-	ContainerID         *string    `db:"container_id"`
-	HostPort            *int       `db:"host_port"`
-	IterationCount      int        `db:"iteration_count"`
+	ID                  string  `db:"id"`
+	AgentID             string  `db:"agent_id"`
+	ProjectID           *string `db:"project_id"` // NULL for a global-chat conversation
+	TriggerType         string  `db:"trigger_type"`
+	TaskID              *string `db:"task_id"`
+	CommentID           *string `db:"comment_id"`
+	ChatSessionID       *string `db:"chat_session_id"`
+	TriggeredByMemberID *string `db:"triggered_by_member_id"`
+	ActorUserID         *string `db:"actor_user_id"`
+	Audience            string  `db:"audience"`
+	Status              string  `db:"status"`
+	// EnvironmentID/EnvironmentFolderID replace the old container_id/
+	// host_port/repo_clone_url/branch_name/persistence_dir columns (migration
+	// 000042_add_environments.sql) — see
+	// agentdom.AgentConversation.EnvironmentID's doc comment.
+	EnvironmentID       *string    `db:"environment_id"`
+	EnvironmentFolderID *string    `db:"environment_folder_id"`
+	IterationCount      int64      `db:"iteration_count"`
+	InputTokens         int64      `db:"input_tokens"`
+	OutputTokens        int64      `db:"output_tokens"`
+	TotalTokens         int64      `db:"total_tokens"`
+	CostUSD             *float64   `db:"cost_usd"`
 	ErrorMessage        *string    `db:"error_message"`
 	RepoPluginID        *string    `db:"repo_plugin_id"`
-	RepoCloneURL        *string    `db:"repo_clone_url"`
-	BranchName          *string    `db:"branch_name"`
 	PRUrl               *string    `db:"pr_url"`
-	PersistenceDir      *string    `db:"persistence_dir"`
+	Title               *string    `db:"title"`
+	TitleSetByUser      bool       `db:"title_set_by_user"`
+	DeletedAt           *time.Time `db:"deleted_at"`
 	StartedAt           *time.Time `db:"started_at"`
 	FinishedAt          *time.Time `db:"finished_at"`
 	CreatedAt           time.Time  `db:"created_at"`
@@ -119,8 +162,9 @@ type agentConversationEventRecord struct {
 type agentChatSessionRecord struct {
 	ID            string     `db:"id"`
 	AgentID       string     `db:"agent_id"`
-	ProjectID     string     `db:"project_id"`
-	MemberID      string     `db:"member_id"`
+	ProjectID     *string    `db:"project_id"` // NULL for a global chat session
+	MemberID      *string    `db:"member_id"`  // NULL for a global chat session
+	ActorUserID   *string    `db:"actor_user_id"`
 	Title         *string    `db:"title"`
 	LastMessageAt *time.Time `db:"last_message_at"`
 	CreatedAt     time.Time  `db:"created_at"`
@@ -141,51 +185,145 @@ func NewAgentRepository(db *sqlx.DB) *AgentRepository {
 	return &AgentRepository{db: db}
 }
 
-const agentSelectCols = `a.id, a.project_id, a.name, a.handle, a.avatar_url, a.llm_provider, a.llm_model,
-	a.llm_api_key_secret, a.llm_base_url, a.system_prompt, a.task_trigger_prompt,
-	a.doc_comment_trigger_prompt, a.chat_trigger_prompt, a.description_write_trigger_prompt,
-	a.can_clone_repos, a.can_create_prs, a.max_iterations, a.timeout_minutes,
-	a.git_committer_name, a.git_committer_email, a.created_by, a.created_at, a.updated_at, a.deleted_at,
-	pm.id AS member_id`
+const agentSelectColsBase = `a.id, a.project_id, a.agent_scope, a.global_role_id, a.name, a.handle, a.avatar_key, a.avatar_thumb_key, a.agent_type, a.llm_provider, a.llm_model,
+	a.llm_api_key_secret, a.llm_base_url, a.acp_provider, a.acp_command, a.acp_bridge_token_hash, a.mcp_api_key_hash, a.system_prompt,
+	a.max_iterations, a.timeout_minutes, a.parallelism_limit,
+	a.git_committer_name, a.git_committer_email, a.docker_enabled, a.default_environment_id, a.default_folder_id, a.access_mode, a.created_by, a.created_at, a.updated_at, a.deleted_at,
+	a.cli_provider, a.cli_model, a.cli_auth_mode, a.cli_api_key_secret, a.cli_login_verified_at, COALESCE(a.description, '') AS description`
+
+// agentSelectCols is used with a JOIN/LEFT JOIN against project_members
+// aliased pm, populating member_id from that join.
+const agentSelectCols = agentSelectColsBase + `, pm.id AS member_id`
+
+// agentSelectColsNoMember is used when there is no single project_members
+// row to join against (a global agent listed/looked-up outside any one
+// project's context) — member_id is meaningless there.
+const agentSelectColsNoMember = agentSelectColsBase + `, NULL::uuid AS member_id`
+
+// uuidFromNullable converts a nullable DB string column to uuid.UUID, using
+// uuid.Nil for NULL — the zero-value sentinel this package uses for "no
+// project" / "no member" (see Agent.ProjectID, AgentChatSession.MemberID),
+// mirroring the existing ProjectMember.UserID convention.
+func uuidFromNullable(s *string) uuid.UUID {
+	if s == nil {
+		return uuid.Nil
+	}
+	return mustParseUUID(*s)
+}
+
+// nullableUUIDString converts a uuid.UUID to a nullable DB string column,
+// treating uuid.Nil as NULL — the inverse of uuidFromNullable.
+func nullableUUIDString(id uuid.UUID) *string {
+	if id == uuid.Nil {
+		return nil
+	}
+	s := id.String()
+	return &s
+}
+
+// uuidOrNil dereferences an optional *uuid.UUID (the domain layer's own
+// "unset" convention for a field like PendingTrigger.EnvironmentFolderID),
+// returning uuid.Nil for a nil pointer — pairs with nullableUUIDString to
+// round-trip an optional UUID field through a nullable DB column in one
+// expression, e.g. nullableUUIDString(uuidOrNil(folderID)).
+func uuidOrNil(id *uuid.UUID) uuid.UUID {
+	if id == nil {
+		return uuid.Nil
+	}
+	return *id
+}
 
 // -------------------------------------------------------------------------
 // Agents
 // -------------------------------------------------------------------------
 
-// ListAgents returns all agents belonging to the given project.
-func (r *AgentRepository) ListAgents(ctx context.Context, projectID uuid.UUID) ([]*agentdom.Agent, error) {
-	var rows []agentRecord
-	err := r.db.SelectContext(ctx, &rows, `
-		SELECT `+agentSelectCols+`
+// ListAgents returns agents visible in the given project: its own
+// project-scoped agents, plus any global agents currently invited into it
+// (i.e. with an active project_members row there). Filtering through the
+// project_members join rather than agents.project_id directly is what makes
+// invited global agents show up here — a global agent's own project_id is
+// always NULL. For every project-scoped agent (which always has exactly one
+// active project_members row from CreateAgentWithMembership) this returns
+// the identical row set as filtering on a.project_id directly would.
+//
+// scope narrows the result to just that AgentScope; the zero value
+// (AgentScope("")) applies no filter and returns both, as described above.
+func (r *AgentRepository) ListAgents(ctx context.Context, projectID uuid.UUID, scope agentdom.AgentScope) ([]*agentdom.Agent, error) {
+	query := `
+		SELECT ` + agentSelectCols + `
 		FROM agents a
-		LEFT JOIN project_members pm ON pm.agent_id = a.id AND pm.deleted_at IS NULL
-		WHERE a.project_id = $1 AND a.deleted_at IS NULL`, projectID.String())
+		JOIN project_members pm ON pm.agent_id = a.id AND pm.deleted_at IS NULL AND pm.project_id = $1
+		WHERE a.deleted_at IS NULL`
+	args := []any{projectID.String()}
+	if scope != "" {
+		query += " AND a.agent_scope = $2"
+		args = append(args, string(scope))
+	}
+
+	var rows []agentRecord
+	err := r.db.SelectContext(ctx, &rows, query, args...)
 	if err != nil {
 		return nil, err
 	}
 
 	result := make([]*agentdom.Agent, 0, len(rows))
 	for _, row := range rows {
-		result = append(result, agentFromReadRow(row))
+		a, err := agentFromReadRow(row)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, a)
+	}
+	return result, nil
+}
+
+// ListGlobalAgents returns every global-scope agent (agent_scope='global').
+func (r *AgentRepository) ListGlobalAgents(ctx context.Context) ([]*agentdom.Agent, error) {
+	var rows []agentRecord
+	err := r.db.SelectContext(ctx, &rows, `
+		SELECT `+agentSelectColsNoMember+`
+		FROM agents a
+		WHERE a.agent_scope = 'global' AND a.deleted_at IS NULL
+		ORDER BY a.name`)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]*agentdom.Agent, 0, len(rows))
+	for _, row := range rows {
+		a, err := agentFromReadRow(row)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, a)
 	}
 	return result, nil
 }
 
 // FindAgentByID returns a single agent with its MCP servers and skills.
+// member_id is only meaningful for a project-scoped agent (which has at
+// most one active project_members row); a global agent can have many, so
+// this arbitrarily picks one via LIMIT 1 rather than leaving row order
+// undefined — callers resolving a global agent's project membership should
+// use ListInvitedProjectIDs instead of this method's MemberID field.
 func (r *AgentRepository) FindAgentByID(ctx context.Context, id uuid.UUID) (*agentdom.Agent, error) {
 	var row agentRecord
 	err := r.db.GetContext(ctx, &row, `
 		SELECT `+agentSelectCols+`
 		FROM agents a
 		LEFT JOIN project_members pm ON pm.agent_id = a.id AND pm.deleted_at IS NULL
-		WHERE a.id = $1 AND a.deleted_at IS NULL`, id.String())
+		WHERE a.id = $1 AND a.deleted_at IS NULL
+		LIMIT 1`, id.String())
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, agentdom.ErrAgentNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	agent := agentFromReadRow(row)
+	agent, err := agentFromReadRow(row)
+	if err != nil {
+		return nil, err
+	}
 	// Load MCP servers and skills
 	mcpServers, err := r.ListMCPServers(ctx, id)
 	if err != nil {
@@ -205,14 +343,60 @@ func (r *AgentRepository) FindAgentByID(ctx context.Context, id uuid.UUID) (*age
 	return agent, nil
 }
 
-// FindAgentByHandle returns an agent by its unique handle within a project.
+// FindVisibleAgentInProject returns a single agent by ID, restricted to
+// those visible in projectID: its own project-scoped agent, or a global
+// agent currently invited into it — same project_members join as
+// ListAgents (see its doc comment for why joining, not filtering on
+// a.project_id, is what makes an invited global agent resolvable here).
+func (r *AgentRepository) FindVisibleAgentInProject(ctx context.Context, projectID, agentID uuid.UUID) (*agentdom.Agent, error) {
+	var row agentRecord
+	err := r.db.GetContext(ctx, &row, `
+		SELECT `+agentSelectCols+`
+		FROM agents a
+		JOIN project_members pm ON pm.agent_id = a.id AND pm.deleted_at IS NULL AND pm.project_id = $1
+		WHERE a.id = $2 AND a.deleted_at IS NULL`,
+		projectID.String(), agentID.String())
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, agentdom.ErrAgentNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	agent, err := agentFromReadRow(row)
+	if err != nil {
+		return nil, err
+	}
+	mcpServers, err := r.ListMCPServers(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+	skills, err := r.ListSkills(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+	envVars, err := r.ListEnvVars(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+	agent.MCPServers = mcpServers
+	agent.Skills = skills
+	agent.EnvVars = envVars
+	return agent, nil
+}
+
+// FindAgentByHandle returns an agent by its handle among those visible in a
+// project: its own project-scoped agents, plus any global agents currently
+// invited into it — resolved via the project_members join (see ListAgents'
+// doc comment for why joining rather than filtering on a.project_id
+// directly matters for global agents). Used for @mention resolution and
+// handle-uniqueness checks within a project.
 func (r *AgentRepository) FindAgentByHandle(ctx context.Context, projectID uuid.UUID, handle string) (*agentdom.Agent, error) {
 	var row agentRecord
 	err := r.db.GetContext(ctx, &row, `
 		SELECT `+agentSelectCols+`
 		FROM agents a
-		LEFT JOIN project_members pm ON pm.agent_id = a.id AND pm.deleted_at IS NULL
-		WHERE a.project_id = $1 AND a.handle = $2 AND a.deleted_at IS NULL`,
+		JOIN project_members pm ON pm.agent_id = a.id AND pm.deleted_at IS NULL AND pm.project_id = $1
+		WHERE a.handle = $2 AND a.deleted_at IS NULL`,
 		projectID.String(), handle)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, agentdom.ErrAgentNotFound
@@ -220,25 +404,29 @@ func (r *AgentRepository) FindAgentByHandle(ctx context.Context, projectID uuid.
 	if err != nil {
 		return nil, err
 	}
-	return agentFromReadRow(row), nil
+	return agentFromReadRow(row)
 }
 
 // CreateAgent inserts a new agent record.
 func (r *AgentRepository) CreateAgent(ctx context.Context, a *agentdom.Agent) error {
-	rec := agentToRecord(a)
-	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO agents (id, project_id, name, handle, avatar_url, llm_provider, llm_model,
-		  llm_api_key_secret, llm_base_url, system_prompt, task_trigger_prompt,
-		  doc_comment_trigger_prompt, chat_trigger_prompt, description_write_trigger_prompt,
-		  can_clone_repos, can_create_prs, max_iterations, timeout_minutes,
-		  git_committer_name, git_committer_email, created_by, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`,
-		rec.ID, rec.ProjectID, rec.Name, rec.Handle, rec.AvatarURL,
+	rec, err := agentToRecord(a)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.ExecContext(ctx, `
+		INSERT INTO agents (id, project_id, name, handle, avatar_key, avatar_thumb_key, agent_type, llm_provider, llm_model,
+		  llm_api_key_secret, llm_base_url, acp_provider, acp_command, system_prompt,
+		  max_iterations, timeout_minutes, parallelism_limit,
+		  git_committer_name, git_committer_email, docker_enabled, default_environment_id, default_folder_id, created_by, created_at, updated_at,
+		  cli_provider, cli_model, cli_auth_mode, cli_api_key_secret, cli_login_verified_at, description)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)`,
+		rec.ID, rec.ProjectID, rec.Name, rec.Handle, rec.AvatarKey, rec.AvatarThumbKey, rec.AgentType,
 		rec.LLMProvider, rec.LLMModel, rec.LLMAPIKeySecret, rec.LLMBaseURL,
-		rec.SystemPrompt, rec.TaskTriggerPrompt, rec.DocCommentTriggerPrompt,
-		rec.ChatTriggerPrompt, rec.DescriptionWriteTriggerPrompt,
-		rec.CanCloneRepos, rec.CanCreatePRs, rec.MaxIterations, rec.TimeoutMinutes,
-		rec.GitCommitterName, rec.GitCommitterEmail, rec.CreatedBy, rec.CreatedAt, rec.UpdatedAt,
+		rec.ACPProvider, rec.ACPCommand,
+		rec.SystemPrompt,
+		rec.MaxIterations, rec.TimeoutMinutes, rec.ParallelismLimit,
+		rec.GitCommitterName, rec.GitCommitterEmail, rec.DockerEnabled, rec.DefaultEnvironmentID, rec.DefaultFolderID, rec.CreatedBy, rec.CreatedAt, rec.UpdatedAt,
+		rec.CLIProvider, rec.CLIModel, rec.CLIAuthMode, rec.CLIAPIKeySecret, rec.CLILoginVerifiedAt, rec.Description,
 	)
 	return err
 }
@@ -247,26 +435,44 @@ func (r *AgentRepository) CreateAgent(ctx context.Context, a *agentdom.Agent) er
 // When LLMAPIKeySecret is non-empty it is updated atomically with the rest of
 // the fields inside a single transaction so no partial update is possible.
 func (r *AgentRepository) UpdateAgent(ctx context.Context, a *agentdom.Agent) error {
+	rec, err := agentToRecord(a)
+	if err != nil {
+		return err
+	}
 	return WithTx(ctx, r.db, func(tx *sqlx.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 			UPDATE agents SET
-			  name=$1, handle=$2, avatar_url=$3, llm_provider=$4, llm_model=$5, llm_base_url=$6,
-			  system_prompt=$7, task_trigger_prompt=$8, doc_comment_trigger_prompt=$9,
-			  chat_trigger_prompt=$10, description_write_trigger_prompt=$11,
-			  can_clone_repos=$12, can_create_prs=$13, max_iterations=$14, timeout_minutes=$15,
-			  git_committer_name=$16, git_committer_email=$17, updated_at=$18
-			WHERE id=$19`,
-			a.Name, a.Handle, a.AvatarURL, a.LLMProvider, a.LLMModel, a.LLMBaseURL,
-			a.SystemPrompt, a.TaskTriggerPrompt, a.DocCommentTriggerPrompt,
-			a.ChatTriggerPrompt, a.DescriptionWriteTriggerPrompt,
-			a.CanCloneRepos, a.CanCreatePRs, a.MaxIterations, a.TimeoutMinutes,
-			a.GitCommitterName, a.GitCommitterEmail, time.Now(), a.ID.String(),
+			  name=$1, handle=$2, avatar_key=$3, avatar_thumb_key=$4, llm_provider=$5, llm_model=$6, llm_base_url=$7,
+			  acp_provider=$8, acp_command=$9,
+			  system_prompt=$10,
+			  max_iterations=$11, timeout_minutes=$12,
+			  git_committer_name=$13, git_committer_email=$14, docker_enabled=$15, global_role_id=$16,
+			  default_environment_id=$17, default_folder_id=$18, updated_at=$19,
+			  cli_provider=$20, cli_model=$21, cli_auth_mode=$22, parallelism_limit=$23, access_mode=$24, description=$25
+			WHERE id=$26`,
+			a.Name, a.Handle, a.AvatarKey, a.AvatarThumbKey, a.LLMProvider, a.LLMModel, a.LLMBaseURL,
+			rec.ACPProvider, rec.ACPCommand,
+			a.SystemPrompt,
+			a.MaxIterations, a.TimeoutMinutes,
+			a.GitCommitterName, a.GitCommitterEmail, a.DockerEnabled, rec.GlobalRoleID,
+			rec.DefaultEnvironmentID, rec.DefaultFolderID, time.Now(),
+			rec.CLIProvider, rec.CLIModel, rec.CLIAuthMode, a.ParallelismLimit, rec.AccessMode, a.Description, a.ID.String(),
 		)
 		if err != nil {
 			return err
 		}
 		if a.LLMAPIKeySecret != "" {
 			_, err = tx.ExecContext(ctx, `UPDATE agents SET llm_api_key_secret=$1 WHERE id=$2`, a.LLMAPIKeySecret, a.ID.String())
+			if err != nil {
+				return err
+			}
+		}
+		// cli_login_verified_at is deliberately NOT touched by the general
+		// UpdateAgent path — only SetCLILoginVerifiedAt writes it, so an
+		// unrelated name/model edit never resets or backdates a previously
+		// verified login.
+		if a.CLIAPIKeySecret != "" {
+			_, err = tx.ExecContext(ctx, `UPDATE agents SET cli_api_key_secret=$1 WHERE id=$2`, a.CLIAPIKeySecret, a.ID.String())
 		}
 		return err
 	})
@@ -276,6 +482,57 @@ func (r *AgentRepository) UpdateAgent(ctx context.Context, a *agentdom.Agent) er
 func (r *AgentRepository) SoftDeleteAgent(ctx context.Context, id uuid.UUID) error {
 	_, err := r.db.ExecContext(ctx, `UPDATE agents SET deleted_at=$1 WHERE id=$2`, time.Now(), id.String())
 	return err
+}
+
+// SetACPBridgeTokenHash stores the SHA-256 hash of a newly generated
+// local-bridge auth token, replacing any previous one.
+func (r *AgentRepository) SetACPBridgeTokenHash(ctx context.Context, agentID uuid.UUID, hash string) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE agents SET acp_bridge_token_hash=$1, updated_at=$2 WHERE id=$3`,
+		hash, time.Now(), agentID.String(),
+	)
+	return err
+}
+
+// SetMCPAPIKeyHash stores the SHA-256 hash of a newly generated MCP API key,
+// overwriting any previous one so it immediately stops authenticating.
+func (r *AgentRepository) SetMCPAPIKeyHash(ctx context.Context, agentID uuid.UUID, hash string) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE agents SET mcp_api_key_hash=$1, updated_at=$2 WHERE id=$3`,
+		hash, time.Now(), agentID.String(),
+	)
+	return err
+}
+
+// SetCLILoginVerifiedAt records that a provider_cli agent's CLI login was
+// just confirmed. Deliberately its own single-column UPDATE, never folded
+// into the general UpdateAgent path — see that method's own comment on
+// cli_login_verified_at for why.
+func (r *AgentRepository) SetCLILoginVerifiedAt(ctx context.Context, agentID uuid.UUID, t time.Time) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE agents SET cli_login_verified_at=$1, updated_at=$2 WHERE id=$3`,
+		t, time.Now(), agentID.String(),
+	)
+	return err
+}
+
+// FindAgentByMCPAPIKeyHash resolves the agent whose current MCP API key
+// hashes to hash — used by the authn middleware to identify the caller
+// directly from the key it presented.
+func (r *AgentRepository) FindAgentByMCPAPIKeyHash(ctx context.Context, hash string) (*agentdom.Agent, error) {
+	var row agentRecord
+	err := r.db.GetContext(ctx, &row, `
+		SELECT `+agentSelectColsNoMember+`
+		FROM agents a
+		WHERE a.mcp_api_key_hash = $1 AND a.deleted_at IS NULL
+		LIMIT 1`, hash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, agentdom.ErrAgentNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return agentFromReadRow(row)
 }
 
 // SetAgentMemberID is a no-op; membership is derived from project_members JOIN.
@@ -288,20 +545,24 @@ func (r *AgentRepository) SetAgentMemberID(_ context.Context, _, _ uuid.UUID) er
 // row within a single database transaction.
 func (r *AgentRepository) CreateAgentWithMembership(ctx context.Context, a *agentdom.Agent, memberID, projectID, roleID uuid.UUID) error {
 	return WithTx(ctx, r.db, func(tx *sqlx.Tx) error {
-		rec := agentToRecord(a)
-		_, err := tx.ExecContext(ctx, `
-			INSERT INTO agents (id, project_id, name, handle, avatar_url, llm_provider, llm_model,
-			  llm_api_key_secret, llm_base_url, system_prompt, task_trigger_prompt,
-			  doc_comment_trigger_prompt, chat_trigger_prompt, description_write_trigger_prompt,
-			  can_clone_repos, can_create_prs, max_iterations, timeout_minutes,
-			  git_committer_name, git_committer_email, created_by, created_at, updated_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`,
-			rec.ID, rec.ProjectID, rec.Name, rec.Handle, rec.AvatarURL,
+		rec, err := agentToRecord(a)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO agents (id, project_id, name, handle, avatar_key, avatar_thumb_key, agent_type, llm_provider, llm_model,
+			  llm_api_key_secret, llm_base_url, acp_provider, acp_command, system_prompt,
+			  max_iterations, timeout_minutes, parallelism_limit,
+			  git_committer_name, git_committer_email, docker_enabled, default_environment_id, default_folder_id, created_by, created_at, updated_at,
+			  cli_provider, cli_model, cli_auth_mode, cli_api_key_secret, cli_login_verified_at, description)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)`,
+			rec.ID, rec.ProjectID, rec.Name, rec.Handle, rec.AvatarKey, rec.AvatarThumbKey, rec.AgentType,
 			rec.LLMProvider, rec.LLMModel, rec.LLMAPIKeySecret, rec.LLMBaseURL,
-			rec.SystemPrompt, rec.TaskTriggerPrompt, rec.DocCommentTriggerPrompt,
-			rec.ChatTriggerPrompt, rec.DescriptionWriteTriggerPrompt,
-			rec.CanCloneRepos, rec.CanCreatePRs, rec.MaxIterations, rec.TimeoutMinutes,
-			rec.GitCommitterName, rec.GitCommitterEmail, rec.CreatedBy, rec.CreatedAt, rec.UpdatedAt,
+			rec.ACPProvider, rec.ACPCommand,
+			rec.SystemPrompt,
+			rec.MaxIterations, rec.TimeoutMinutes, rec.ParallelismLimit,
+			rec.GitCommitterName, rec.GitCommitterEmail, rec.DockerEnabled, rec.DefaultEnvironmentID, rec.DefaultFolderID, rec.CreatedBy, rec.CreatedAt, rec.UpdatedAt,
+			rec.CLIProvider, rec.CLIModel, rec.CLIAuthMode, rec.CLIAPIKeySecret, rec.CLILoginVerifiedAt, rec.Description,
 		)
 		if err != nil {
 			return err
@@ -329,6 +590,99 @@ func (r *AgentRepository) SoftDeleteAgentWithMembership(ctx context.Context, pro
 			WHERE project_id=$2 AND agent_id=$3 AND member_type='agent'`, now, projectID.String(), agentID.String())
 		return err
 	})
+}
+
+// FindGlobalAgentByHandle looks up a global agent by its instance-wide
+// unique handle (uq_agents_global_handle). See its doc comment in
+// domain/agent/repository.go for how this differs from FindAgentByHandle.
+func (r *AgentRepository) FindGlobalAgentByHandle(ctx context.Context, handle string) (*agentdom.Agent, error) {
+	var row agentRecord
+	err := r.db.GetContext(ctx, &row, `
+		SELECT `+agentSelectColsNoMember+`
+		FROM agents a
+		WHERE a.project_id IS NULL AND a.handle = $1 AND a.deleted_at IS NULL`, handle)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, agentdom.ErrAgentNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return agentFromReadRow(row)
+}
+
+// CreateGlobalAgent inserts a new global-scope agent (project_id NULL, no
+// project_members row — unlike CreateAgentWithMembership, a global agent
+// starts with zero project invitations; it's attached to a project later,
+// on demand, via the same "add a member" flow used for humans).
+func (r *AgentRepository) CreateGlobalAgent(ctx context.Context, a *agentdom.Agent) error {
+	rec, err := agentToRecord(a)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.ExecContext(ctx, `
+		INSERT INTO agents (id, project_id, agent_scope, global_role_id, name, handle, avatar_key, avatar_thumb_key, agent_type, llm_provider, llm_model,
+		  llm_api_key_secret, llm_base_url, acp_provider, acp_command, system_prompt,
+		  max_iterations, timeout_minutes, parallelism_limit,
+		  git_committer_name, git_committer_email, docker_enabled, created_by, created_at, updated_at,
+		  cli_auth_mode, description)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`,
+		rec.ID, rec.ProjectID, rec.AgentScope, rec.GlobalRoleID, rec.Name, rec.Handle, rec.AvatarKey, rec.AvatarThumbKey, rec.AgentType,
+		rec.LLMProvider, rec.LLMModel, rec.LLMAPIKeySecret, rec.LLMBaseURL,
+		rec.ACPProvider, rec.ACPCommand,
+		rec.SystemPrompt,
+		rec.MaxIterations, rec.TimeoutMinutes, rec.ParallelismLimit,
+		rec.GitCommitterName, rec.GitCommitterEmail, rec.DockerEnabled, rec.CreatedBy, rec.CreatedAt, rec.UpdatedAt,
+		rec.CLIAuthMode, rec.Description,
+	)
+	return err
+}
+
+// SoftDeleteGlobalAgentCascade soft-deletes the agent row and every active
+// project_members row referencing it, across every project it was invited
+// into, in one transaction. project_members.agent_id's ON DELETE CASCADE FK
+// only fires on a hard delete, and agents are soft-deleted, so the
+// membership cleanup has to happen explicitly here.
+func (r *AgentRepository) SoftDeleteGlobalAgentCascade(ctx context.Context, agentID uuid.UUID) error {
+	now := time.Now()
+	return WithTx(ctx, r.db, func(tx *sqlx.Tx) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE agents SET deleted_at=$1 WHERE id=$2 AND agent_scope='global'`, now, agentID.String()); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `
+			UPDATE project_members SET deleted_at=$1
+			WHERE agent_id=$2 AND member_type='agent' AND deleted_at IS NULL`, now, agentID.String())
+		return err
+	})
+}
+
+// ListInvitedProjectIDs returns the IDs of every project a global agent
+// currently has an active project_members row in.
+func (r *AgentRepository) ListInvitedProjectIDs(ctx context.Context, agentID uuid.UUID) ([]uuid.UUID, error) {
+	var ids []string
+	err := r.db.SelectContext(ctx, &ids, `
+		SELECT project_id FROM project_members
+		WHERE agent_id = $1 AND member_type = 'agent' AND deleted_at IS NULL`, agentID.String())
+	if err != nil {
+		return nil, err
+	}
+	result := make([]uuid.UUID, 0, len(ids))
+	for _, id := range ids {
+		result = append(result, mustParseUUID(id))
+	}
+	return result, nil
+}
+
+// CountAgentsWithGlobalRole returns the number of non-deleted global agents
+// whose global_role_id points to the given role — used by
+// globalrolesvc.Service.Delete to block deleting a role still assigned to
+// an agent, the same guard already applied for users.
+func (r *AgentRepository) CountAgentsWithGlobalRole(ctx context.Context, roleID uuid.UUID) (int64, error) {
+	var count int64
+	if err := r.db.GetContext(ctx, &count,
+		`SELECT COUNT(*) FROM agents WHERE global_role_id = $1 AND deleted_at IS NULL`, roleID.String()); err != nil {
+		return 0, fmt.Errorf("agent repo: count agents with global role: %w", err)
+	}
+	return count, nil
 }
 
 // -------------------------------------------------------------------------
@@ -401,6 +755,95 @@ func (r *AgentRepository) UpdateMCPServer(ctx context.Context, s *agentdom.Agent
 func (r *AgentRepository) DeleteMCPServer(ctx context.Context, id uuid.UUID) error {
 	_, err := r.db.ExecContext(ctx, `DELETE FROM agent_mcp_servers WHERE id = $1`, id.String())
 	return err
+}
+
+// -------------------------------------------------------------------------
+// Access grants
+// -------------------------------------------------------------------------
+
+const agentAccessGrantCols = `id, agent_id, member_id, granted_by, created_at`
+
+// ListAgentAccessGrants returns every member explicitly granted access to
+// this agent, regardless of its current access_mode (so the grant list
+// survives toggling back and forth between open/restricted).
+func (r *AgentRepository) ListAgentAccessGrants(ctx context.Context, agentID uuid.UUID) ([]*agentdom.AgentAccessGrant, error) {
+	var recs []agentAccessGrantRecord
+	if err := r.db.SelectContext(ctx, &recs, `SELECT `+agentAccessGrantCols+` FROM agent_access_grants WHERE agent_id = $1 ORDER BY created_at`, agentID.String()); err != nil {
+		return nil, err
+	}
+	result := make([]*agentdom.AgentAccessGrant, 0, len(recs))
+	for _, rec := range recs {
+		result = append(result, agentAccessGrantFromRecord(rec))
+	}
+	return result, nil
+}
+
+// AddAgentAccessGrant inserts a new grant. Returns
+// agentdom.ErrAgentAccessGrantExists if memberID already has one (backed by
+// uq_agent_access_grants_agent_member).
+func (r *AgentRepository) AddAgentAccessGrant(ctx context.Context, g *agentdom.AgentAccessGrant) error {
+	var grantedBy *string
+	if g.GrantedBy != nil {
+		s := g.GrantedBy.String()
+		grantedBy = &s
+	}
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO agent_access_grants (id, agent_id, member_id, granted_by, created_at)
+		VALUES ($1,$2,$3,$4,$5)`,
+		g.ID.String(), g.AgentID.String(), g.MemberID.String(), grantedBy, g.CreatedAt,
+	)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return agentdom.ErrAgentAccessGrantExists
+		}
+		return err
+	}
+	return nil
+}
+
+// RemoveAgentAccessGrant deletes a grant. A no-op (nil error) if none
+// existed — mirrors DeleteMCPServer's plain-DELETE idempotency.
+func (r *AgentRepository) RemoveAgentAccessGrant(ctx context.Context, agentID, memberID uuid.UUID) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM agent_access_grants WHERE agent_id = $1 AND member_id = $2`, agentID.String(), memberID.String())
+	return err
+}
+
+// HasAgentAccessGrant reports whether memberID currently has an explicit
+// grant for agentID — the check Service.HasAgentUsageAccess falls back to
+// once it's confirmed the agent is actually restricted.
+func (r *AgentRepository) HasAgentAccessGrant(ctx context.Context, agentID, memberID uuid.UUID) (bool, error) {
+	var exists bool
+	err := r.db.GetContext(ctx, &exists, `SELECT EXISTS(SELECT 1 FROM agent_access_grants WHERE agent_id = $1 AND member_id = $2)`, agentID.String(), memberID.String())
+	return exists, err
+}
+
+// ListGrantedAgentIDsForMember returns every agent ID memberID currently
+// holds a grant for — used to decorate ListAgents/ListGlobalAgents with each
+// row's AccessGranted state in one query instead of an N+1 check per agent.
+func (r *AgentRepository) ListGrantedAgentIDsForMember(ctx context.Context, memberID uuid.UUID) ([]uuid.UUID, error) {
+	var ids []string
+	if err := r.db.SelectContext(ctx, &ids, `SELECT agent_id FROM agent_access_grants WHERE member_id = $1`, memberID.String()); err != nil {
+		return nil, err
+	}
+	result := make([]uuid.UUID, 0, len(ids))
+	for _, id := range ids {
+		result = append(result, mustParseUUID(id))
+	}
+	return result, nil
+}
+
+func agentAccessGrantFromRecord(rec agentAccessGrantRecord) *agentdom.AgentAccessGrant {
+	g := &agentdom.AgentAccessGrant{
+		ID:        mustParseUUID(rec.ID),
+		AgentID:   mustParseUUID(rec.AgentID),
+		MemberID:  mustParseUUID(rec.MemberID),
+		CreatedAt: rec.CreatedAt,
+	}
+	if rec.GrantedBy != nil {
+		id := mustParseUUID(*rec.GrantedBy)
+		g.GrantedBy = &id
+	}
+	return g
 }
 
 // -------------------------------------------------------------------------
@@ -554,66 +997,210 @@ func (r *AgentRepository) DeleteEnvVar(ctx context.Context, id uuid.UUID) error 
 // Conversations
 // -------------------------------------------------------------------------
 
+// iteration_count is computed live from agent_conversation_events (one step
+// per agent turn) rather than stored: see #314 and migration
+// 000026_drop_conversation_iteration_count.sql for why it's computed live at
+// all. 'tool_call' is what both of today's live runtimes count as one
+// "iteration": services/agent-runner's native Go ACP path
+// (internal/handler/handler.go, for llm-type/Goose conversations) and
+// apps/acp-bridge's own Go daemon (for acp-type conversations) both persist
+// the raw ACP SessionUpdateKind directly, with no OpenHands SDK underneath
+// either one — see executor.go's maxToolCalls, the same cap
+// agent_service.go's MaxIterations applies against this count.
+// 'ActionEvent' is kept in the IN-clause only for conversations from before
+// both of those were Go: services/ai-agent and apps/acp-bridge's original
+// Python/OpenHands-SDK-based daemon forwarded the SDK's own event class
+// name, 'ActionEvent', one per agent step, and those historical rows still
+// need to count correctly. Dropping either value from this list would leave
+// the affected conversations' iteration_count stuck at (or frozen at) 0.
+// input_tokens/output_tokens/total_tokens/cost_usd are likewise computed
+// live rather than stored, for the identical reason iteration_count is, and
+// from the identical two origins: services/agent-runner's handler.Handler
+// (llm-type/Goose conversations, see its own doc comment) and
+// apps/acp-bridge's runner package (acp-type conversations, see
+// runner.emitTurnUsage) each persist one 'turn_usage' event per turn with a
+// JSON payload of {input_tokens, output_tokens, total_tokens, cost_usd} —
+// the first three are that turn's own token counts (ACP's
+// PromptResponse.usage, confirmed per-turn not cumulative), so they're
+// summed across every turn_usage row; cost_usd is the underlying agent's
+// (goose's, or whichever local ACP CLI the user's bridge is driving) own
+// session-cumulative total as of that turn (ACP's usage_update
+// notification, backed by totals.accumulated_cost for goose), so only the
+// latest row's value is used, not a sum — summing it would double-count
+// every earlier turn's already-cumulative figure.
 const conversationCols = `id, agent_id, project_id, trigger_type, task_id, comment_id, chat_session_id,
-	triggered_by_member_id, status, container_id, host_port, iteration_count, error_message,
-	repo_plugin_id, repo_clone_url, branch_name, pr_url, persistence_dir,
+	triggered_by_member_id, actor_user_id, audience, status, environment_id, environment_folder_id,
+	(SELECT COUNT(*) FROM agent_conversation_events e
+	 WHERE e.conversation_id = agent_conversations.id AND e.event_type IN ('ActionEvent', 'tool_call')) AS iteration_count,
+	COALESCE((SELECT SUM((e.payload->>'input_tokens')::bigint) FROM agent_conversation_events e
+	 WHERE e.conversation_id = agent_conversations.id AND e.event_type = 'turn_usage'), 0) AS input_tokens,
+	COALESCE((SELECT SUM((e.payload->>'output_tokens')::bigint) FROM agent_conversation_events e
+	 WHERE e.conversation_id = agent_conversations.id AND e.event_type = 'turn_usage'), 0) AS output_tokens,
+	COALESCE((SELECT SUM((e.payload->>'total_tokens')::bigint) FROM agent_conversation_events e
+	 WHERE e.conversation_id = agent_conversations.id AND e.event_type = 'turn_usage'), 0) AS total_tokens,
+	(SELECT (e.payload->>'cost_usd')::numeric FROM agent_conversation_events e
+	 WHERE e.conversation_id = agent_conversations.id AND e.event_type = 'turn_usage' AND e.payload ? 'cost_usd'
+	 ORDER BY e.event_index DESC LIMIT 1) AS cost_usd,
+	error_message,
+	repo_plugin_id, pr_url,
+	title, title_set_by_user, deleted_at,
 	started_at, finished_at, created_at, updated_at`
 
-// ListConversations returns a paginated list of conversations matching the filter.
-func (r *AgentRepository) ListConversations(ctx context.Context, in agentdom.ListConversationsFilter) ([]*agentdom.AgentConversation, int64, error) {
-	// Build dynamic WHERE clause
-	where := "WHERE 1=1"
-	args := []interface{}{}
-	idx := 1
+// ListConversations returns a keyset-paginated page of conversations matching
+// the filter, ordered newest-first. It fetches one row beyond limit to detect
+// whether more pages remain, without a separate COUNT query.
+func (r *AgentRepository) ListConversations(ctx context.Context, in agentdom.ListConversationsFilter, limit int) ([]*agentdom.AgentConversation, bool, error) {
+	b := newQueryBuilder()
 
-	if in.AgentID != nil {
-		where += fmt.Sprintf(" AND agent_id = $%d", idx)
-		args = append(args, in.AgentID.String())
-		idx++
+	if len(in.AgentIDs) > 0 {
+		b.addInClause("agent_id", uuidSliceToStrSlice(in.AgentIDs))
 	}
 	if in.ProjectID != nil {
-		where += fmt.Sprintf(" AND project_id = $%d", idx)
-		args = append(args, in.ProjectID.String())
-		idx++
+		p := b.placeholder()
+		b.args = append(b.args, in.ProjectID.String())
+		b.whereClauses = append(b.whereClauses, "project_id = "+p)
+	} else if in.GlobalOnly {
+		b.whereClauses = append(b.whereClauses, "project_id IS NULL")
+	}
+	if in.ActorUserID != nil {
+		p := b.placeholder()
+		b.args = append(b.args, in.ActorUserID.String())
+		b.whereClauses = append(b.whereClauses, "actor_user_id = "+p)
+	}
+	if in.ViewerMemberID != nil {
+		// Audience is enforced in SQL so the search subquery never touches a
+		// private conversation the caller cannot read: project-shared
+		// conversations are visible to any member, owner-private ones only to
+		// their chat-session owner (global chat is already excluded by
+		// ProjectID above, since those rows have project_id IS NULL).
+		p := b.placeholder()
+		b.args = append(b.args, in.ViewerMemberID.String())
+		b.whereClauses = append(b.whereClauses, fmt.Sprintf(
+			"(audience = '%s' OR EXISTS (SELECT 1 FROM agent_chat_sessions cs WHERE cs.id = agent_conversations.chat_session_id AND cs.member_id = %s))",
+			agentdom.AudienceProjectShared, p))
+		// Restricted agents: this project-wide listing must not leak a
+		// restricted agent's conversations to a member who isn't granted
+		// access to it — otherwise Service.authorizeConversationAccess's
+		// per-conversation gate (enforced on GetConversation and everything
+		// that funnels through it) could be bypassed just by browsing the
+		// list instead of opening one conversation at a time. Reuses the
+		// same ViewerMemberID placeholder p bound just above.
+		b.whereClauses = append(b.whereClauses, fmt.Sprintf(
+			"NOT EXISTS (SELECT 1 FROM agents ag WHERE ag.id = agent_conversations.agent_id AND ag.access_mode = 'restricted' "+
+				"AND NOT EXISTS (SELECT 1 FROM agent_access_grants g WHERE g.agent_id = ag.id AND g.member_id = %s))",
+			p))
 	}
 	if in.TaskID != nil {
-		where += fmt.Sprintf(" AND task_id = $%d", idx)
-		args = append(args, in.TaskID.String())
-		idx++
+		p := b.placeholder()
+		b.args = append(b.args, in.TaskID.String())
+		b.whereClauses = append(b.whereClauses, "task_id = "+p)
 	}
-	if in.Status != nil {
-		where += fmt.Sprintf(" AND status = $%d", idx)
-		args = append(args, *in.Status)
-		idx++
+	if len(in.Statuses) > 0 {
+		b.addInClause("status", in.Statuses)
+	}
+	if len(in.TriggerTypes) > 0 {
+		b.addInClause("trigger_type", in.TriggerTypes)
+	}
+	if in.CreatedAfter != nil {
+		p := b.placeholder()
+		b.args = append(b.args, *in.CreatedAfter)
+		b.whereClauses = append(b.whereClauses, "created_at >= "+p)
+	}
+	if in.CreatedBefore != nil {
+		p := b.placeholder()
+		b.args = append(b.args, *in.CreatedBefore)
+		b.whereClauses = append(b.whereClauses, "created_at < "+p)
+	}
+	if in.Search != nil {
+		if q := strings.TrimSpace(*in.Search); q != "" {
+			p := b.placeholder()
+			b.args = append(b.args, q)
+			// Matches conversations with at least one event whose extracted
+			// text (agent_conversation_event_search_text, migration 000028)
+			// contains the search terms. plainto_tsquery (not to_tsquery) so
+			// arbitrary user input never raises a tsquery syntax error.
+			b.whereClauses = append(b.whereClauses,
+				"EXISTS (SELECT 1 FROM agent_conversation_events e WHERE e.conversation_id = agent_conversations.id "+
+					"AND to_tsvector('simple', agent_conversation_event_search_text(e.payload)) @@ plainto_tsquery('simple', "+p+"))")
+		}
+	}
+	if in.CursorAfter != nil {
+		cur, err := agentdom.DecodeConversationCursor(*in.CursorAfter)
+		if err != nil {
+			return nil, false, fmt.Errorf("%w: %s", agentdom.ErrConversationInvalidCursor, err)
+		}
+		p1 := b.placeholder()
+		p2 := b.placeholder()
+		b.args = append(b.args, cur.CreatedAt, cur.ID)
+		b.whereClauses = append(b.whereClauses, fmt.Sprintf("(created_at, id) < (%s, %s)", p1, p2))
 	}
 
-	var total int64
-	if err := r.db.GetContext(ctx, &total, `SELECT COUNT(*) FROM agent_conversations `+where, args...); err != nil {
-		return nil, 0, err
+	limitP := b.placeholder()
+	b.args = append(b.args, limit+1)
+
+	// deleted_at IS NULL unconditionally — this is the user-facing list, and
+	// a soft-deleted conversation should never appear in it (see
+	// SoftDeleteConversation's doc comment). FindConversationByID below is
+	// deliberately NOT filtered the same way — internal callers
+	// (worker.AgentQueueConsumer) must still resolve a just-deleted row.
+	whereSQL := "deleted_at IS NULL"
+	if len(b.whereClauses) > 0 {
+		whereSQL += " AND " + strings.Join(b.whereClauses, " AND ")
 	}
 
-	orderArgs := make([]interface{}, len(args), len(args)+2)
-	copy(orderArgs, args)
-	orderArgs = append(orderArgs, in.Offset, in.Limit)
 	var recs []agentConversationRecord
-	if err := r.db.SelectContext(ctx, &recs, `SELECT `+conversationCols+` FROM agent_conversations `+where+
-		fmt.Sprintf(` ORDER BY created_at DESC OFFSET $%d LIMIT $%d`, idx, idx+1), orderArgs...); err != nil {
-		return nil, 0, err
+	query := `SELECT ` + conversationCols + ` FROM agent_conversations WHERE ` + whereSQL +
+		fmt.Sprintf(` ORDER BY created_at DESC, id DESC LIMIT %s`, limitP)
+	if err := r.db.SelectContext(ctx, &recs, query, b.args...); err != nil {
+		return nil, false, err
+	}
+
+	hasMore := len(recs) > limit
+	if hasMore {
+		recs = recs[:limit]
 	}
 
 	result := make([]*agentdom.AgentConversation, 0, len(recs))
 	for _, rec := range recs {
 		result = append(result, conversationFromRecord(rec))
 	}
-	return result, total, nil
+	return result, hasMore, nil
 }
 
 // FindConversationByID returns a single conversation by its primary key.
 func (r *AgentRepository) FindConversationByID(ctx context.Context, id uuid.UUID) (*agentdom.AgentConversation, error) {
 	var rec agentConversationRecord
-	if err := r.db.GetContext(ctx, &rec, `SELECT `+conversationCols+` FROM agent_conversations WHERE id = $1`, id.String()); err != nil {
+	const query = `SELECT ` + conversationCols + ` FROM agent_conversations WHERE id = $1`
+	if err := r.db.GetContext(ctx, &rec, query, id.String()); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, agentdom.ErrConversationNotFound
+		}
+		return nil, err
+	}
+	return conversationFromRecord(rec), nil
+}
+
+// FindLatestConversationByChatSession returns the most recently created
+// conversation for a chat session, or (nil, nil) if none exists yet.
+func (r *AgentRepository) FindLatestConversationByChatSession(ctx context.Context, chatSessionID uuid.UUID) (*agentdom.AgentConversation, error) {
+	var rec agentConversationRecord
+	// deleted_at IS NULL: every caller (SendChatMessage/SendGlobalChatMessage
+	// resuming a session's conversation, ListChatMessages reading its
+	// events) wants the latest *active* conversation, never one the user
+	// deleted — without this a deleted conversation could be claimed back
+	// to running/queued and its transcript kept reading as if delete had no
+	// effect. A session whose latest conversation was deleted falls back to
+	// nil here, same as a session with no conversation yet — the caller's
+	// existing conv == nil branch already handles that by starting a fresh
+	// one.
+	err := r.db.GetContext(ctx, &rec,
+		`SELECT `+conversationCols+` FROM agent_conversations
+		 WHERE chat_session_id = $1 AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1`,
+		chatSessionID.String(),
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
 		}
 		return nil, err
 	}
@@ -625,13 +1212,13 @@ func (r *AgentRepository) CreateConversation(ctx context.Context, c *agentdom.Ag
 	rec := conversationToRecord(c)
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO agent_conversations (id, agent_id, project_id, trigger_type, task_id, comment_id, chat_session_id,
-		  triggered_by_member_id, status, container_id, host_port, iteration_count, error_message,
-		  repo_plugin_id, repo_clone_url, branch_name, pr_url, persistence_dir,
+		  triggered_by_member_id, actor_user_id, status, environment_id, environment_folder_id, error_message,
+		  repo_plugin_id, pr_url,
 		  started_at, finished_at, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
 		rec.ID, rec.AgentID, rec.ProjectID, rec.TriggerType, rec.TaskID, rec.CommentID, rec.ChatSessionID,
-		rec.TriggeredByMemberID, rec.Status, rec.ContainerID, rec.HostPort, rec.IterationCount, rec.ErrorMessage,
-		rec.RepoPluginID, rec.RepoCloneURL, rec.BranchName, rec.PRUrl, rec.PersistenceDir,
+		rec.TriggeredByMemberID, rec.ActorUserID, rec.Status, rec.EnvironmentID, rec.EnvironmentFolderID, rec.ErrorMessage,
+		rec.RepoPluginID, rec.PRUrl,
 		rec.StartedAt, rec.FinishedAt, rec.CreatedAt, rec.UpdatedAt,
 	)
 	return err
@@ -643,39 +1230,221 @@ func (r *AgentRepository) UpdateConversationStatus(ctx context.Context, id uuid.
 	return err
 }
 
+// UpdateConversationTitle sets a user-chosen title — see this method's doc
+// comment on agentdom.ConversationRepository for why it's a narrow,
+// single-column UPDATE rather than routed through the full-record
+// UpdateConversation below.
+func (r *AgentRepository) UpdateConversationTitle(ctx context.Context, id uuid.UUID, title string) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE agent_conversations SET title=$1, title_set_by_user=true, updated_at=$2 WHERE id=$3`,
+		title, time.Now(), id.String())
+	return err
+}
+
+// SoftDeleteConversation marks a conversation deleted — see this method's
+// doc comment on agentdom.ConversationRepository for why this is a soft
+// delete, not a hard DELETE.
+func (r *AgentRepository) SoftDeleteConversation(ctx context.Context, id uuid.UUID) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE agent_conversations SET deleted_at=$1, updated_at=$1 WHERE id=$2`,
+		time.Now(), id.String())
+	return err
+}
+
+// ClaimConversationStatus atomically moves a conversation from fromStatus to
+// toStatus. Only one caller racing on the same conversation observes true.
+func (r *AgentRepository) ClaimConversationStatus(ctx context.Context, id uuid.UUID, fromStatus, toStatus string) (bool, error) {
+	// deleted_at IS NULL: defense in depth alongside
+	// FindLatestConversationByChatSession's own filter — a deleted
+	// conversation must never be claimed back out of a terminal status by
+	// any caller, present or future.
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE agent_conversations SET status=$1, updated_at=$2 WHERE id=$3 AND status=$4 AND deleted_at IS NULL`,
+		toStatus, time.Now(), id.String(), fromStatus,
+	)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
+// ClaimQueuedForDispatch is ClaimConversationStatus's capacity-reverifying
+// sibling, used specifically for the "queued" -> "running" transition a
+// dispatch makes once checkParallelismCapacity has already decided there's
+// a free slot (see that method's own doc comment). That decision is a
+// plain read taken moments earlier, not inside this transaction — two
+// concurrent dispatches for the same busy agent (a burst of task_assigned
+// triggers landing at once, or two API replicas each independently
+// advancing the same agent's queue off two different terminal-status
+// events) could both read "running < limit" before either has actually
+// claimed a row, and both proceed, briefly exceeding limit. For an
+// ordinary LLM agent with its own ephemeral per-conversation sandbox that's
+// a soft, low-consequence overshoot; for an ACP or environment-backed
+// agent — forced to ParallelismLimit=1 by requiresSerialDispatch precisely
+// because every conversation shares one working directory — it's exactly
+// the same-directory race issue #462 exists to prevent, so the count is
+// re-verified here, atomically, immediately before the claim.
+//
+// "Atomically" specifically means: lock agentID's own row first (nothing
+// about the agents row itself is read or needed afterward — this is purely
+// a mutex substitute, so every concurrent claim attempt for the same agent,
+// regardless of which conversation it targets, serializes on the same
+// lock), and only THEN issue the running-count query as its own separate
+// statement. Under Postgres's Read Committed isolation (this connection's
+// default — see WithTx), a lock wait only guarantees a fresh, post-wait
+// snapshot for statements issued after it resolves — not for a query
+// folded into the same statement as the lock (e.g. a single UPDATE ...
+// FROM (SELECT ... FOR UPDATE) CTE): Postgres's EvalPlanQual re-check on a
+// lock wait only re-fetches the specific row the lock blocked on, never an
+// unrelated subquery over a different table evaluated in that same
+// statement. Splitting the lock and the count into two sequential
+// statements is what makes the second one actually observe whatever the
+// previous lock holder committed, rather than racing off a snapshot taken
+// before that commit.
+//
+// claimed=false covers two genuinely different situations the caller MUST
+// tell apart, distinguished by atCapacity:
+//   - atCapacity=false: conversationID simply wasn't "queued" anymore by
+//     the time this ran (StopConversation, most plausibly) — it's gone for
+//     good, nothing to dispatch and nothing to requeue.
+//   - atCapacity=true: conversationID is STILL "queued" — the agent's own
+//     free-slot count just came up short on this atomic re-check (the very
+//     race this method exists to close, caught in the act). The row
+//     itself was never touched. A caller that treats this the same as the
+//     first case — e.g. dropping the trigger instead of persisting a
+//     PendingTrigger for it — strands the conversation "queued" forever
+//     with nothing left to ever advance it: it already lost its seat in
+//     whatever queue it came from (a fresh dispatch has no
+//     agent_pending_triggers row yet; a dequeued one already had its row
+//     deleted), so this IS the only remaining record that it's still
+//     waiting.
+//
+// This covers dispatchOrEnqueue, StartChatSession/SendChatMessage's
+// fresh-conversation path, and AdvanceQueue/AdvanceFolderQueue — every
+// route that claims a brand-new "queued" row into "running". It does not
+// cover the paused/terminal resume-in-place branches (SendChatMessage,
+// resumeConversationMessage, and their global-chat siblings), which still
+// call the plain ClaimConversationStatus after their own capacity check —
+// resuming an existing conversation racing a brand-new dispatch for the
+// same agent at the exact same instant is a narrower, lower-frequency
+// window left as the same kind of accepted soft constraint the ask-path
+// race already is.
+func (r *AgentRepository) ClaimQueuedForDispatch(ctx context.Context, conversationID, agentID uuid.UUID, limit int) (claimed, atCapacity bool, err error) {
+	err = WithTx(ctx, r.db, func(tx *sqlx.Tx) error {
+		if _, err := tx.ExecContext(ctx, `SELECT id FROM agents WHERE id = $1 FOR UPDATE`, agentID.String()); err != nil {
+			return err
+		}
+		var running int
+		if err := tx.GetContext(ctx, &running, `SELECT count(*) FROM agent_conversations WHERE agent_id = $1 AND status = 'running'`, agentID.String()); err != nil {
+			return err
+		}
+		if running >= limit {
+			atCapacity = true
+			return nil
+		}
+		res, err := tx.ExecContext(ctx,
+			`UPDATE agent_conversations SET status='running', updated_at=$1 WHERE id=$2 AND status='queued'`,
+			time.Now(), conversationID.String())
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		claimed = n == 1
+		return nil
+	})
+	return claimed, atCapacity, err
+}
+
 // UpdateConversation saves the full conversation record.
 func (r *AgentRepository) UpdateConversation(ctx context.Context, c *agentdom.AgentConversation) error {
 	rec := conversationToRecord(c)
 	_, err := r.db.ExecContext(ctx, `
 		UPDATE agent_conversations SET
 		  agent_id=$1, project_id=$2, trigger_type=$3, task_id=$4, comment_id=$5, chat_session_id=$6,
-		  triggered_by_member_id=$7, status=$8, container_id=$9, host_port=$10, iteration_count=$11,
-		  error_message=$12, repo_plugin_id=$13, repo_clone_url=$14, branch_name=$15, pr_url=$16,
-		  persistence_dir=$17, started_at=$18, finished_at=$19, updated_at=$20
-		WHERE id=$21`,
+		  triggered_by_member_id=$7, status=$8, environment_id=$9, environment_folder_id=$10,
+		  error_message=$11, repo_plugin_id=$12, pr_url=$13,
+		  started_at=$14, finished_at=$15, updated_at=$16
+		WHERE id=$17`,
 		rec.AgentID, rec.ProjectID, rec.TriggerType, rec.TaskID, rec.CommentID, rec.ChatSessionID,
-		rec.TriggeredByMemberID, rec.Status, rec.ContainerID, rec.HostPort, rec.IterationCount,
-		rec.ErrorMessage, rec.RepoPluginID, rec.RepoCloneURL, rec.BranchName, rec.PRUrl,
-		rec.PersistenceDir, rec.StartedAt, rec.FinishedAt, rec.UpdatedAt, rec.ID,
+		rec.TriggeredByMemberID, rec.Status, rec.EnvironmentID, rec.EnvironmentFolderID,
+		rec.ErrorMessage, rec.RepoPluginID, rec.PRUrl,
+		rec.StartedAt, rec.FinishedAt, rec.UpdatedAt, rec.ID,
 	)
 	return err
 }
 
-// ListConversationEvents returns a paginated list of events for a conversation.
-func (r *AgentRepository) ListConversationEvents(ctx context.Context, conversationID uuid.UUID, offset, limit int) ([]*agentdom.AgentConversationEvent, int64, error) {
+// ListConversationEvents returns one keyset-paginated page of a
+// conversation's events (see agentdom.ConversationEventWindow), always
+// ascending by event_index, plus the conversation's current total event
+// count.
+//
+// Unlike ListConversations above, this needs no separate "fetch one extra
+// row" probe for hasMore-toward-the-start: event_index is gapless and
+// 0-based within a conversation, so the caller
+// (writeConversationEventWindowResponse) gets that for free from
+// first.EventIndex > 0. There is no equivalent probe toward the tail —
+// this is a live stream, so "nothing newer" can never be more than true as
+// of this query — see that function's doc comment for how it handles the
+// asymmetry.
+func (r *AgentRepository) ListConversationEvents(ctx context.Context, conversationID uuid.UUID, window agentdom.ConversationEventWindow) ([]*agentdom.AgentConversationEvent, int64, error) {
 	var total int64
 	if err := r.db.GetContext(ctx, &total, `SELECT COUNT(*) FROM agent_conversation_events WHERE conversation_id = $1`, conversationID.String()); err != nil {
 		return nil, 0, err
 	}
 
-	var recs []agentConversationEventRecord
-	if err := r.db.SelectContext(ctx, &recs, `
-		SELECT id, conversation_id, event_index, event_type, event_source, payload, created_at
-		FROM agent_conversation_events
-		WHERE conversation_id = $1
-		ORDER BY event_index ASC
-		OFFSET $2 LIMIT $3`, conversationID.String(), offset, limit); err != nil {
+	var (
+		recs  []agentConversationEventRecord
+		query string
+		args  []any
+	)
+	switch {
+	case window.After != nil:
+		cur, err := agentdom.DecodeConversationEventCursor(*window.After)
+		if err != nil {
+			return nil, 0, fmt.Errorf("%w: %s", agentdom.ErrConversationEventInvalidCursor, err)
+		}
+		query = `
+			SELECT id, conversation_id, event_index, event_type, event_source, payload, created_at
+			FROM agent_conversation_events
+			WHERE conversation_id = $1 AND event_index > $2
+			ORDER BY event_index ASC LIMIT $3`
+		args = []any{conversationID.String(), cur.EventIndex, window.Limit}
+	case window.Before != nil:
+		cur, err := agentdom.DecodeConversationEventCursor(*window.Before)
+		if err != nil {
+			return nil, 0, fmt.Errorf("%w: %s", agentdom.ErrConversationEventInvalidCursor, err)
+		}
+		// Newest-first so LIMIT keeps the events immediately preceding the
+		// cursor rather than the oldest ones in the conversation; reversed
+		// below to the ascending order every caller expects.
+		query = `
+			SELECT id, conversation_id, event_index, event_type, event_source, payload, created_at
+			FROM agent_conversation_events
+			WHERE conversation_id = $1 AND event_index < $2
+			ORDER BY event_index DESC LIMIT $3`
+		args = []any{conversationID.String(), cur.EventIndex, window.Limit}
+	default:
+		// Neither bound: the newest page, so a conversation can be opened on
+		// its tail without a separate round trip to learn its length first.
+		query = `
+			SELECT id, conversation_id, event_index, event_type, event_source, payload, created_at
+			FROM agent_conversation_events
+			WHERE conversation_id = $1
+			ORDER BY event_index DESC LIMIT $2`
+		args = []any{conversationID.String(), window.Limit}
+	}
+	if err := r.db.SelectContext(ctx, &recs, query, args...); err != nil {
 		return nil, 0, err
+	}
+	if window.After == nil {
+		slices.Reverse(recs)
 	}
 
 	result := make([]*agentdom.AgentConversationEvent, 0, len(recs))
@@ -704,10 +1473,216 @@ func (r *AgentRepository) CreateConversationEvent(ctx context.Context, e *agentd
 }
 
 // -------------------------------------------------------------------------
+// Parallelism queue (agent_pending_triggers) — see
+// agentdom.Agent.ParallelismLimit and agentdom.PendingTrigger's doc comments.
+// -------------------------------------------------------------------------
+
+type pendingTriggerRecord struct {
+	ID                  string    `db:"id"`
+	AgentID             string    `db:"agent_id"`
+	ConversationID      string    `db:"conversation_id"`
+	Topic               string    `db:"topic"`
+	Payload             []byte    `db:"payload"`
+	EnvironmentID       *string   `db:"environment_id"`
+	EnvironmentFolderID *string   `db:"environment_folder_id"`
+	CreatedAt           time.Time `db:"created_at"`
+}
+
+// CountRunningConversations returns how many of agentID's conversations are
+// currently status "running", across every project.
+func (r *AgentRepository) CountRunningConversations(ctx context.Context, agentID uuid.UUID) (int, error) {
+	var count int
+	err := r.db.GetContext(ctx, &count, `
+		SELECT count(*) FROM agent_conversations WHERE agent_id = $1 AND status = 'running'`,
+		agentID.String())
+	return count, err
+}
+
+// CountRunningConversationsInFolder returns how many conversations, across
+// every agent, are currently status "running" and attached to
+// environmentID/folderID. folderID nil is matched with "IS NULL", not "=
+// NULL" (see the CASE below), so it correctly counts conversations attached
+// to environmentID with no specific folder as their own bucket.
+func (r *AgentRepository) CountRunningConversationsInFolder(ctx context.Context, environmentID uuid.UUID, folderID *uuid.UUID) (int, error) {
+	var count int
+	err := r.db.GetContext(ctx, &count, `
+		SELECT count(*)
+		FROM agent_conversations c
+		LEFT JOIN environment_folders running_folder ON running_folder.id = c.environment_folder_id
+		LEFT JOIN environment_folders target_folder ON target_folder.id = $2
+		WHERE c.status = 'running' AND c.environment_id = $1
+		  AND (`+folderOverlapPredicate("c.environment_folder_id", "running_folder", "target_folder")+`)`,
+		environmentID.String(), nullableUUIDString(uuidOrNil(folderID)))
+	return count, err
+}
+
+// folderOverlapPredicate is the shared "these two folders share a working
+// directory" condition behind CountRunningConversationsInFolder and
+// DequeueOldestPendingTriggerForFolder — see checkFolderCapacity's doc
+// comment on the server side for why this exists as its own constraint
+// independent of ParallelismLimit.
+//
+// environment_folders.path is an absolute filesystem path inside the
+// environment's container (see that struct's doc comment), unique per
+// environment — a folder and any folder path-nested inside it are the same
+// underlying directory tree on disk, so two conversations running one in
+// each still race the same files a plain exact-folder-match would have
+// caught. starts_with (not LIKE, which would treat any '%'/'_' that
+// happened to appear in a path as a wildcard) checks that nesting in both
+// directions, since either side of the comparison could be the ancestor.
+//
+// nullFolderIDCol is the raw (non-joined) environment_folder_id column for
+// "this side" of the comparison — checked directly rather than via
+// runningAlias.path IS NULL so a row whose folder was itself deleted out
+// from under it (environment_folders row gone, but the FK column an
+// orphaned non-NULL UUID — shouldn't happen, but see it coming) isn't
+// silently treated the same as "no folder set". A NULL folder on either
+// side is treated as "the whole environment" and conflicts with every
+// folder in it, including another NULL-folder conversation — the
+// conservative reading when a conversation's own scope isn't narrowed to
+// one specific directory.
+func folderOverlapPredicate(nullFolderIDCol, runningAlias, targetAlias string) string {
+	return nullFolderIDCol + ` IS NULL
+		OR ` + targetAlias + `.path IS NULL
+		OR ` + runningAlias + `.path = ` + targetAlias + `.path
+		OR starts_with(` + runningAlias + `.path, ` + targetAlias + `.path || '/')
+		OR starts_with(` + targetAlias + `.path, ` + runningAlias + `.path || '/')`
+}
+
+// CreatePendingTrigger persists a trigger held back from dispatch.
+func (r *AgentRepository) CreatePendingTrigger(ctx context.Context, t *agentdom.PendingTrigger) error {
+	payload, err := json.Marshal(t.Payload)
+	if err != nil {
+		return fmt.Errorf("marshal pending trigger payload for conversation %s: %w", t.ConversationID, err)
+	}
+	_, err = r.db.ExecContext(ctx, `
+		INSERT INTO agent_pending_triggers (id, agent_id, conversation_id, topic, payload, environment_id, environment_folder_id, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		t.ID.String(), t.AgentID.String(), t.ConversationID.String(), t.Topic, payload,
+		nullableUUIDString(uuidOrNil(t.EnvironmentID)), nullableUUIDString(uuidOrNil(t.EnvironmentFolderID)), t.CreatedAt,
+	)
+	return err
+}
+
+const pendingTriggerSelectCols = `id, agent_id, conversation_id, topic, payload, environment_id, environment_folder_id, created_at`
+
+// pendingTriggerSelectColsQualified is pendingTriggerSelectCols with every
+// column qualified by the "pt" alias — required once a query joins
+// agent_pending_triggers against environment_folders (see
+// DequeueOldestPendingTriggerForFolder below), since environment_folders
+// has its own id/created_at columns that would otherwise make an
+// unqualified SELECT ambiguous.
+const pendingTriggerSelectColsQualified = `pt.id, pt.agent_id, pt.conversation_id, pt.topic, pt.payload, pt.environment_id, pt.environment_folder_id, pt.created_at`
+
+// DequeueOldestPendingTrigger atomically returns and deletes agentID's
+// oldest PendingTrigger (FIFO), or (nil, nil) if it has none. FOR UPDATE
+// SKIP LOCKED so two concurrent callers (this codebase runs multiple
+// consumer-group replicas — see worker.AutomationConsumer's own doc
+// comments on concurrent replicas) never both dequeue the same row and
+// double-dispatch it.
+func (r *AgentRepository) DequeueOldestPendingTrigger(ctx context.Context, agentID uuid.UUID) (*agentdom.PendingTrigger, error) {
+	return r.dequeueOldestPendingTrigger(ctx, `
+		SELECT `+pendingTriggerSelectCols+`
+		FROM agent_pending_triggers
+		WHERE agent_id = $1
+		ORDER BY created_at ASC
+		LIMIT 1
+		FOR UPDATE SKIP LOCKED`, agentID.String())
+}
+
+// DequeueOldestPendingTriggerForFolder is DequeueOldestPendingTrigger's
+// folder-scoped sibling — see the domain interface's doc comment. Folder
+// overlap (including folderID nil, and ancestor/descendant matches) is
+// resolved the same folderOverlapPredicate way CountRunningConversationsInFolder
+// uses — see that helper's doc comment.
+func (r *AgentRepository) DequeueOldestPendingTriggerForFolder(ctx context.Context, environmentID uuid.UUID, folderID *uuid.UUID) (*agentdom.PendingTrigger, error) {
+	return r.dequeueOldestPendingTrigger(ctx, `
+		SELECT `+pendingTriggerSelectColsQualified+`
+		FROM agent_pending_triggers pt
+		LEFT JOIN environment_folders pt_folder ON pt_folder.id = pt.environment_folder_id
+		LEFT JOIN environment_folders target_folder ON target_folder.id = $2
+		WHERE pt.environment_id = $1
+		  AND (`+folderOverlapPredicate("pt.environment_folder_id", "pt_folder", "target_folder")+`)
+		ORDER BY pt.created_at ASC
+		LIMIT 1
+		FOR UPDATE OF pt SKIP LOCKED`, environmentID.String(), nullableUUIDString(uuidOrNil(folderID)))
+}
+
+// dequeueOldestPendingTrigger is the shared SELECT-then-DELETE-then-return
+// core of DequeueOldestPendingTrigger and its folder-scoped sibling — only
+// the query (and its args) differ between the two.
+func (r *AgentRepository) dequeueOldestPendingTrigger(ctx context.Context, selectQuery string, args ...any) (*agentdom.PendingTrigger, error) {
+	var result *agentdom.PendingTrigger
+	err := WithTx(ctx, r.db, func(tx *sqlx.Tx) error {
+		var rec pendingTriggerRecord
+		err := tx.GetContext(ctx, &rec, selectQuery, args...)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM agent_pending_triggers WHERE id = $1`, rec.ID); err != nil {
+			return err
+		}
+		pt, err := pendingTriggerFromRecord(rec)
+		if err != nil {
+			return err
+		}
+		result = pt
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// DeletePendingTriggerByConversationID removes conversationID's pending
+// trigger row, if it has one, reporting whether a row actually existed.
+func (r *AgentRepository) DeletePendingTriggerByConversationID(ctx context.Context, conversationID uuid.UUID) (bool, error) {
+	res, err := r.db.ExecContext(ctx, `DELETE FROM agent_pending_triggers WHERE conversation_id = $1`, conversationID.String())
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+func pendingTriggerFromRecord(rec pendingTriggerRecord) (*agentdom.PendingTrigger, error) {
+	var payload map[string]string
+	if len(rec.Payload) > 0 {
+		if err := json.Unmarshal(rec.Payload, &payload); err != nil {
+			return nil, fmt.Errorf("unmarshal pending trigger payload %s: %w", rec.ID, err)
+		}
+	}
+	pt := &agentdom.PendingTrigger{
+		ID:             mustParseUUID(rec.ID),
+		AgentID:        mustParseUUID(rec.AgentID),
+		ConversationID: mustParseUUID(rec.ConversationID),
+		Topic:          rec.Topic,
+		Payload:        payload,
+		CreatedAt:      rec.CreatedAt,
+	}
+	if rec.EnvironmentID != nil {
+		id := mustParseUUID(*rec.EnvironmentID)
+		pt.EnvironmentID = &id
+	}
+	if rec.EnvironmentFolderID != nil {
+		id := mustParseUUID(*rec.EnvironmentFolderID)
+		pt.EnvironmentFolderID = &id
+	}
+	return pt, nil
+}
+
+// -------------------------------------------------------------------------
 // Chat Sessions
 // -------------------------------------------------------------------------
 
-const chatSessionCols = `id, agent_id, project_id, member_id, title, last_message_at, created_at, updated_at`
+const chatSessionCols = `id, agent_id, project_id, member_id, actor_user_id, title, last_message_at, created_at, updated_at`
 
 // ListChatSessions returns all chat sessions for the given agent and member.
 func (r *AgentRepository) ListChatSessions(ctx context.Context, agentID, memberID uuid.UUID) ([]*agentdom.AgentChatSession, error) {
@@ -723,6 +1698,37 @@ func (r *AgentRepository) ListChatSessions(ctx context.Context, agentID, memberI
 		result = append(result, chatSessionFromRecord(rec))
 	}
 	return result, nil
+}
+
+// ListGlobalChatSessions returns all global chat sessions for the given
+// agent and human actor (ListChatSessions' sibling, keyed by actor_user_id
+// instead of member_id).
+func (r *AgentRepository) ListGlobalChatSessions(ctx context.Context, agentID, actorUserID uuid.UUID) ([]*agentdom.AgentChatSession, error) {
+	var recs []agentChatSessionRecord
+	if err := r.db.SelectContext(ctx, &recs, `
+		SELECT `+chatSessionCols+` FROM agent_chat_sessions
+		WHERE agent_id = $1 AND actor_user_id = $2
+		ORDER BY created_at DESC`, agentID.String(), actorUserID.String()); err != nil {
+		return nil, err
+	}
+	result := make([]*agentdom.AgentChatSession, 0, len(recs))
+	for _, rec := range recs {
+		result = append(result, chatSessionFromRecord(rec))
+	}
+	return result, nil
+}
+
+// HasActiveGlobalChatSession reports whether agentID has ever started a
+// global chat session with actorUserID. agent_chat_sessions has no
+// deleted_at column (sessions are never soft-deleted), so "ever started" and
+// "active" coincide — existence alone is the check.
+func (r *AgentRepository) HasActiveGlobalChatSession(ctx context.Context, agentID, actorUserID uuid.UUID) (bool, error) {
+	const q = `SELECT EXISTS(SELECT 1 FROM agent_chat_sessions WHERE agent_id = $1 AND actor_user_id = $2)`
+	var exists bool
+	if err := r.db.GetContext(ctx, &exists, q, agentID.String(), actorUserID.String()); err != nil {
+		return false, err
+	}
+	return exists, nil
 }
 
 // FindChatSessionByID returns a single chat session by its primary key.
@@ -741,9 +1747,9 @@ func (r *AgentRepository) FindChatSessionByID(ctx context.Context, id uuid.UUID)
 func (r *AgentRepository) CreateChatSession(ctx context.Context, s *agentdom.AgentChatSession) error {
 	rec := chatSessionToRecord(s)
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO agent_chat_sessions (id, agent_id, project_id, member_id, title, last_message_at, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-		rec.ID, rec.AgentID, rec.ProjectID, rec.MemberID, rec.Title, rec.LastMessageAt, rec.CreatedAt, rec.UpdatedAt,
+		INSERT INTO agent_chat_sessions (id, agent_id, project_id, member_id, actor_user_id, title, last_message_at, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		rec.ID, rec.AgentID, rec.ProjectID, rec.MemberID, rec.ActorUserID, rec.Title, rec.LastMessageAt, rec.CreatedAt, rec.UpdatedAt,
 	)
 	return err
 }
@@ -763,31 +1769,57 @@ func (r *AgentRepository) UpdateChatSession(ctx context.Context, s *agentdom.Age
 // Mapping helpers
 // -------------------------------------------------------------------------
 
-func agentFromReadRow(row agentRecord) *agentdom.Agent {
+func agentFromReadRow(row agentRecord) (*agentdom.Agent, error) {
+	scope := agentdom.AgentScope(row.AgentScope)
+	if scope == "" {
+		scope = agentdom.AgentScopeProject
+	}
 	a := &agentdom.Agent{
-		ID:                            mustParseUUID(row.ID),
-		ProjectID:                     mustParseUUID(row.ProjectID),
-		Name:                          row.Name,
-		Handle:                        row.Handle,
-		AvatarURL:                     row.AvatarURL,
-		LLMProvider:                   row.LLMProvider,
-		LLMModel:                      row.LLMModel,
-		LLMAPIKeySecret:               row.LLMAPIKeySecret,
-		LLMBaseURL:                    row.LLMBaseURL,
-		SystemPrompt:                  row.SystemPrompt,
-		TaskTriggerPrompt:             row.TaskTriggerPrompt,
-		DocCommentTriggerPrompt:       row.DocCommentTriggerPrompt,
-		ChatTriggerPrompt:             row.ChatTriggerPrompt,
-		DescriptionWriteTriggerPrompt: row.DescriptionWriteTriggerPrompt,
-		CanCloneRepos:                 row.CanCloneRepos,
-		CanCreatePRs:                  row.CanCreatePRs,
-		MaxIterations:                 row.MaxIterations,
-		TimeoutMinutes:                row.TimeoutMinutes,
-		GitCommitterName:              row.GitCommitterName,
-		GitCommitterEmail:             row.GitCommitterEmail,
-		CreatedAt:                     row.CreatedAt,
-		UpdatedAt:                     row.UpdatedAt,
-		DeletedAt:                     row.DeletedAt,
+		ID:                 mustParseUUID(row.ID),
+		ProjectID:          uuidFromNullable(row.ProjectID),
+		AgentScope:         scope,
+		Name:               row.Name,
+		Handle:             row.Handle,
+		Description:        row.Description,
+		AvatarKey:          row.AvatarKey,
+		AvatarThumbKey:     row.AvatarThumbKey,
+		AgentType:          row.AgentType,
+		LLMProvider:        row.LLMProvider,
+		LLMModel:           row.LLMModel,
+		LLMAPIKeySecret:    row.LLMAPIKeySecret,
+		LLMBaseURL:         row.LLMBaseURL,
+		ACPProvider:        row.ACPProvider,
+		HasACPBridgeToken:  row.ACPBridgeTokenHash != nil && *row.ACPBridgeTokenHash != "",
+		HasMCPAPIKey:       row.MCPAPIKeyHash != nil && *row.MCPAPIKeyHash != "",
+		CLIProvider:        row.CLIProvider,
+		CLIModel:           row.CLIModel,
+		CLIAuthMode:        row.CLIAuthMode,
+		CLIAPIKeySecret:    row.CLIAPIKeySecret,
+		CLILoginVerifiedAt: row.CLILoginVerifiedAt,
+		SystemPrompt:       row.SystemPrompt,
+		MaxIterations:      row.MaxIterations,
+		TimeoutMinutes:     row.TimeoutMinutes,
+		ParallelismLimit:   row.ParallelismLimit,
+		GitCommitterName:   row.GitCommitterName,
+		GitCommitterEmail:  row.GitCommitterEmail,
+		DockerEnabled:      row.DockerEnabled,
+		AccessMode:         row.AccessMode,
+		CreatedAt:          row.CreatedAt,
+		UpdatedAt:          row.UpdatedAt,
+		DeletedAt:          row.DeletedAt,
+	}
+	if row.ACPBridgeTokenHash != nil {
+		a.ACPBridgeTokenHash = *row.ACPBridgeTokenHash
+	}
+	if row.MCPAPIKeyHash != nil {
+		a.MCPAPIKeyHash = *row.MCPAPIKeyHash
+	}
+	if len(row.ACPCommand) > 0 {
+		var cmd []string
+		if err := json.Unmarshal(row.ACPCommand, &cmd); err != nil {
+			return nil, fmt.Errorf("unmarshal acp_command for agent %s: %w", row.ID, err)
+		}
+		a.ACPCommand = cmd
 	}
 	if row.CreatedBy != nil {
 		id := mustParseUUID(*row.CreatedBy)
@@ -797,39 +1829,98 @@ func agentFromReadRow(row agentRecord) *agentdom.Agent {
 		mid := mustParseUUID(*row.MemberID)
 		a.MemberID = &mid
 	}
-	return a
+	if row.GlobalRoleID != nil {
+		rid := mustParseUUID(*row.GlobalRoleID)
+		a.GlobalRoleID = &rid
+	}
+	if row.DefaultEnvironmentID != nil {
+		eid := mustParseUUID(*row.DefaultEnvironmentID)
+		a.DefaultEnvironmentID = &eid
+	}
+	if row.DefaultFolderID != nil {
+		fid := mustParseUUID(*row.DefaultFolderID)
+		a.DefaultFolderID = &fid
+	}
+	return a, nil
 }
 
-func agentToRecord(a *agentdom.Agent) agentRecord {
+// cliAuthModeOrDefault defaults an empty CLIAuthMode to "login" — mirrors
+// cli_auth_mode's own column-level DEFAULT 'login' (migration 000049), so a
+// non-provider_cli agent's record (which never sets CLIAuthMode at all)
+// still round-trips a value consistent with what a fresh row would carry.
+func cliAuthModeOrDefault(mode string) string {
+	if mode == "" {
+		return agentdom.CLIAuthModeLogin
+	}
+	return mode
+}
+
+func agentToRecord(a *agentdom.Agent) (agentRecord, error) {
+	agentType := a.AgentType
+	if agentType == "" {
+		agentType = agentdom.AgentTypeLLM
+	}
+	cmd := a.ACPCommand
+	if cmd == nil {
+		cmd = []string{}
+	}
+	cmdJSON, err := json.Marshal(cmd)
+	if err != nil {
+		return agentRecord{}, fmt.Errorf("marshal acp_command for agent %s: %w", a.ID, err)
+	}
+	scope := string(a.AgentScope)
+	if scope == "" {
+		scope = string(agentdom.AgentScopeProject)
+	}
 	rec := agentRecord{
-		ID:                            a.ID.String(),
-		ProjectID:                     a.ProjectID.String(),
-		Name:                          a.Name,
-		Handle:                        a.Handle,
-		AvatarURL:                     a.AvatarURL,
-		LLMProvider:                   a.LLMProvider,
-		LLMModel:                      a.LLMModel,
-		LLMAPIKeySecret:               a.LLMAPIKeySecret,
-		LLMBaseURL:                    a.LLMBaseURL,
-		SystemPrompt:                  a.SystemPrompt,
-		TaskTriggerPrompt:             a.TaskTriggerPrompt,
-		DocCommentTriggerPrompt:       a.DocCommentTriggerPrompt,
-		ChatTriggerPrompt:             a.ChatTriggerPrompt,
-		DescriptionWriteTriggerPrompt: a.DescriptionWriteTriggerPrompt,
-		CanCloneRepos:                 a.CanCloneRepos,
-		CanCreatePRs:                  a.CanCreatePRs,
-		MaxIterations:                 a.MaxIterations,
-		TimeoutMinutes:                a.TimeoutMinutes,
-		GitCommitterName:              a.GitCommitterName,
-		GitCommitterEmail:             a.GitCommitterEmail,
-		CreatedAt:                     a.CreatedAt,
-		UpdatedAt:                     a.UpdatedAt,
+		ID:                 a.ID.String(),
+		ProjectID:          nullableUUIDString(a.ProjectID),
+		AgentScope:         scope,
+		Name:               a.Name,
+		Handle:             a.Handle,
+		Description:        a.Description,
+		AvatarKey:          a.AvatarKey,
+		AvatarThumbKey:     a.AvatarThumbKey,
+		AgentType:          agentType,
+		LLMProvider:        a.LLMProvider,
+		LLMModel:           a.LLMModel,
+		LLMAPIKeySecret:    a.LLMAPIKeySecret,
+		LLMBaseURL:         a.LLMBaseURL,
+		ACPProvider:        a.ACPProvider,
+		ACPCommand:         cmdJSON,
+		CLIProvider:        a.CLIProvider,
+		CLIModel:           a.CLIModel,
+		CLIAuthMode:        cliAuthModeOrDefault(a.CLIAuthMode),
+		CLIAPIKeySecret:    a.CLIAPIKeySecret,
+		CLILoginVerifiedAt: a.CLILoginVerifiedAt,
+		SystemPrompt:       a.SystemPrompt,
+		MaxIterations:      a.MaxIterations,
+		TimeoutMinutes:     a.TimeoutMinutes,
+		ParallelismLimit:   a.ParallelismLimit,
+		GitCommitterName:   a.GitCommitterName,
+		GitCommitterEmail:  a.GitCommitterEmail,
+		DockerEnabled:      a.DockerEnabled,
+		AccessMode:         a.AccessMode,
+		CreatedAt:          a.CreatedAt,
+		UpdatedAt:          a.UpdatedAt,
 	}
 	if a.CreatedBy != nil {
 		s := a.CreatedBy.String()
 		rec.CreatedBy = &s
 	}
-	return rec
+	if a.GlobalRoleID != nil {
+		s := a.GlobalRoleID.String()
+		rec.GlobalRoleID = &s
+	}
+	if a.DefaultEnvironmentID != nil {
+		s := a.DefaultEnvironmentID.String()
+		rec.DefaultEnvironmentID = &s
+	}
+	if a.DefaultFolderID != nil {
+		s := a.DefaultFolderID.String()
+		rec.DefaultFolderID = &s
+	}
+	return rec, nil
 }
 
 func mcpServerFromRecord(rec agentMCPServerRecord) (*agentdom.AgentMCPServer, error) {
@@ -931,24 +2022,26 @@ func envVarFromRecord(rec agentEnvVarRecord) *agentdom.AgentEnvironmentVariable 
 
 func conversationFromRecord(rec agentConversationRecord) *agentdom.AgentConversation {
 	c := &agentdom.AgentConversation{
-		ID:                  mustParseUUID(rec.ID),
-		AgentID:             mustParseUUID(rec.AgentID),
-		ProjectID:           mustParseUUID(rec.ProjectID),
-		TriggerType:         rec.TriggerType,
-		TriggeredByMemberID: mustParseUUID(rec.TriggeredByMemberID),
-		Status:              rec.Status,
-		ContainerID:         rec.ContainerID,
-		HostPort:            rec.HostPort,
-		IterationCount:      rec.IterationCount,
-		ErrorMessage:        rec.ErrorMessage,
-		RepoCloneURL:        rec.RepoCloneURL,
-		BranchName:          rec.BranchName,
-		PRUrl:               rec.PRUrl,
-		PersistenceDir:      rec.PersistenceDir,
-		StartedAt:           rec.StartedAt,
-		FinishedAt:          rec.FinishedAt,
-		CreatedAt:           rec.CreatedAt,
-		UpdatedAt:           rec.UpdatedAt,
+		ID:             mustParseUUID(rec.ID),
+		AgentID:        mustParseUUID(rec.AgentID),
+		ProjectID:      uuidFromNullable(rec.ProjectID),
+		TriggerType:    rec.TriggerType,
+		Audience:       agentdom.ConversationAudience(rec.Audience),
+		Status:         rec.Status,
+		IterationCount: int(rec.IterationCount),
+		InputTokens:    rec.InputTokens,
+		OutputTokens:   rec.OutputTokens,
+		TotalTokens:    rec.TotalTokens,
+		CostUSD:        rec.CostUSD,
+		ErrorMessage:   rec.ErrorMessage,
+		PRUrl:          rec.PRUrl,
+		Title:          rec.Title,
+		TitleSetByUser: rec.TitleSetByUser,
+		DeletedAt:      rec.DeletedAt,
+		StartedAt:      rec.StartedAt,
+		FinishedAt:     rec.FinishedAt,
+		CreatedAt:      rec.CreatedAt,
+		UpdatedAt:      rec.UpdatedAt,
 	}
 	if rec.TaskID != nil {
 		id := mustParseUUID(*rec.TaskID)
@@ -962,33 +2055,42 @@ func conversationFromRecord(rec agentConversationRecord) *agentdom.AgentConversa
 		id := mustParseUUID(*rec.ChatSessionID)
 		c.ChatSessionID = &id
 	}
+	if rec.TriggeredByMemberID != nil {
+		id := mustParseUUID(*rec.TriggeredByMemberID)
+		c.TriggeredByMemberID = &id
+	}
+	if rec.ActorUserID != nil {
+		id := mustParseUUID(*rec.ActorUserID)
+		c.ActorUserID = &id
+	}
 	if rec.RepoPluginID != nil {
 		id := mustParseUUID(*rec.RepoPluginID)
 		c.RepoPluginID = &id
+	}
+	if rec.EnvironmentID != nil {
+		id := mustParseUUID(*rec.EnvironmentID)
+		c.EnvironmentID = &id
+	}
+	if rec.EnvironmentFolderID != nil {
+		id := mustParseUUID(*rec.EnvironmentFolderID)
+		c.EnvironmentFolderID = &id
 	}
 	return c
 }
 
 func conversationToRecord(c *agentdom.AgentConversation) agentConversationRecord {
 	rec := agentConversationRecord{
-		ID:                  c.ID.String(),
-		AgentID:             c.AgentID.String(),
-		ProjectID:           c.ProjectID.String(),
-		TriggerType:         c.TriggerType,
-		TriggeredByMemberID: c.TriggeredByMemberID.String(),
-		Status:              c.Status,
-		ContainerID:         c.ContainerID,
-		HostPort:            c.HostPort,
-		IterationCount:      c.IterationCount,
-		ErrorMessage:        c.ErrorMessage,
-		RepoCloneURL:        c.RepoCloneURL,
-		BranchName:          c.BranchName,
-		PRUrl:               c.PRUrl,
-		PersistenceDir:      c.PersistenceDir,
-		StartedAt:           c.StartedAt,
-		FinishedAt:          c.FinishedAt,
-		CreatedAt:           c.CreatedAt,
-		UpdatedAt:           c.UpdatedAt,
+		ID:           c.ID.String(),
+		AgentID:      c.AgentID.String(),
+		ProjectID:    nullableUUIDString(c.ProjectID),
+		TriggerType:  c.TriggerType,
+		Status:       c.Status,
+		ErrorMessage: c.ErrorMessage,
+		PRUrl:        c.PRUrl,
+		StartedAt:    c.StartedAt,
+		FinishedAt:   c.FinishedAt,
+		CreatedAt:    c.CreatedAt,
+		UpdatedAt:    c.UpdatedAt,
 	}
 	if c.TaskID != nil {
 		s := c.TaskID.String()
@@ -1002,9 +2104,25 @@ func conversationToRecord(c *agentdom.AgentConversation) agentConversationRecord
 		s := c.ChatSessionID.String()
 		rec.ChatSessionID = &s
 	}
+	if c.TriggeredByMemberID != nil {
+		s := c.TriggeredByMemberID.String()
+		rec.TriggeredByMemberID = &s
+	}
+	if c.ActorUserID != nil {
+		s := c.ActorUserID.String()
+		rec.ActorUserID = &s
+	}
 	if c.RepoPluginID != nil {
 		s := c.RepoPluginID.String()
 		rec.RepoPluginID = &s
+	}
+	if c.EnvironmentID != nil {
+		s := c.EnvironmentID.String()
+		rec.EnvironmentID = &s
+	}
+	if c.EnvironmentFolderID != nil {
+		s := c.EnvironmentFolderID.String()
+		rec.EnvironmentFolderID = &s
 	}
 	return rec
 }
@@ -1042,27 +2160,41 @@ func conversationEventToRecord(e *agentdom.AgentConversationEvent) (agentConvers
 }
 
 func chatSessionFromRecord(rec agentChatSessionRecord) *agentdom.AgentChatSession {
-	return &agentdom.AgentChatSession{
+	s := &agentdom.AgentChatSession{
 		ID:            mustParseUUID(rec.ID),
 		AgentID:       mustParseUUID(rec.AgentID),
-		ProjectID:     mustParseUUID(rec.ProjectID),
-		MemberID:      mustParseUUID(rec.MemberID),
+		ProjectID:     uuidFromNullable(rec.ProjectID),
+		MemberID:      uuidFromNullable(rec.MemberID),
 		Title:         rec.Title,
 		LastMessageAt: rec.LastMessageAt,
 		CreatedAt:     rec.CreatedAt,
 		UpdatedAt:     rec.UpdatedAt,
 	}
+	if rec.ActorUserID != nil {
+		id := mustParseUUID(*rec.ActorUserID)
+		s.ActorUserID = &id
+	}
+	return s
 }
 
 func chatSessionToRecord(s *agentdom.AgentChatSession) agentChatSessionRecord {
-	return agentChatSessionRecord{
+	rec := agentChatSessionRecord{
 		ID:            s.ID.String(),
 		AgentID:       s.AgentID.String(),
-		ProjectID:     s.ProjectID.String(),
-		MemberID:      s.MemberID.String(),
+		ProjectID:     nullableUUIDString(s.ProjectID),
+		MemberID:      nullableUUIDString(s.MemberID),
 		Title:         s.Title,
 		LastMessageAt: s.LastMessageAt,
 		CreatedAt:     s.CreatedAt,
 		UpdatedAt:     s.UpdatedAt,
 	}
+	if s.ActorUserID != nil {
+		id := s.ActorUserID.String()
+		rec.ActorUserID = &id
+	}
+	return rec
 }
+
+// -------------------------------------------------------------------------
+// Activity Feed
+// -------------------------------------------------------------------------

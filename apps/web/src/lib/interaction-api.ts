@@ -1,4 +1,4 @@
-import { queryOptions } from "@tanstack/react-query";
+import { infiniteQueryOptions, queryOptions } from "@tanstack/react-query";
 
 import { apiClient } from "./api-client";
 import type { SuccessEnvelope } from "./api-error";
@@ -35,7 +35,7 @@ export interface Task {
 	description?: unknown[] | null;
 	importance: number;
 	story_points?: number | null;
-	assignee_id?: string | null;
+	assignee_ids?: string[];
 	reporter_id?: string | null;
 	custom_fields: Record<string, unknown>;
 	start_date?: string | null;
@@ -45,6 +45,10 @@ export interface Task {
 	view_group_key?: string | null;
 	created_at: string;
 	updated_at: string;
+	// "manual" (default) or "auto" — see the assignees PropertyField in
+	// properties-panel.tsx, which shows an "Auto" toggle instead of the
+	// member picker when this is "auto".
+	assignment_mode: "manual" | "auto";
 }
 
 export interface TaskListResult {
@@ -94,6 +98,38 @@ export interface FilterConfig {
 }
 
 /**
+ * A per-custom-field filter selector stored inside a view's filters, keyed by
+ * the target custom field's `field_key`. Which members are meaningful depends
+ * on the field's type (looked up from its `CustomFieldDefinition` at resolve
+ * time, not stored here):
+ * - `select` / `multi_select` / `boolean` → `selector` (matches ANY of the
+ *   resolved option values, same recursive semantics as `FilterConfig`)
+ * - `number` → `min` / `max` (inclusive range; either may be unset)
+ * - `date` → `after` / `before` (inclusive range, "YYYY-MM-DD"; either may be unset)
+ * - `text` / `url` → `contains` (case-insensitive substring match)
+ */
+export interface CustomFieldFilterConfig {
+	selector?: FilterConfig;
+	min?: number;
+	max?: number;
+	after?: string;
+	before?: string;
+	contains?: string;
+}
+
+/** An inclusive date range filter, "YYYY-MM-DD"; either bound may be unset. */
+export interface DateRangeFilter {
+	after?: string;
+	before?: string;
+}
+
+/** An inclusive numeric range filter; either bound may be unset. */
+export interface NumberRangeFilter {
+	min?: number;
+	max?: number;
+}
+
+/**
  * Per-view filter configuration stored in the database.
  * Each dimension uses an optional FilterConfig selector; absent means no filter
  * (include everything) for that dimension.
@@ -103,6 +139,34 @@ export interface ViewFilters {
 	statuses?: FilterConfig;
 	assignees?: FilterConfig;
 	sprints?: FilterConfig;
+	custom_fields?: Record<string, CustomFieldFilterConfig>;
+	start_date?: DateRangeFilter;
+	due_date?: DateRangeFilter;
+	story_points?: NumberRangeFilter;
+	/**
+	 * Selected priority bucket indices (0=None, 1=Low, 2=Medium, 3=High,
+	 * 4=Critical — see priority.ts). Resolved into concrete importance ranges
+	 * client-side (via getImportanceBucketBounds) before querying, so
+	 * non-contiguous selections like "Low or Critical" work correctly.
+	 */
+	importance?: number[];
+	/** Matches tasks that have ANY of these tag values. */
+	tags?: string[];
+}
+
+/**
+ * The resolved (query-ready) shape of a single custom field filter, sent to
+ * the API as part of `custom_field_filters`. Unlike `CustomFieldFilterConfig`,
+ * `values` is already an explicit list — any `selector` FilterConfig has been
+ * resolved client-side against the field's option values.
+ */
+export interface CustomFieldFilterQuery {
+	values?: string[];
+	min?: number;
+	max?: number;
+	after?: string;
+	before?: string;
+	contains?: string;
 }
 
 export interface ViewConfig {
@@ -193,6 +257,10 @@ export interface InteractionView {
 	layout: ViewLayout;
 	config?: ViewConfig;
 	position: number;
+	/** True when `config` is this user's personal override, not what other project members see. */
+	is_personalized: boolean;
+	/** The project-shared default (equal to `config` when `is_personalized` is false). */
+	shared_config: ViewConfig;
 }
 
 // ── View shape helpers ─────────────────────────────────────────────────────────
@@ -274,6 +342,40 @@ export async function updateViewById(
 	return mapView(data.data);
 }
 
+/**
+ * Persist the current user's PERSONAL view config (settings & filters).
+ *
+ * Unlike {@link updateViewById}, which mutates the project-shared view row,
+ * this targets a per-user override so a member's sort/filter/field choices
+ * never leak to other members. Reads (list/get views) already return the
+ * caller's effective config, so the shape is identical to a shared view.
+ */
+export async function updateMyViewConfig(
+	projectId: string,
+	viewId: string,
+	config: ViewConfig,
+): Promise<InteractionView> {
+	const { data } = await apiClient.instance.put<
+		SuccessEnvelope<Omit<InteractionView, "layout">>
+	>(`/projects/${projectId}/views/${viewId}/config`, { config });
+	return mapView(data.data);
+}
+
+/**
+ * Clear the current user's PERSONAL view config, reverting them to the
+ * shared default (see {@link updateMyViewConfig}). Never touches the shared
+ * view or other members.
+ */
+export async function clearMyViewConfig(
+	projectId: string,
+	viewId: string,
+): Promise<InteractionView> {
+	const { data } = await apiClient.instance.delete<
+		SuccessEnvelope<Omit<InteractionView, "layout">>
+	>(`/projects/${projectId}/views/${viewId}/config`);
+	return mapView(data.data);
+}
+
 export async function deleteViewById(
 	projectId: string,
 	viewId: string,
@@ -313,12 +415,12 @@ export const viewsByContextQueryOptions = (
 	context: ViewsContext,
 	sprintId?: string | null,
 ) => {
-	const queryKey =
-		context === "sprint" && sprintId
-			? (["projects", projectId, "sprints", sprintId, "views"] as const)
-			: context === "backlog"
-				? (["projects", projectId, "backlog-views"] as const)
-				: (["projects", projectId, "timeline-views"] as const);
+	const queryKey = [
+		"projects",
+		projectId,
+		"views",
+		{ context, sprintId: sprintId ?? undefined },
+	] as const;
 	return queryOptions({
 		queryKey,
 		queryFn: () => listViewsByContext(projectId, context, sprintId),
@@ -400,6 +502,16 @@ export async function completeSprint(
 	return data.data;
 }
 
+// Deletes a sprint. Its tasks are unassigned (their sprint_id is set to null,
+// so they return to the product backlog) and any sprint-scoped views are
+// removed; the tasks themselves are not deleted.
+export async function deleteSprint(
+	projectId: string,
+	sprintId: string,
+): Promise<void> {
+	await apiClient.instance.delete(`/projects/${projectId}/sprints/${sprintId}`);
+}
+
 // ── Task API ──────────────────────────────────────────────────────────────────
 
 export interface ListTasksOptions {
@@ -427,6 +539,21 @@ export interface ListTasksOptions {
 	viewId?: string;
 	/** Free-text search matched server-side against title and "#<task_number>". */
 	search?: string;
+	/** Resolved per-custom-field filter criteria, keyed by field key. Sent as a single JSON query param since fields are dynamic per project. */
+	customFieldFilters?: Record<string, CustomFieldFilterQuery>;
+	/** Inclusive start_date range, "YYYY-MM-DD". */
+	startDateAfter?: string;
+	startDateBefore?: string;
+	/** Inclusive due_date range, "YYYY-MM-DD". */
+	dueDateAfter?: string;
+	dueDateBefore?: string;
+	/** Inclusive story_points range. */
+	storyPointsMin?: number;
+	storyPointsMax?: number;
+	/** Inclusive importance ranges (OR'd together), resolved from selected priority buckets. */
+	importanceRanges?: { min: number; max: number }[];
+	/** Matches tasks with ANY of these tag values. */
+	tags?: string[];
 }
 
 function buildTaskQueryParams(opts: ListTasksOptions = {}) {
@@ -465,6 +592,24 @@ function buildTaskQueryParams(opts: ListTasksOptions = {}) {
 		params.view_id = opts.viewId;
 	}
 	if (opts.search?.trim()) params.search = opts.search.trim();
+	if (
+		opts.customFieldFilters &&
+		Object.keys(opts.customFieldFilters).length > 0
+	) {
+		params.custom_field_filters = JSON.stringify(opts.customFieldFilters);
+	}
+	if (opts.startDateAfter) params.start_date_after = opts.startDateAfter;
+	if (opts.startDateBefore) params.start_date_before = opts.startDateBefore;
+	if (opts.dueDateAfter) params.due_date_after = opts.dueDateAfter;
+	if (opts.dueDateBefore) params.due_date_before = opts.dueDateBefore;
+	if (opts.storyPointsMin != null)
+		params.story_points_min = opts.storyPointsMin;
+	if (opts.storyPointsMax != null)
+		params.story_points_max = opts.storyPointsMax;
+	if (opts.importanceRanges && opts.importanceRanges.length > 0) {
+		params.importance_ranges = JSON.stringify(opts.importanceRanges);
+	}
+	if (opts.tags && opts.tags.length > 0) params.tags = opts.tags.join(",");
 	return params;
 }
 
@@ -490,6 +635,37 @@ export async function listSprintTasks(
 	});
 }
 
+export const ASSIGNED_TASKS_PAGE_SIZE = 10;
+
+/** Open tasks assigned to the current user across every project they belong
+ *  to — backs the home page "My Tasks" widget. Cursor-paginated the same way
+ *  as listAllTasks; the server always sorts by importance (highest first,
+ *  ties broken by created_at ascending) and excludes done-category tasks. */
+export async function listAssignedTasks(
+	opts: { cursor?: string; pageSize?: number } = {},
+): Promise<TaskListResult> {
+	const { data } = await apiClient.instance.get<
+		SuccessEnvelope<TaskListResult>
+	>("/users/me/tasks", {
+		params: {
+			cursor: opts.cursor,
+			page_size: opts.pageSize ?? ASSIGNED_TASKS_PAGE_SIZE,
+		},
+	});
+	return data.data;
+}
+
+// No refetchInterval — the home page is a landing spot, not a live board;
+// the query just re-fetches on next visit/focus like the rest of the page.
+export const assignedTasksQueryOptions = () =>
+	infiniteQueryOptions({
+		queryKey: ["users", "me", "tasks"],
+		queryFn: ({ pageParam }: { pageParam: string | undefined }) =>
+			listAssignedTasks({ cursor: pageParam }),
+		initialPageParam: undefined as string | undefined,
+		getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
+	});
+
 export async function createTask(
 	projectId: string,
 	payload: {
@@ -497,7 +673,7 @@ export async function createTask(
 		status_id?: string | null;
 		sprint_id?: string | null;
 		task_type_id?: string | null;
-		assignee_id?: string | null;
+		assignee_ids?: string[];
 		parent_task_id?: string | null;
 	},
 ): Promise<Task> {
@@ -526,7 +702,7 @@ export async function updateTask(
 		status_id: string | null;
 		sprint_id: string | null;
 		task_type_id: string | null;
-		assignee_id: string | null;
+		assignee_ids: string[];
 		reporter_id: string | null;
 		parent_task_id: string | null;
 		description: unknown[] | null;
@@ -536,6 +712,7 @@ export async function updateTask(
 		due_date: string | null;
 		tags: string[];
 		custom_fields: Record<string, unknown>;
+		assignment_mode: "manual" | "auto";
 	}>,
 ): Promise<Task> {
 	const { data } = await apiClient.instance.patch<SuccessEnvelope<Task>>(
@@ -552,16 +729,23 @@ export async function deleteTask(
 	await apiClient.instance.delete(`/projects/${projectId}/tasks/${taskId}`);
 }
 
+export const SUBTASKS_PAGE_SIZE = 50;
+
 export async function listSubtasks(
 	projectId: string,
 	parentTaskId: string,
-): Promise<Task[]> {
+	opts: { cursor?: string; pageSize?: number } = {},
+): Promise<TaskListResult> {
 	const { data } = await apiClient.instance.get<
 		SuccessEnvelope<TaskListResult>
 	>(`/projects/${projectId}/tasks`, {
-		params: { parent_task_id: parentTaskId, page: 1, page_size: 200 },
+		params: {
+			parent_task_id: parentTaskId,
+			cursor: opts.cursor,
+			page_size: opts.pageSize ?? SUBTASKS_PAGE_SIZE,
+		},
 	});
-	return data.data.items;
+	return data.data;
 }
 
 export async function listViewTaskPositions(
@@ -583,10 +767,21 @@ export const taskQueryOptions = (projectId: string, taskId: string) =>
 		staleTime: 15_000,
 	});
 
-export const subtasksQueryOptions = (projectId: string, parentTaskId: string) =>
-	queryOptions({
+/** Infinite-query version of the subtasks fetch — backs the task detail
+ *  panel's Subtasks section. Pages load SUBTASKS_PAGE_SIZE at a time via
+ *  next_cursor, same pattern as epicTasksInfiniteQueryOptions, so a task
+ *  with more than one page of direct children stays fully reachable behind
+ *  a "load more" affordance instead of silently truncating. */
+export const subtasksInfiniteQueryOptions = (
+	projectId: string,
+	parentTaskId: string,
+) =>
+	infiniteQueryOptions({
 		queryKey: ["projects", projectId, "tasks", parentTaskId, "subtasks"],
-		queryFn: () => listSubtasks(projectId, parentTaskId),
+		queryFn: ({ pageParam }: { pageParam: string | undefined }) =>
+			listSubtasks(projectId, parentTaskId, { cursor: pageParam }),
+		initialPageParam: undefined as string | undefined,
+		getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
 		staleTime: 15_000,
 	});
 
@@ -631,33 +826,106 @@ export const sprintTasksQueryOptions = (projectId: string, sprintId: string) =>
 		staleTime: 15_000,
 	});
 
-/** Fetches all tasks whose task_type is "Epic" for a project. */
+export const EPIC_TASKS_PAGE_SIZE = 20;
+
+/** Fetches one page of tasks whose task_type is "Epic" for a project.
+ *  Cursor-paginated at EPIC_TASKS_PAGE_SIZE (well under the backend's 200
+ *  max page size) — callers that need every epic should page through with
+ *  epicTasksInfiniteQueryOptions rather than requesting one giant page. */
 export async function listEpicTasks(
 	projectId: string,
 	epicTypeId: string,
-): Promise<Task[]> {
-	const result = await listAllTasks(projectId, {
+	opts: { cursor?: string } = {},
+): Promise<TaskListResult> {
+	return listAllTasks(projectId, {
 		taskTypeIds: [epicTypeId],
-		pageSize: 500,
+		pageSize: EPIC_TASKS_PAGE_SIZE,
+		cursor: opts.cursor,
 	});
-	return result.items;
 }
 
-export const epicTasksQueryOptions = (projectId: string, epicTypeId: string) =>
-	queryOptions({
+/** Infinite-query version of the epic-task fetch — backs every epic picker
+ *  (task detail Epic field, board/list-view quick-pick popovers, the
+ *  right-click "Epic" submenu). Pages load 20 at a time via next_cursor;
+ *  consumers flatten `data.pages` into a flat epic list and expose
+ *  fetchNextPage/hasNextPage as "Load more" affordances in the picker UI. */
+export const epicTasksInfiniteQueryOptions = (
+	projectId: string,
+	epicTypeId: string,
+) =>
+	infiniteQueryOptions({
 		queryKey: ["projects", projectId, "tasks", "epics", epicTypeId],
-		queryFn: () => listEpicTasks(projectId, epicTypeId),
+		queryFn: ({ pageParam }: { pageParam: string | undefined }) =>
+			listEpicTasks(projectId, epicTypeId, { cursor: pageParam }),
+		initialPageParam: undefined as string | undefined,
+		getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
 		staleTime: 30_000,
 		enabled: !!projectId && !!epicTypeId,
 	});
 
-/** Fetches child tasks of an epic (tasks with parent_task_id = epicId). */
-export const epicChildTasksQueryOptions = (projectId: string, epicId: string) =>
-	queryOptions({
-		queryKey: ["projects", projectId, "tasks", epicId, "children"],
-		queryFn: () => listSubtasks(projectId, epicId),
-		staleTime: 15_000,
+/** Cursor-paginated search backing the epic picker's search box — queried
+ *  directly (outside the shared useInfiniteQuery above) against the same
+ *  `search` param used elsewhere for task lookup, since a project can have
+ *  far more epics than the picker keeps paginated locally and filtering
+ *  only the loaded page would silently miss most of them. Callers debounce
+ *  input before calling this, and page through matches the same way
+ *  listEpicTasks does. */
+export async function searchEpicTasks(
+	projectId: string,
+	epicTypeId: string,
+	query: string,
+	opts: { cursor?: string } = {},
+): Promise<TaskListResult> {
+	return listAllTasks(projectId, {
+		taskTypeIds: [epicTypeId],
+		search: query,
+		pageSize: EPIC_TASKS_PAGE_SIZE,
+		cursor: opts.cursor,
 	});
+}
+
+export const TASK_PICKER_PAGE_SIZE = 20;
+
+/** Fetches one page of any task in the project (no type filter) — backs
+ *  generic "pick a task" pickers (e.g. an automation trigger's fixed target
+ *  task), same shape and page size as listEpicTasks minus the type filter. */
+export async function listTasksForPicker(
+	projectId: string,
+	opts: { cursor?: string } = {},
+): Promise<TaskListResult> {
+	return listAllTasks(projectId, {
+		pageSize: TASK_PICKER_PAGE_SIZE,
+		cursor: opts.cursor,
+	});
+}
+
+/** Infinite-query version of listTasksForPicker — mirrors
+ *  epicTasksInfiniteQueryOptions for pickers that choose from any task
+ *  rather than epics only. */
+export const tasksPickerInfiniteQueryOptions = (projectId: string) =>
+	infiniteQueryOptions({
+		queryKey: ["projects", projectId, "tasks", "picker"],
+		queryFn: ({ pageParam }: { pageParam: string | undefined }) =>
+			listTasksForPicker(projectId, { cursor: pageParam }),
+		initialPageParam: undefined as string | undefined,
+		getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
+		staleTime: 30_000,
+		enabled: !!projectId,
+	});
+
+/** Cursor-paginated search backing a generic task picker's search box — same
+ *  shape as searchEpicTasks minus the epic type filter. */
+export async function searchTasksForPicker(
+	projectId: string,
+	query: string,
+	opts: { cursor?: string } = {},
+): Promise<TaskListResult> {
+	return listAllTasks(projectId, {
+		search: query,
+		pageSize: TASK_PICKER_PAGE_SIZE,
+		cursor: opts.cursor,
+	});
+}
 
 // ── Activity & Comments API ────────────────────────────────────────────────────
 
@@ -667,6 +935,8 @@ export interface Activity {
 	actor_id?: string | null;
 	actor_name: string;
 	actor_username: string;
+	actor_avatar_url?: string | null;
+	actor_avatar_thumb_url?: string | null;
 	activity_type: string;
 	content: Record<string, unknown> | unknown[];
 	created_at: string;

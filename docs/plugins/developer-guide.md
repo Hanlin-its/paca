@@ -49,6 +49,7 @@ my-plugin/
   "displayName": "My Plugin",
   "description": "A short description of what this plugin does.",
   "version": "0.1.0",
+  "minCoreVersion": "0.9.0",
   "permissions": ["db.read", "db.write", "events.subscribe"],
 
   "frontend": {
@@ -101,6 +102,8 @@ Use explicit `middlewares` when you need different behavior (for example,
 webhook endpoints that must accept anonymous requests).
 
 **Choosing an `id`:** Use reverse-domain notation: `com.yourcompany.feature-name`. First-party plugins use `com.paca.*`. The ID becomes part of the API path (`/api/v1/plugins/{id}/...`) and the database schema name, so it must be stable after first release.
+
+**`minCoreVersion`:** The minimum Paca (host) version your plugin requires, as a strict `X.Y.Z` (or `vX.Y.Z`) semver string — omit it if your plugin has no minimum. The host checks this on every install and every manifest update (including marketplace upgrades) and rejects the request with `PLUGIN_INCOMPATIBLE_HOST_VERSION` if the running build is older. A self-hosted instance not built from a tagged release (running version `"dev"`) is treated as unconstrained, since there's nothing meaningful to compare against. You can read the running instance's version from `GET /api/v1/version` (`current` field).
 
 ---
 
@@ -214,14 +217,42 @@ CREATE INDEX ON my_items (task_id);
 
 ### Building the WASM Binary
 
+Use TinyGo — it produces a dramatically smaller binary than the standard Go
+compiler, because it doesn't statically link Go's full runtime (GC,
+goroutine scheduler, reflection). This matters a lot in production: every
+loaded plugin gets its own independent copy of that runtime, so a plugin
+built with standard Go can cost tens of MiB of *host* memory once loaded,
+versus a few MiB for the same plugin built with TinyGo.
+
 ```sh
 cd backend
-GOOS=wasip1 GOARCH=wasm tinygo build -o ../dist/my-plugin.wasm -target wasip1 .
+tinygo build -target=wasip1 -buildmode=c-shared -o ../dist/my-plugin.wasm .
 ```
 
-Or with standard Go (larger binary):
+`-buildmode=c-shared` is required, not optional: without it, TinyGo doesn't
+wire up the WASI reactor entry point (`_initialize`) that the runtime
+depends on to set up before any `//go:wasmexport` function runs. The plugin
+will still compile without it, but every call into it will panic at runtime
+with `"//go:wasmexport function called before runtime initialization"`.
+
+If your plugin declares its own `//go:wasmimport` host functions beyond
+what this SDK provides, TinyGo requires them to be called directly by name —
+never passed around as a function value. If you use
+[`plugin.CallHostFunction`](https://pkg.go.dev/github.com/Paca-AI/plugin-sdk-go#CallHostFunction),
+wrap your import in a small closure instead of passing it directly:
+
+```go
+// Works under both standard Go and TinyGo:
+err := plugin.CallHostFunction(func(a, b, c, d int64) { hostMyImport(a, b, c, d) }, req, &res)
+
+// Compiles under standard Go, but fails to build under TinyGo:
+err := plugin.CallHostFunction(hostMyImport, req, &res)
+```
+
+Or with standard Go (only if you hit a TinyGo compatibility issue — TinyGo
+supports a subset of the stdlib, notably around `reflect`):
 ```sh
-GOOS=wasip1 GOARCH=wasm go build -o ../dist/my-plugin.wasm .
+GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o ../dist/my-plugin.wasm .
 ```
 
 ---
@@ -570,6 +601,7 @@ func TestListItems(t *testing.T) {
 - Follow semver. Increment the **patch** version for bug fixes, **minor** for new extension points, **major** for breaking changes to your API.
 - Database migrations are **additive only**. Never drop or rename columns in a migration; use a new migration file.
 - When you release a new version, update `plugin.json` and re-upload the bundle. The host will detect the version change on next startup and run new migrations.
+- If a release depends on a host capability that only exists in a newer Paca build, bump `minCoreVersion` alongside it — otherwise the manifest change describes something the current host can't provide.
 
 ---
 
@@ -578,7 +610,7 @@ func TestListItems(t *testing.T) {
 Before sharing your plugin:
 
 - [ ] Plugin ID follows reverse-domain notation.
-- [ ] `minCoreVersion` is set to the minimum Paca version you tested against.
+- [ ] `minCoreVersion` is set to the minimum Paca version you tested against — installs on older hosts are rejected automatically.
 - [ ] All DB tables are within your plugin's schema.
 - [ ] No secrets or credentials are hard-coded in the WASM binary or JS bundle.
 - [ ] The WASM binary is signed with your private key (include the public key in `plugin.json` under `publisher.publicKey`).

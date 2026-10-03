@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { CustomFieldOption } from "@/lib/project-api";
 
 export type PropertyFieldMode =
 	| "select"
@@ -9,6 +10,7 @@ export type PropertyFieldMode =
 	| "text"
 	| "checkbox"
 	| "user"
+	| "multi-user"
 	| "tags"
 	| "readonly"
 	| "link"
@@ -19,12 +21,18 @@ export interface SelectOption {
 	label: string;
 	icon?: ReactNode;
 	colorDot?: string;
+	/** Small muted hint shown after the label in the dropdown list only (not
+	 * in the compact trigger pill once a value is selected). */
+	hint?: string;
+	/** Group heading in the dropdown list (e.g. Active / Upcoming sprints). */
+	group?: string;
 }
 
 export interface UserOption {
 	value: string;
 	label: string;
 	initials: string;
+	avatarUrl?: string | null;
 }
 
 export interface PropertyFieldProps {
@@ -58,6 +66,9 @@ export interface PropertyFieldProps {
 	onUserChange?: (value: string | null) => void;
 	showUnassigned?: boolean;
 
+	userValues?: UserOption[];
+	onUsersChange?: (values: string[]) => void;
+
 	tags?: string[];
 	onTagsChange?: (tags: string[]) => void;
 
@@ -75,7 +86,7 @@ export interface PropertyFieldProps {
 		| "Url";
 	customRawValue?: unknown;
 	onCustomChange?: (value: unknown) => void;
-	customOptions?: string[];
+	customOptions?: CustomFieldOption[];
 
 	hidden?: boolean;
 	linkIcon?: ReactNode;

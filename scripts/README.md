@@ -53,12 +53,14 @@ export API_KEY=your-api-key-here
 - `--api-key KEY`: API key for authentication (required)
 - `--skip-build`: Skip building (only install via API)
 - `--skip-install`: Skip API installation (only build)
+- `--go-toolchain TOOL`: `tinygo` (default) or `go` — use `go` only if your plugin hits a TinyGo stdlib limitation
 
 ### Environment Variables
 
 - `PACA_DIR`: Path to Paca project directory
 - `API_URL`: API base URL
 - `API_KEY`: API key for authentication (required)
+- `GO_TOOLCHAIN`: Same as `--go-toolchain`
 
 ## Examples
 
@@ -113,15 +115,17 @@ source ~/.bashrc
 
 ## What the Script Does
 
-1. **Validates the plugin directory** - Checks for `plugin.json`, `backend/`, and `frontend/`
+1. **Validates the plugin directory** - Checks for `plugin.json`; `backend/`, `frontend/`, `mcp/` and `skills/` are each optional (e.g. a skills-only plugin needs just `plugin.json` and `skills/`)
 2. **Extracts plugin metadata** - Reads plugin ID and version from `plugin.json`
-3. **Builds backend WASM** - Compiles Go backend to WASM using `GOOS=wasip1 GOARCH=wasm`
+3. **Builds backend WASM** - Compiles Go backend to WASM using TinyGo (`tinygo build -target=wasip1 -buildmode=c-shared`) — requires TinyGo to be installed
 4. **Populates backend store** - Copies WASM binary, migrations, and manifest to `plugins/local/backend/<plugin-id>/`
 5. **Builds frontend** - Runs `bun run build` to create frontend bundles
 6. **Populates frontend store** - Copies built assets to `plugins/local/frontend/<plugin-id>/`
-7. **Authenticates with API** - Validates API key
-8. **Checks for existing plugins** - Determines if the plugin is already installed
-9. **Installs or updates plugin** - Calls the Paca API to register the plugin
+7. **Builds and populates MCP store** (if a `mcp/` directory exists) - Runs `bun run build` and copies `dist/mcp.js` to `plugins/local/mcp/<plugin-id>/`
+8. **Populates skills store** (if a `skills/` directory exists) - Copies `SKILL.md` files as-is to `plugins/local/skills/<plugin-id>/` — no build step, since skills are plain markdown
+9. **Authenticates with API** - Validates API key
+10. **Checks for existing plugins** - Determines if the plugin is already installed
+11. **Installs or updates plugin** - Calls the Paca API to register the plugin
 
 ## Directory Structure
 
@@ -155,6 +159,12 @@ After running the script, artifacts are placed in:
   - `assets/` - Built JS/CSS bundles
   - `remoteEntry.js` - Module federation entry point
 
+- **MCP** (if the plugin has an `mcp/` directory): `plugins/local/mcp/<plugin-id>/`
+  - `mcp.js` - Built MCP tool bundle
+
+- **Skills** (if the plugin has a `skills/` directory): `plugins/local/skills/<plugin-id>/`
+  - `<skill-name>/SKILL.md` - one directory per skill, copied as-is
+
 ## Troubleshooting
 
 ### Plugin Already Exists
@@ -168,7 +178,7 @@ Do you want to update the existing plugin? (y/N)
 
 ### Build Fails
 
-- Ensure Go and Bun are installed and in your PATH
+- Ensure TinyGo (or Go, if using `--go-toolchain go`) and Bun are installed and in your PATH
 - Check that `go.mod` exists in the `backend/` directory
 - Check that `package.json` exists in the `frontend/` directory
 - Verify dependencies can be installed: `cd backend && go mod tidy`, `cd frontend && bun install`
@@ -185,7 +195,7 @@ The script needs write permissions to the `plugins/local/` directory and its sub
 
 ## Requirements
 
-- **Go** (for building WASM backend)
+- **TinyGo** (default, for building WASM backend — see [tinygo.org/getting-started/install](https://tinygo.org/getting-started/install/)), or **Go** if you pass `--go-toolchain go`
 - **Bun** (for building frontend)
 - **jq** (for JSON parsing, used when checking existing plugins)
 - **curl** (for API calls)
@@ -235,6 +245,7 @@ export API_KEY=your-api-key
 - Backend artifacts (WASM binary, migrations, manifest)
 - Frontend artifacts (JS/CSS bundles)
 - MCP artifacts (if present)
+- Skills artifacts (if present)
 
 ### What Does NOT Get Removed
 

@@ -24,19 +24,27 @@
 		"allProjects": "All Projects",
 		"project": "Project",
 		"agents": "Agents",
+		"environments": "Environments",
+		"conversations": "Conversations",
+		"automation": "Automation",
 		"team": "Team",
-		"settings": "Settings"
+		"settings": "Settings",
+		"changelog": "What's New",
+		"activity": "Activity"
 	},
 	"projectSwitcher": {
 		"projects": "Projects",
 		"yourProjects": "Your Projects",
 		"noProjectsYet": "No projects yet",
-		"newProject": "New project"
+		"newProject": "New project",
+		"loadingMore": "Loading more…"
 	},
 	"interactions": {
 		"title": "Interactions",
 		"timeline": "Timeline",
-		"productBacklog": "Product Backlog"
+		"productBacklog": "Product Backlog",
+		"plannedSprints": "Draft Sprints",
+		"completedSprints": "Completed Sprints"
 	},
 	"docs": {
 		"documentation": "Documentation",
@@ -49,24 +57,23 @@
 		"newSubfolder": "New Subfolder",
 		"rename": "Rename",
 		"delete": "Delete",
-		"untitled": "Untitled"
+		"untitled": "Untitled",
+		"errors": {
+			"titleInvalid": "That title isn't valid.",
+			"folderNameInvalid": "That folder name isn't valid.",
+			"renameFailed": "Rename failed. Please try again."
+		}
 	},
 	"notifications": {
 		"title": "Notifications",
 		"empty": "No notifications yet",
+		"loadingMore": "Loading…",
 		"markAllAsRead": "Mark all as read",
+		"muteSound": "Mute notification sound",
+		"unmuteSound": "Unmute notification sound",
 		"text": {
 			"assigned": "{{actor}} assigned you to task #{{taskNumber}} — {{taskTitle}}",
 			"mentioned": "{{actor}} mentioned you in #{{taskNumber}} — {{taskTitle}}"
-		},
-		"timeAgo": {
-			"justNow": "just now",
-			"minutes_one": "{{count}}m ago",
-			"minutes_other": "{{count}}m ago",
-			"hours_one": "{{count}}h ago",
-			"hours_other": "{{count}}h ago",
-			"days_one": "{{count}}d ago",
-			"days_other": "{{count}}d ago"
 		}
 	},
 	"userMenu": {

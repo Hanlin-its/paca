@@ -17,7 +17,17 @@
 				"backend": "后端",
 				"frontend": "前端",
 				"migrations": "数据库迁移",
-				"mcp": "MCP"
+				"mcp": "MCP",
+				"skills": "技能"
+			},
+			"errors": {
+				"incompatibleHostVersion": "此插件需要 Paca {{required}} 或更高版本。您当前运行的是 {{current}}。",
+				"incompatibleHostVersionGeneric": "此插件需要比当前运行版本更新的 Paca 版本。",
+				"alreadyUpToDate": "此插件已是最新版本。",
+				"downgradeNotAllowed": "无法安装比已安装版本更旧的版本。",
+				"notFound": "此插件在插件市场中已不可用。",
+				"nameTaken": "已安装同名插件。",
+				"generic": "出现错误，请重试。"
 			}
 		}
 	},
@@ -32,7 +42,10 @@
 			"sidebarProject": "侧边栏 — 项目",
 			"taskDetail": "任务详情",
 			"projectSettingsTab": "项目设置标签页",
-			"customView": "自定义视图"
+			"customView": "自定义视图",
+			"projectPage": "项目页面",
+			"adminPage": "管理页面",
+			"userSettingsTab": "用户设置标签页"
 		}
 	}
 }

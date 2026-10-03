@@ -24,19 +24,27 @@
 		"allProjects": "Todos los proyectos",
 		"project": "Proyecto",
 		"agents": "Agentes",
+		"environments": "Entornos",
+		"conversations": "Conversaciones",
+		"automation": "Automatización",
 		"team": "Equipo",
-		"settings": "Configuración"
+		"settings": "Configuración",
+		"changelog": "Novedades",
+		"activity": "Actividad"
 	},
 	"projectSwitcher": {
 		"projects": "Proyectos",
 		"yourProjects": "Tus proyectos",
 		"noProjectsYet": "Aún no hay proyectos",
-		"newProject": "Nuevo proyecto"
+		"newProject": "Nuevo proyecto",
+		"loadingMore": "Cargando más…"
 	},
 	"interactions": {
 		"title": "Interacciones",
 		"timeline": "Cronología",
-		"productBacklog": "Backlog del producto"
+		"productBacklog": "Backlog del producto",
+		"plannedSprints": "Sprints en borrador",
+		"completedSprints": "Sprints completados"
 	},
 	"docs": {
 		"documentation": "Documentación",
@@ -49,24 +57,23 @@
 		"newSubfolder": "Nueva subcarpeta",
 		"rename": "Cambiar nombre",
 		"delete": "Eliminar",
-		"untitled": "Sin título"
+		"untitled": "Sin título",
+		"errors": {
+			"titleInvalid": "Ese título no es válido.",
+			"folderNameInvalid": "Ese nombre de carpeta no es válido.",
+			"renameFailed": "No se pudo cambiar el nombre. Inténtalo de nuevo."
+		}
 	},
 	"notifications": {
 		"title": "Notificaciones",
 		"empty": "Aún no hay notificaciones",
+		"loadingMore": "Cargando…",
 		"markAllAsRead": "Marcar todas como leídas",
+		"muteSound": "Silenciar sonido de notificaciones",
+		"unmuteSound": "Activar sonido de notificaciones",
 		"text": {
 			"assigned": "{{actor}} te asignó la tarea #{{taskNumber}} — {{taskTitle}}",
 			"mentioned": "{{actor}} te mencionó en #{{taskNumber}} — {{taskTitle}}"
-		},
-		"timeAgo": {
-			"justNow": "justo ahora",
-			"minutes_one": "hace {{count}} min",
-			"minutes_other": "hace {{count}} min",
-			"hours_one": "hace {{count}} h",
-			"hours_other": "hace {{count}} h",
-			"days_one": "hace {{count}} d",
-			"days_other": "hace {{count}} d"
 		}
 	},
 	"userMenu": {

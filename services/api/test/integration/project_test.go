@@ -13,9 +13,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	projectdom "github.com/Paca-AI/api/internal/domain/project"
 	"github.com/Paca-AI/api/internal/platform/authz"
 	jwttoken "github.com/Paca-AI/api/internal/platform/token"
+	activitysvc "github.com/Paca-AI/api/internal/service/activity"
 	authsvc "github.com/Paca-AI/api/internal/service/auth"
 	projectsvc "github.com/Paca-AI/api/internal/service/project"
 	sprintsvc "github.com/Paca-AI/api/internal/service/sprint"
@@ -23,7 +26,6 @@ import (
 	usersvc "github.com/Paca-AI/api/internal/service/user"
 	"github.com/Paca-AI/api/internal/transport/http/handler"
 	"github.com/Paca-AI/api/internal/transport/http/router"
-	"github.com/google/uuid"
 )
 
 type fakeProjectRepo struct {
@@ -169,6 +171,20 @@ func (r *fakeProjectRepo) Update(_ context.Context, p *projectdom.Project) error
 	return nil
 }
 
+func (r *fakeProjectRepo) UpdateJevConfig(_ context.Context, projectID uuid.UUID, apiKeySecret, baseURL, model string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	p, ok := r.projects[projectID]
+	if !ok {
+		return projectdom.ErrNotFound
+	}
+	p.JevAPIKeySecret = apiKeySecret
+	p.JevBaseURL = baseURL
+	p.JevModel = model
+	return nil
+}
+
 func (r *fakeProjectRepo) Delete(_ context.Context, id uuid.UUID) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -287,6 +303,26 @@ func (r *fakeProjectRepo) ListMembers(_ context.Context, projectID uuid.UUID) ([
 	return out, nil
 }
 
+func (r *fakeProjectRepo) CountDistinctAgentsByProjects(_ context.Context, projectIDs []uuid.UUID) (int64, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	wanted := make(map[uuid.UUID]struct{}, len(projectIDs))
+	for _, id := range projectIDs {
+		wanted[id] = struct{}{}
+	}
+	agents := make(map[uuid.UUID]struct{})
+	for _, m := range r.members {
+		if _, ok := wanted[m.ProjectID]; !ok {
+			continue
+		}
+		if m.AgentID != nil {
+			agents[*m.AgentID] = struct{}{}
+		}
+	}
+	return int64(len(agents)), nil
+}
+
 func (r *fakeProjectRepo) FindMember(_ context.Context, projectID, userID uuid.UUID) (*projectdom.ProjectMember, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -382,6 +418,17 @@ func (r *fakeProjectRepo) UpdateMemberRoleByMemberID(_ context.Context, memberID
 	}
 	return projectdom.ErrMemberNotFound
 }
+func (r *fakeProjectRepo) UpdateMemberDescription(_ context.Context, memberID uuid.UUID, description string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, m := range r.members {
+		if m.ID == memberID {
+			m.Description = description
+			return nil
+		}
+	}
+	return projectdom.ErrMemberNotFound
+}
 func (r *fakeProjectRepo) RemoveMemberByMemberID(_ context.Context, memberID uuid.UUID) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -395,11 +442,11 @@ func (r *fakeProjectRepo) RemoveMemberByMemberID(_ context.Context, memberID uui
 }
 
 type projectPermStore struct {
-	globalPerms  []authz.Permission
-	projectPerms map[uuid.UUID][]authz.Permission
-	userPerms    map[uuid.UUID]map[uuid.UUID][]authz.Permission // user_id -> project_id -> permissions
-	agentPerms   map[uuid.UUID]map[uuid.UUID][]authz.Permission // project_id -> agent_id -> permissions
-	agentRoles   map[uuid.UUID]map[uuid.UUID]string             // project_id -> agent_id -> role_name
+	globalPerms      []authz.Permission
+	projectPerms     map[uuid.UUID][]authz.Permission
+	userPerms        map[uuid.UUID]map[uuid.UUID][]authz.Permission // user_id -> project_id -> permissions
+	agentPerms       map[uuid.UUID]map[uuid.UUID][]authz.Permission // project_id -> agent_id -> permissions
+	agentGlobalPerms map[uuid.UUID][]authz.Permission               // agent_id -> permissions (via its own global role)
 }
 
 func (s *projectPermStore) ListGlobalPermissions(context.Context, uuid.UUID) ([]authz.Permission, error) {
@@ -419,20 +466,17 @@ func (s *projectPermStore) ListProjectPermissions(_ context.Context, userID uuid
 	return nil, nil
 }
 
-func (s *projectPermStore) GetAgentProjectRoleName(_ context.Context, agentID, projectID uuid.UUID) (string, error) {
-	if projMap, ok := s.agentRoles[projectID]; ok {
-		if role, ok := projMap[agentID]; ok {
-			return role, nil
-		}
-	}
-	return "", fmt.Errorf("agent not found in project")
-}
-
+// ListAgentProjectPermissions mirrors the real store: an agent that is not a
+// member of the project simply has no permissions there.
 func (s *projectPermStore) ListAgentProjectPermissions(_ context.Context, agentID, projectID uuid.UUID) ([]authz.Permission, error) {
 	if projMap, ok := s.agentPerms[projectID]; ok {
 		return append([]authz.Permission(nil), projMap[agentID]...), nil
 	}
-	return nil, fmt.Errorf("agent permissions not found")
+	return nil, nil
+}
+
+func (s *projectPermStore) ListAgentGlobalPermissions(_ context.Context, agentID uuid.UUID) ([]authz.Permission, error) {
+	return append([]authz.Permission(nil), s.agentGlobalPerms[agentID]...), nil
 }
 
 func buildProjectTestRouter(repo *fakeProjectRepo, store *projectPermStore) http.Handler {
@@ -446,7 +490,7 @@ func buildProjectTestRouterWithTaskRepo(repo *fakeProjectRepo, store *projectPer
 	userRepo := newFakeUserRepo()
 	authService := authsvc.New(userRepo, tm, refreshStore, 168*time.Hour, 24*time.Hour)
 	userService := usersvc.New(userRepo)
-	projectService := projectsvc.New(repo, taskRepo)
+	projectService := projectsvc.New(repo, taskRepo, nil)
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
 	return router.New(router.Deps{
@@ -458,7 +502,7 @@ func buildProjectTestRouterWithTaskRepo(repo *fakeProjectRepo, store *projectPer
 		User:                 handler.NewUserHandler(userService),
 		GlobalRole:           handler.NewGlobalRoleHandler(&fakeGlobalRoleService{}),
 		Project:              handler.NewProjectHandler(projectService, authz.NewAuthorizer(store)),
-		Task:                 handler.NewTaskHandler(tasksvc.New(taskRepo), sprintsvc.NewViewService(newFakeViewRepoIT()), tasksvc.NewActivityService(newFakeTaskActivityRepo(), &fakeActivityMemberRepo{}, nil)),
+		Task:                 handler.NewTaskHandler(tasksvc.New(taskRepo), sprintsvc.NewViewService(newFakeViewRepoIT(), newFakeSprintRepoIT(), taskRepo, nil), tasksvc.NewActivityService(activitysvc.New(newFakeTaskActivityRepo(), &fakeActivityMemberRepo{}, nil), taskRepo, &fakeActivityMemberRepo{})),
 		Log:                  log,
 	}), taskRepo
 }
@@ -549,6 +593,7 @@ func TestIntegrationProjectManagement_AdminCRUD(t *testing.T) {
 			authz.PermissionProjectsCreate,
 			authz.PermissionProjectsDelete,
 		},
+		projectPerms: map[uuid.UUID][]authz.Permission{},
 	}
 	r := buildProjectTestRouter(repo, store)
 	tok := issueProjectToken(t, uuid.NewString())
@@ -562,6 +607,17 @@ func TestIntegrationProjectManagement_AdminCRUD(t *testing.T) {
 		t.Fatalf("create: expected 201, got %d (%s)", createW.Code, createW.Body.String())
 	}
 	projectID := projectIDFromCreate(t, createW)
+
+	// projectsvc.Service.Create (exercised above via the real router) already
+	// added this user as the new project's "Admin" member in fakeProjectRepo
+	// — production authorizes the PATCH/DELETE below off that project-scoped
+	// grant. projectPermStore is a hand-fed stub with no wiring back to
+	// fakeProjectRepo's membership table, so it has to be told the same thing
+	// explicitly. Before the GHSA-hjcj-373w-vq8m fix to hasPermissionsForActor,
+	// this test passed those calls via the *global* projects.write/delete set
+	// above leaking into the project-scoped check instead — i.e. it was
+	// inadvertently asserting the vulnerability, not real project membership.
+	store.projectPerms[uuid.MustParse(projectID)] = []authz.Permission{authz.PermissionAll}
 
 	listW := serve(r, authedJSONReq(t.Context(), http.MethodGet, "/api/v1/projects", tok, nil))
 	if listW.Code != http.StatusOK {

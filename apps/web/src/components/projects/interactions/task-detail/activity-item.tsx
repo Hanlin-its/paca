@@ -5,8 +5,8 @@ import {
 	isBlocksContent,
 	textToBlocks,
 } from "@/components/shared/comment-blocknote";
+import { timeAgo } from "@/lib/time-ago";
 import { cn } from "@/lib/utils";
-import { timeAgo } from "./helpers";
 import type { ActivityEntry } from "./types";
 
 export type ActivityNameMaps = {
@@ -66,14 +66,19 @@ export function describeTaskChange(
 				return t("taskDetail.activity.changedPriority", { oldVal, newVal });
 			return t("taskDetail.activity.setPriority", { newVal });
 		case "assignee": {
-			const oldName = resolveMember(change.old);
-			const newName = resolveMember(change.new);
-			if (hasOld && hasNew)
+			const oldIds = Array.isArray(change.old) ? change.old : [];
+			const newIds = Array.isArray(change.new) ? change.new : [];
+			const resolveMembers = (ids: unknown[]) =>
+				ids.map((id) => resolveMember(id)).join(", ");
+			const oldName = resolveMembers(oldIds);
+			const newName = resolveMembers(newIds);
+			if (oldIds.length > 0 && newIds.length > 0)
 				return t("taskDetail.activity.changedAssignee", {
 					oldName,
 					newName,
 				});
-			if (hasNew) return t("taskDetail.activity.assignedTo", { newName });
+			if (newIds.length > 0)
+				return t("taskDetail.activity.assignedTo", { newName });
 			return t("taskDetail.activity.removedAssignee", { oldName });
 		}
 		case "reporter": {
@@ -127,8 +132,11 @@ export function describeTaskChange(
 	}
 }
 
-function activityDescription(
-	entry: ActivityEntry,
+// Exported (and narrowed to just the fields it needs) so the agent activity
+// feed tab can reuse the same task-activity copy without duplicating it —
+// see apps/web/src/components/projects/agents/agent-activity-tab.tsx.
+export function activityDescription(
+	entry: Pick<ActivityEntry, "activity_type" | "content">,
 	names: ActivityNameMaps,
 	t: TFunction<"projects">,
 ): string {
@@ -172,6 +180,18 @@ function activityDescription(
 		}
 		case "task.link.removed":
 			return t("taskDetail.activity.removedTaskLink");
+		case "task.auto_assign.skipped": {
+			const confidence = content.confidence as number | null | undefined;
+			if (
+				content.reason === "low_confidence" &&
+				typeof confidence === "number"
+			) {
+				return t("taskDetail.activity.autoAssignSkippedLowConfidence", {
+					confidence: Math.round(confidence * 100),
+				});
+			}
+			return t("taskDetail.activity.autoAssignSkipped");
+		}
 		default:
 			return (
 				(content._description as string | undefined) ??
@@ -188,6 +208,7 @@ export function ActivityItem({
 	names?: ActivityNameMaps;
 }) {
 	const { t } = useTranslation("projects");
+	const { t: tCommon } = useTranslation("common");
 	const isComment = entry.activity_type === "comment";
 	const displayName =
 		entry.actor_name || entry.actor_username || t("taskDetail.activity.system");
@@ -219,7 +240,7 @@ export function ActivityItem({
 								{displayName}
 							</span>
 							<span className="text-xs text-muted-foreground/50">
-								{timeAgo(entry.created_at, t)}
+								{timeAgo(entry.created_at, tCommon)}
 							</span>
 						</div>
 						{commentBlocks && commentBlocks.length > 0 ? (
@@ -241,7 +262,7 @@ export function ActivityItem({
 							{activityDescription(entry, names, t)}
 						</span>
 						<span className="text-xs text-muted-foreground/45">
-							{timeAgo(entry.created_at, t)}
+							{timeAgo(entry.created_at, tCommon)}
 						</span>
 					</div>
 				)}

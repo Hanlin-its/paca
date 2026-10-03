@@ -1,4 +1,5 @@
 import {
+	useInfiniteQuery,
 	useMutation,
 	useQueries,
 	useQuery,
@@ -15,6 +16,7 @@ import {
 	ChevronDown,
 	KanbanSquare,
 	List,
+	Loader2,
 	Map as MapIcon,
 	Plus,
 	Puzzle,
@@ -25,6 +27,15 @@ import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import { Button } from "@/components/ui/button";
+import {
+	Dialog,
+	DialogContent,
+	DialogDescription,
+	DialogFooter,
+	DialogHeader,
+	DialogTitle,
+} from "@/components/ui/dialog";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -35,13 +46,21 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { useDebouncedCallback } from "@/hooks/use-debounced-callback";
 import {
+	ApiErrorCode,
+	getApiErrorCode,
+	isTaskNotFoundError,
+} from "@/lib/api-error";
+import {
 	allTasksQueryOptions,
 	bulkMoveViewTaskPositions,
+	type CustomFieldFilterQuery,
+	clearMyViewConfig,
 	createSprint,
 	createTask,
 	createViewByContext,
+	deleteTask,
 	deleteViewById,
-	epicTasksQueryOptions,
+	epicTasksInfiniteQueryOptions,
 	type FilterConfig,
 	type InteractionView,
 	type ListTasksOptions,
@@ -53,6 +72,8 @@ import {
 	sprintsQueryOptions,
 	type Task,
 	type TaskListResult,
+	taskQueryOptions,
+	updateMyViewConfig,
 	updateSprint,
 	updateTask,
 	updateViewById,
@@ -63,6 +84,7 @@ import {
 } from "@/lib/interaction-api";
 import type { PluginRegistration } from "@/lib/plugin-api";
 import { RemoteComponent } from "@/lib/plugins/loader";
+import { usePluginBaseProps } from "@/lib/plugins/plugin-props";
 import { usePluginRegistry } from "@/lib/plugins/registry";
 import {
 	customFieldsQueryOptions,
@@ -72,19 +94,27 @@ import {
 	taskStatusesQueryOptions,
 	taskTypesQueryOptions,
 } from "@/lib/project-api";
+import { formatChord, isMacPlatform } from "@/lib/shortcuts/keymap";
+import { usePageShortcutStore } from "@/lib/shortcuts/page-shortcut-store";
 import { cn } from "@/lib/utils";
 import { BoardView } from "./board-view";
 import { ListView } from "./list-view";
 import { NewViewPopover } from "./new-view-popover";
+import { getImportanceBucketBounds } from "./priority";
 import { RenameViewDialog } from "./rename-view-dialog";
 import { RoadmapView } from "./roadmap-view";
+import type { SprintFormPayload } from "./sprint-form-modal";
 import { TaskDetailModal } from "./task-detail-modal";
 import { UNASSIGNED_FILTER_ID, ViewSettingsPanel } from "./view-settings-panel";
 import {
+	type EpicsPagination,
 	getColumnGroupDefs,
 	getDefaultInitialPageSize,
 	getDefaultPageSize,
 	getTaskColumnKeys,
+	keepPreviousDataOnPageSizeChangeOnly,
+	resolveSelectedTask,
+	shouldClearColumnExtras,
 	type TaskFieldUpdate,
 	type ViewContext,
 } from "./view-utils";
@@ -207,6 +237,10 @@ interface InteractionLayoutProps {
 	canCreate: boolean;
 	canEdit: boolean;
 	canManageViews: boolean;
+	/** Gates New/Start Sprint (backlog context only) — sprints.write, a
+	 * separate permission from canCreate (tasks.write): being able to
+	 * create a task doesn't imply being able to create or start a sprint. */
+	canManageSprints: boolean;
 	onTaskClick?: (task: Task) => void;
 	sprintId?: string | null;
 	/** The view context — drives which API bucket is used for views */
@@ -262,6 +296,28 @@ function buildColumnFilter(
 	}
 }
 
+/** Sets `?taskId=` on the current URL without triggering a route navigation. */
+function setTaskIdSearchParam(taskId: string) {
+	try {
+		const url = new URL(window.location.href);
+		url.searchParams.set("taskId", taskId);
+		window.history.pushState({}, "", url.toString());
+	} catch {
+		/* ignore */
+	}
+}
+
+/** Removes `?taskId=` from the current URL without triggering a route navigation. */
+function clearTaskIdSearchParam() {
+	try {
+		const url = new URL(window.location.href);
+		url.searchParams.delete("taskId");
+		window.history.pushState({}, "", url.toString());
+	} catch {
+		/* ignore */
+	}
+}
+
 export function InteractionLayout({
 	projectId,
 	interactionKey,
@@ -270,6 +326,7 @@ export function InteractionLayout({
 	canCreate,
 	canEdit,
 	canManageViews,
+	canManageSprints,
 	onTaskClick,
 	sprintId,
 	context,
@@ -428,7 +485,10 @@ export function InteractionLayout({
 			uninitializedViews.map((view) => {
 				const config = buildDefaultViewConfig(view.layout, view.config);
 				if (!config) return Promise.resolve(view);
-				return updateViewById(projectId, view.id, { config });
+				// Per-user: default filters are derived from the current user's
+				// preferences, so seed them into this user's override — never the
+				// shared row (which would leak one user's defaults to everyone).
+				return updateMyViewConfig(projectId, view.id, config);
 			}),
 		)
 			.then(() => qc.invalidateQueries({ queryKey: viewsQueryKey }))
@@ -472,6 +532,13 @@ export function InteractionLayout({
 						r.component === activeView.config?.plugin_component,
 				) ?? null)
 			: null;
+
+	// BaseExtensionProps (api/ui/meta) for the active plugin view, if any —
+	// every ViewExtensionProps component expects these alongside projectId.
+	const activePluginViewBaseProps = usePluginBaseProps(
+		activePluginView ?? undefined,
+		projectId,
+	);
 
 	useEffect(() => {
 		if (!activeViewId) return;
@@ -519,7 +586,13 @@ export function InteractionLayout({
 	);
 	const [searchOpen, setSearchOpen] = useState(false);
 	const searchRef = useRef<HTMLInputElement>(null);
-	const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+	const [selectedTaskId, setSelectedTaskId] = useState<string | null>(() => {
+		try {
+			return new URL(window.location.href).searchParams.get("taskId");
+		} catch {
+			return null;
+		}
+	});
 
 	const { data: members = [] } = useQuery(
 		projectMembersQueryOptions(projectId),
@@ -527,12 +600,33 @@ export function InteractionLayout({
 
 	const { data: sprints = [] } = useQuery(sprintsQueryOptions(projectId));
 
-	// Fetch Epic tasks for display in the epic field on task cards/rows
+	// Fetch Epic tasks for display in the epic field on task cards/rows.
+	// Paginated 20-per-page (see epicTasksInfiniteQueryOptions) — every epic
+	// picker app-wide (task detail, board/list-view cards & rows, the
+	// right-click context menu) shares this single query and its
+	// fetchNextPage/hasNextPage via the epicsPagination object below.
 	const epicType = findEpicType(taskTypes);
-	const { data: epicTasks = [] } = useQuery({
-		...epicTasksQueryOptions(projectId, epicType?.id ?? ""),
+	const {
+		data: epicPages,
+		fetchNextPage: fetchNextEpicsPage,
+		hasNextPage: hasMoreEpics,
+		isFetchingNextPage: isFetchingMoreEpics,
+	} = useInfiniteQuery({
+		...epicTasksInfiniteQueryOptions(projectId, epicType?.id ?? ""),
 		enabled: !!epicType?.id,
 	});
+	const epicTasks = useMemo(
+		() => epicPages?.pages.flatMap((page) => page.items) ?? [],
+		[epicPages],
+	);
+	const epicsPagination: EpicsPagination = useMemo(
+		() => ({
+			hasMore: !!hasMoreEpics,
+			isLoadingMore: isFetchingMoreEpics,
+			onLoadMore: () => void fetchNextEpicsPage(),
+		}),
+		[hasMoreEpics, isFetchingMoreEpics, fetchNextEpicsPage],
+	);
 
 	const isRealView = !!activeViewId && !activeViewId.startsWith("__default-");
 	const effectiveViewId = isManualSort && isRealView ? activeViewId : undefined;
@@ -561,6 +655,55 @@ export function InteractionLayout({
 			);
 		}
 
+		let custom_field_filters:
+			| Record<string, CustomFieldFilterQuery>
+			| undefined;
+		const cfFilterConfig = activeViewConfig?.filters?.custom_fields;
+		if (cfFilterConfig) {
+			const resolved: Record<string, CustomFieldFilterQuery> = {};
+			for (const cf of customFields) {
+				const f = cfFilterConfig[cf.field_key];
+				if (!f) continue;
+				if (cf.field_type === "select" || cf.field_type === "multi_select") {
+					if (!f.selector) continue;
+					const values = resolveFilterConfig(
+						f.selector,
+						cf.options.map((o) => o.value),
+					);
+					if (values.length > 0) resolved[cf.field_key] = { values };
+				} else if (cf.field_type === "boolean") {
+					if (!f.selector) continue;
+					const values = resolveFilterConfig(f.selector, ["true", "false"]);
+					if (values.length > 0) resolved[cf.field_key] = { values };
+				} else if (cf.field_type === "number") {
+					if (f.min == null && f.max == null) continue;
+					resolved[cf.field_key] = { min: f.min, max: f.max };
+				} else if (cf.field_type === "date") {
+					if (!f.after && !f.before) continue;
+					resolved[cf.field_key] = { after: f.after, before: f.before };
+				} else {
+					// text / url
+					if (!f.contains) continue;
+					resolved[cf.field_key] = { contains: f.contains };
+				}
+			}
+			if (Object.keys(resolved).length > 0) custom_field_filters = resolved;
+		}
+
+		let importance_ranges: { min: number; max: number }[] | undefined;
+		const importanceBuckets = activeViewConfig?.filters?.importance;
+		if (importanceBuckets && importanceBuckets.length > 0) {
+			importance_ranges = importanceBuckets.map((bucket) =>
+				getImportanceBucketBounds(bucket),
+			);
+		}
+
+		const tags =
+			activeViewConfig?.filters?.tags &&
+			activeViewConfig.filters.tags.length > 0
+				? activeViewConfig.filters.tags
+				: undefined;
+
 		return {
 			sprint_ids:
 				activeViewConfig?.filters !== undefined
@@ -582,9 +725,19 @@ export function InteractionLayout({
 			assignee_ids,
 			assignee_null,
 			task_type_ids,
+			custom_field_filters,
+			start_date_after: activeViewConfig?.filters?.start_date?.after,
+			start_date_before: activeViewConfig?.filters?.start_date?.before,
+			due_date_after: activeViewConfig?.filters?.due_date?.after,
+			due_date_before: activeViewConfig?.filters?.due_date?.before,
+			story_points_min: activeViewConfig?.filters?.story_points?.min,
+			story_points_max: activeViewConfig?.filters?.story_points?.max,
+			importance_ranges,
+			tags,
 		};
 	}, [
 		activeViewConfig?.filters,
+		customFields,
 		defaultPageTaskTypeIds,
 		members,
 		sprints,
@@ -645,6 +798,15 @@ export function InteractionLayout({
 			sortBy: activeViewConfig?.sort_by,
 			viewId: effectiveViewId,
 			search: debouncedSearchQuery || undefined,
+			customFieldFilters: apiFilters.custom_field_filters,
+			startDateAfter: apiFilters.start_date_after,
+			startDateBefore: apiFilters.start_date_before,
+			dueDateAfter: apiFilters.due_date_after,
+			dueDateBefore: apiFilters.due_date_before,
+			storyPointsMin: apiFilters.story_points_min,
+			storyPointsMax: apiFilters.story_points_max,
+			importanceRanges: apiFilters.importance_ranges,
+			tags: apiFilters.tags,
 		}),
 		[
 			context,
@@ -686,6 +848,29 @@ export function InteractionLayout({
 							enabled: false,
 						};
 					}
+					// pageSize is deliberately excluded from the queryKey: "load
+					// more" (handleLoadMoreColumn) grows colExpandedPageSizes purely
+					// so that a *future* refetch (a websocket-triggered invalidation,
+					// window refocus, etc.) asks for the same depth the user has
+					// already scrolled to — it fetches the next page itself directly
+					// via listAllTasks, bypassing this query entirely. If pageSize
+					// were part of the key, every such bump would register as a
+					// brand-new query and eagerly trigger its OWN full background
+					// refetch of the whole (growing) range in parallel — a second,
+					// redundant fetch on top of the one load-more already made.
+					// Chained across a fast scroll session (each one taking a full
+					// network round trip) that queued up faster than each one could
+					// resolve, which intermittently left `data` briefly undefined for
+					// this column — enough to trip the `tasksLoading` skeleton gate
+					// below and flash the whole board back to the loading state mid-
+					// scroll, plus doubling backend load for no reason. Keeping the
+					// key stable means growing colExpandedPageSizes never triggers an
+					// implicit fetch — the next time this query naturally refetches
+					// for any other reason, it picks up the current expanded
+					// pageSize (colOpts is rebuilt fresh every render), so the
+					// "same depth on refetch" behavior is preserved without the
+					// eager duplicate work.
+					const { pageSize: _keyPageSize, ...colOptsForKey } = colOpts;
 					return {
 						queryKey: [
 							"projects",
@@ -693,7 +878,7 @@ export function InteractionLayout({
 							"tasks",
 							"col",
 							col.key,
-							colOpts,
+							colOptsForKey,
 						] as const,
 						queryFn: () => listAllTasks(projectId, colOpts),
 						staleTime: 15_000,
@@ -724,6 +909,15 @@ export function InteractionLayout({
 			sortBy: activeViewConfig?.sort_by,
 			viewId: effectiveViewId,
 			search: debouncedSearchQuery || undefined,
+			customFieldFilters: apiFilters.custom_field_filters,
+			startDateAfter: apiFilters.start_date_after,
+			startDateBefore: apiFilters.start_date_before,
+			dueDateAfter: apiFilters.due_date_after,
+			dueDateBefore: apiFilters.due_date_before,
+			storyPointsMin: apiFilters.story_points_min,
+			storyPointsMax: apiFilters.story_points_max,
+			importanceRanges: apiFilters.importance_ranges,
+			tags: apiFilters.tags,
 		}),
 		[
 			context,
@@ -738,13 +932,20 @@ export function InteractionLayout({
 
 	const initialGlobalPageSize =
 		configuredInitialPageSize ?? getDefaultInitialPageSize(activeView?.layout);
-	const fallbackQueryOpts = allTasksQueryOptions(projectId, {
+	const fallbackOpts = {
 		...fallbackBaseOpts,
 		pageSize: globalExpandedPageSize ?? initialGlobalPageSize,
-	});
+	};
+	const fallbackQueryOpts = allTasksQueryOptions(projectId, fallbackOpts);
 	const fallbackQuery = useQuery({
 		...fallbackQueryOpts,
 		enabled: !colQueriesEnabled && !viewsQuery.isLoading,
+		// See the matching comment on the column queries above: "load more"
+		// grows pageSize (and thus the queryKey), so keep showing the smaller
+		// page's data while the larger one fetches instead of dropping to
+		// undefined — scoped to pageSize-only key changes so a genuine
+		// filter/sort/search change still shows the loading skeleton.
+		placeholderData: keepPreviousDataOnPageSizeChangeOnly(fallbackOpts),
 	});
 
 	// Per-column load-more state
@@ -757,8 +958,31 @@ export function InteractionLayout({
 	const [colLoadingMore, setColLoadingMore] = useState<Record<string, boolean>>(
 		{},
 	);
+	// Mirrors colLoadingMore but reads/writes synchronously, unlike state. A
+	// scroll-triggered "load more" (see board-view.tsx's onScroll handler) can
+	// fire many times in the gap between calling setColLoadingMore(true) and
+	// that update actually reaching this column's isLoadingMore prop — every
+	// scroll tick in that window still sees the old colLoadingMore[colKey]
+	// captured in its own render's closure, so state alone doesn't stop the
+	// same page from being double-fetched. A ref is shared across every
+	// render's closure, so the first call's synchronous write is visible to
+	// the very next call regardless of whether a re-render has happened yet.
+	const colLoadingMoreRef = useRef<Record<string, boolean>>({});
+	// Tracks whether a column's last load-more attempt failed. board-view.tsx's
+	// ColumnScrollArea auto-requests more pages on its own (no user scroll)
+	// whenever a column's content doesn't yet fill its visible height — without
+	// this flag, a failed fetch (network blip, 5xx) would still leave the
+	// column under-filled, and that effect would immediately retry on every
+	// subsequent render with no backoff, hammering the backend. Set on failure,
+	// cleared on the next successful fetch; deliberately NOT checked by the
+	// scroll-triggered handler, so a manual scroll (or the swimlane layout's
+	// button) can still retry right away.
+	const [colLoadMoreFailed, setColLoadMoreFailed] = useState<
+		Record<string, boolean>
+	>({});
 
-	// Sync next cursors from initial column query results; reset extras on re-fetch
+	// Sync next cursors from initial column query results; reset extras once
+	// each column's own base query has re-fetched at its expanded depth.
 	const colDataUpdatedKey = columnQueries.map((q) => q.dataUpdatedAt).join(",");
 	// biome-ignore lint/correctness/useExhaustiveDependencies: re-sync only when column query data changes
 	useEffect(() => {
@@ -769,20 +993,63 @@ export function InteractionLayout({
 			if (data) updated[col.key] = data.next_cursor ?? null;
 		});
 		setColNextCursors(updated);
-		// Clear load-more extras so stale tasks don't linger after a WS refetch.
-		// A brief flash is expected; colExpandedPageSizes ensures the next refetch
-		// re-fetches the same depth, restoring all visible items from the server.
-		setColExtraTasks({});
+		// "Load more" bumps colExpandedPageSizes[col.key], which changes that
+		// column's query to fetch the same expanded depth directly — once it
+		// resolves, the base data already covers what the extras held, so the
+		// extras are redundant and can be dropped. Dropping extras for every
+		// column on *any* column's refetch (e.g. a WS-triggered invalidation
+		// of an unrelated column) used to make already-loaded tasks flash out
+		// of the list — and out from under an open task detail dialog — until
+		// that column's own expanded refetch caught up. Only drop a column's
+		// extras once its own base data has actually reached that depth —
+		// or, if the true total has shrunk below that depth (a loaded task
+		// got deleted or moved out of the column/filter), once the base
+		// query reports there's nothing left to fetch (`next_cursor: null`),
+		// since that response is authoritative even though it's shorter than
+		// expected. Without the second condition, a permanently-shrunk total
+		// would never satisfy the length check, leaving deleted/moved tasks
+		// stuck as unclearable ghosts in colExtraTasks indefinitely.
+		setColExtraTasks((prev) => {
+			let changed = false;
+			const next = { ...prev };
+			for (const [key, extras] of Object.entries(prev)) {
+				if (extras.length === 0) continue;
+				const idx = fetchColumnDefs.findIndex((col) => col.key === key);
+				const data = idx >= 0 ? columnQueries[idx]?.data : undefined;
+				const expectedDepth = colExpandedPageSizes[key] ?? initialColPageSize;
+				if (shouldClearColumnExtras(data, expectedDepth)) {
+					delete next[key];
+					changed = true;
+				}
+			}
+			return changed ? next : prev;
+		});
 	}, [colDataUpdatedKey, colQueriesEnabled]);
 
-	// biome-ignore lint/correctness/useExhaustiveDependencies: reset only when base opts change
+	// colBaseOpts is a useMemo, but an upstream dependency (e.g. apiFilters,
+	// which depends on customFields/sprints — queries the task detail modal
+	// re-observes on open, both without an explicit staleTime) can recompute
+	// to a *new object* with the *same values* once that background refetch
+	// resolves. Comparing colBaseOpts by reference treated that as "filters
+	// changed" and wiped the "load more" depth back to the initial page size
+	// — confirmed via a network capture showing the resulting request had
+	// every filter field unchanged, only a reverted page_size. Compare by
+	// value instead, so only a genuine filter/sort/search change resets it.
+	const colBaseOptsKey = useMemo(
+		() => JSON.stringify(colBaseOpts),
+		[colBaseOpts],
+	);
+	// colBaseOptsKey is a value-equality fingerprint of colBaseOpts, kept in
+	// the dep array purely to control *when* this effect re-runs even though
+	// the body doesn't read it.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: reset only when the *value* of colBaseOpts changes
 	useEffect(() => {
 		setColExpandedPageSizes({});
-	}, [colBaseOpts]);
+	}, [colBaseOptsKey]);
 
 	const handleLoadMoreColumn = useCallback(
 		async (colKey: string) => {
-			if (colLoadingMore[colKey]) return;
+			if (colLoadingMoreRef.current[colKey]) return;
 			const cursor = colNextCursors[colKey];
 			if (!cursor) return;
 			const colOpts = buildColumnFilter(colKey, columnBy, {
@@ -791,6 +1058,7 @@ export function InteractionLayout({
 				cursor,
 			});
 			if (!colOpts) return;
+			colLoadingMoreRef.current[colKey] = true;
 			setColLoadingMore((prev) => ({ ...prev, [colKey]: true }));
 			try {
 				const result = await listAllTasks(projectId, colOpts);
@@ -808,7 +1076,27 @@ export function InteractionLayout({
 					...prev,
 					[colKey]: (prev[colKey] ?? initialColPageSize) + result.items.length,
 				}));
+				// A response with no items yet a non-null next_cursor makes no
+				// progress — without treating that like a failure here, a column
+				// stuck in that state would retry every render with no backoff,
+				// since ColumnScrollArea's auto-fill effect only backs off when
+				// lastLoadMoreFailed is set.
+				const stalled =
+					result.items.length === 0 && Boolean(result.next_cursor);
+				setColLoadMoreFailed((prev) =>
+					Boolean(prev[colKey]) === stalled
+						? prev
+						: { ...prev, [colKey]: stalled },
+				);
+			} catch (error) {
+				// Caught here (rather than left to reject) so every caller —
+				// ColumnScrollArea's auto-fill effect, the scroll handler, and the
+				// swimlane layout's button — can fire-and-forget onLoadMore()
+				// without each needing its own unhandled-rejection handling.
+				console.error(error);
+				setColLoadMoreFailed((prev) => ({ ...prev, [colKey]: true }));
 			} finally {
+				colLoadingMoreRef.current[colKey] = false;
 				setColLoadingMore((prev) => ({ ...prev, [colKey]: false }));
 			}
 		},
@@ -817,7 +1105,6 @@ export function InteractionLayout({
 			columnBy,
 			colBaseOpts,
 			projectId,
-			colLoadingMore,
 			initialColPageSize,
 			configuredPageSize,
 			activeView?.layout,
@@ -902,11 +1189,73 @@ export function InteractionLayout({
 		globalExtraTasks,
 	]);
 
+	// Epics referenced by tasks currently on screen but not yet among the
+	// paginated epicTasks pages (the picker loads 20 at a time — a task's
+	// epic may sort past that window even though it hasn't been "loaded
+	// more" by anyone). Fetch those specific epics directly so the epic
+	// badge on cards/rows resolves instead of silently rendering as unset.
+	const loadedEpicIds = useMemo(
+		() => new Set(epicTasks.map((e) => e.id)),
+		[epicTasks],
+	);
+	const missingEpicIds = useMemo(() => {
+		// Once every epic page has been loaded, any parent_task_id that's
+		// still absent from loadedEpicIds is guaranteed to be a non-epic
+		// parent (story/task nesting) rather than an unpaginated epic — skip
+		// fetching it. This keeps the direct-fetch fallback scoped to the
+		// (typically brief) window before pagination catches up, instead of
+		// firing for every non-epic parent on every board/list render.
+		if (!hasMoreEpics) return [];
+		const ids = new Set<string>();
+		for (const task of tasks) {
+			if (task.parent_task_id && !loadedEpicIds.has(task.parent_task_id)) {
+				ids.add(task.parent_task_id);
+			}
+		}
+		return Array.from(ids);
+	}, [tasks, loadedEpicIds, hasMoreEpics]);
+	// `combine` gives the filtered result structural-sharing/memoization
+	// across renders (plain useQueries() returns a new array every render,
+	// which would otherwise defeat displayEpics' useMemo below).
+	const missingEpics = useQueries({
+		queries: missingEpicIds.map((epicId) => ({
+			...taskQueryOptions(projectId, epicId),
+			enabled: !!epicType?.id,
+		})),
+		combine: (results) =>
+			// parent_task_id also links non-epic parents (story/task nesting), so
+			// only fold fetched tasks in here when they're actually Epic-typed —
+			// otherwise a task's non-epic parent could render as its "epic".
+			results
+				.map((r) => r.data)
+				.filter(
+					(task): task is Task => !!task && task.task_type_id === epicType?.id,
+				),
+	});
+	const displayEpics = useMemo(
+		() =>
+			missingEpics.length > 0 ? [...epicTasks, ...missingEpics] : epicTasks,
+		[epicTasks, missingEpics],
+	);
+
+	// A column's queryKey changes every time its page size grows ("load
+	// more" bumps colExpandedPageSizes), which makes React Query treat it as
+	// a brand-new query — `isLoading` (isPending && isFetching) is true for
+	// that key until it resolves, even though `placeholderData` is already
+	// showing the previous page's tasks. Driving the full-list skeleton off
+	// `isLoading` therefore replaced the whole list with a skeleton on every
+	// "load more" and every background refetch of an expanded column. Check
+	// for the absence of data instead: with `keepPreviousData` in place that
+	// only happens on a column's genuine first fetch (disabled/noop columns
+	// are excluded via fetchStatus, since they'll never fetch).
 	const tasksLoading =
 		viewsQuery.isLoading ||
 		(colQueriesEnabled
-			? columnQueries.some((q) => q.isLoading)
-			: fallbackQuery.isLoading);
+			? columnQueries.some(
+					(q) => q.data === undefined && q.fetchStatus !== "idle",
+				)
+			: fallbackQuery.data === undefined &&
+				fallbackQuery.fetchStatus !== "idle");
 
 	// Per-column pagination props for views
 	const columnPagination = useMemo(() => {
@@ -919,6 +1268,7 @@ export function InteractionLayout({
 					onLoadMore: () => void;
 					totalCount?: number;
 					fieldSum?: number;
+					lastLoadMoreFailed?: boolean;
 				}
 			>;
 		const result: Record<
@@ -929,6 +1279,7 @@ export function InteractionLayout({
 				onLoadMore: () => void;
 				totalCount?: number;
 				fieldSum?: number;
+				lastLoadMoreFailed?: boolean;
 			}
 		> = {};
 		for (let i = 0; i < fetchColumnDefs.length; i++) {
@@ -940,6 +1291,7 @@ export function InteractionLayout({
 				onLoadMore: () => handleLoadMoreColumn(col.key),
 				totalCount: columnQueries[i]?.data?.total_count,
 				fieldSum: apiFieldSum != null ? apiFieldSum : undefined,
+				lastLoadMoreFailed: Boolean(colLoadMoreFailed[col.key]),
 			};
 		}
 		return result;
@@ -948,6 +1300,7 @@ export function InteractionLayout({
 		fetchColumnDefs,
 		colNextCursors,
 		colLoadingMore,
+		colLoadMoreFailed,
 		handleLoadMoreColumn,
 		columnQueries,
 	]);
@@ -966,42 +1319,73 @@ export function InteractionLayout({
 		[projectId],
 	);
 
-	const selectedTask = useMemo(
-		() =>
-			selectedTaskId
-				? (tasks.find((t) => t.id === selectedTaskId) ?? null)
-				: null,
-		[selectedTaskId, tasks],
-	);
+	// `tasks` is the paginated/grouped list currently loaded for the active
+	// view, so it can transiently stop containing the selected task even
+	// while the detail modal is open — e.g. the per-column "load more" extras
+	// are cleared on every background refetch (see the colExtraTasks reset
+	// effect below) before the expanded page is re-fetched. If `selectedTask`
+	// tracked `tasks` directly, that gap would flip `open` to false and the
+	// modal would flash closed. Cache the last resolved task per id so the
+	// modal stays open (backed by its own fresh-task query) across such gaps,
+	// and only clears when the selection itself changes.
+	const lastSelectedTaskRef = useRef<Task | null>(null);
+	// A task opened via a direct `?taskId=` URL (deep link, bookmark, share)
+	// may not be among the currently loaded/filtered `tasks` at all — e.g. the
+	// backlog view only paginates a page at a time, or the task doesn't match
+	// the active view's filters. Fetch it by id directly so the dialog can
+	// still open; this shares its query key with the mutations below, so it
+	// stays in sync with edits made elsewhere. Only enabled when the task
+	// isn't already resolvable from `tasks` — the common case of clicking a
+	// task that's already loaded needs no extra request.
+	const selectedTaskInList =
+		!!selectedTaskId && tasks.some((t) => t.id === selectedTaskId);
+	const selectedTaskDirectQuery = useQuery({
+		...taskQueryOptions(projectId, selectedTaskId ?? ""),
+		enabled: !!selectedTaskId && !selectedTaskInList,
+		// A confirmed 404 is never worth retrying — fail fast so the `?taskId=`
+		// cleanup below runs promptly. Any other error (network, 5xx) keeps the
+		// default bounded retry, since those are transient and a valid deep
+		// link shouldn't be abandoned after a single blip.
+		retry: (failureCount, error) =>
+			!isTaskNotFoundError(error) && failureCount < 3,
+	});
+	const selectedTask = useMemo(() => {
+		const { resolved, nextLastKnown } = resolveSelectedTask(
+			tasks,
+			selectedTaskId,
+			lastSelectedTaskRef.current,
+		);
+		const directFetched =
+			selectedTaskId && selectedTaskDirectQuery.data?.id === selectedTaskId
+				? selectedTaskDirectQuery.data
+				: null;
+		const final = resolved ?? directFetched;
+		lastSelectedTaskRef.current = final ?? nextLastKnown;
+		return final;
+	}, [selectedTaskId, tasks, selectedTaskDirectQuery.data]);
 
-	const restoredFromUrl = useRef(false);
+	// A selected id that's absent from the loaded list and the API has
+	// authoritatively confirmed (404 TASK_NOT_FOUND) doesn't exist — deleted,
+	// moved to another project, or a mistyped id — can never resolve to a
+	// task. Without this, a broken `?taskId=` deep link leaves the param in
+	// the URL forever with no dialog and no feedback. Deliberately scoped to
+	// TASK_NOT_FOUND rather than any query error: a transient network/5xx
+	// failure says nothing about whether the task exists, so it must not
+	// wipe out an otherwise-valid deep link.
+	const selectedTaskConfirmedMissing =
+		selectedTaskDirectQuery.isError &&
+		isTaskNotFoundError(selectedTaskDirectQuery.error);
 	useEffect(() => {
-		if (restoredFromUrl.current || tasks.length === 0) return;
-		try {
-			const url = new URL(window.location.href);
-			const taskId = url.searchParams.get("taskId");
-			if (taskId) {
-				const found = tasks.find((t) => t.id === taskId);
-				if (found) {
-					setSelectedTaskId(found.id);
-					restoredFromUrl.current = true;
-				}
-			}
-		} catch {
-			/* ignore */
-		}
-	}, [tasks]);
+		if (!selectedTaskId || !selectedTaskConfirmedMissing) return;
+		if (tasks.some((t) => t.id === selectedTaskId)) return;
+		setSelectedTaskId(null);
+		clearTaskIdSearchParam();
+	}, [selectedTaskId, selectedTaskConfirmedMissing, tasks]);
 
 	const handleTaskClick = (task: Task) => {
 		setSelectedTaskId(task.id);
 		onTaskClick?.(task);
-		try {
-			const url = new URL(window.location.href);
-			url.searchParams.set("taskId", task.id);
-			window.history.pushState({}, "", url.toString());
-		} catch {
-			/* ignore */
-		}
+		setTaskIdSearchParam(task.id);
 	};
 
 	const updateStatusMutation = useMutation({
@@ -1018,7 +1402,12 @@ export function InteractionLayout({
 				status_id: statusId,
 				sprint_id: taskSprintId ?? null,
 			}),
-		onSuccess: () => qc.invalidateQueries({ queryKey: tasksListQueryKey }),
+		onSuccess: () => {
+			qc.invalidateQueries({ queryKey: tasksListQueryKey });
+			// Status changes affect a sprint's incomplete-task count (surfaced in
+			// the Complete Sprint dialog's move-to-sprint suggestion).
+			qc.invalidateQueries({ queryKey: ["projects", projectId, "sprints"] });
+		},
 	});
 
 	const handleStatusChange = useCallback(
@@ -1058,7 +1447,13 @@ export function InteractionLayout({
 			}
 			return task;
 		},
-		onSuccess: () => qc.invalidateQueries({ queryKey: tasksListQueryKey }),
+		onSuccess: () => {
+			qc.invalidateQueries({ queryKey: tasksListQueryKey });
+			// A newly created (non-done) task changes its sprint's incomplete-task
+			// count (surfaced in the Complete Sprint dialog's move-to-sprint
+			// suggestion), so refresh the sprint-scoped queries too.
+			qc.invalidateQueries({ queryKey: ["projects", projectId, "sprints"] });
+		},
 	});
 
 	const handleCreateTask = async (
@@ -1184,11 +1579,38 @@ export function InteractionLayout({
 						["projects", projectId, "tasks", taskId],
 						updatedTask,
 					);
-					return qc.invalidateQueries({ queryKey: tasksListQueryKey });
+					qc.invalidateQueries({ queryKey: tasksListQueryKey });
+					// Moving a task between status/sprint columns affects a sprint's
+					// incomplete-task count (surfaced in the Complete Sprint dialog's
+					// move-to-sprint suggestion), so refresh the sprint-scoped queries too.
+					return qc.invalidateQueries({
+						queryKey: ["projects", projectId, "sprints"],
+					});
 				})
 				.catch(console.error);
 		},
 		[projectId, qc, tasksListQueryKey],
+	);
+
+	// ── Delete task (Mod+Backspace shortcut / context menu) ─────────────────
+	const [deleteConfirmTask, setDeleteConfirmTask] = useState<Task | null>(null);
+	const deleteTaskMutation = useMutation({
+		mutationFn: (taskId: string) => deleteTask(projectId, taskId),
+		onSuccess: (_, taskId) => {
+			qc.invalidateQueries({ queryKey: tasksListQueryKey });
+			// Deleting a task changes its sprint's incomplete-task count (surfaced
+			// in the Complete Sprint dialog's move-to-sprint suggestion).
+			qc.invalidateQueries({ queryKey: ["projects", projectId, "sprints"] });
+			setDeleteConfirmTask(null);
+			if (selectedTaskId === taskId) setSelectedTaskId(null);
+		},
+	});
+	const handleRequestDeleteTask = useCallback(
+		(taskId: string) => {
+			const task = tasks.find((t) => t.id === taskId);
+			if (task) setDeleteConfirmTask(task);
+		},
+		[tasks],
 	);
 
 	const createViewMutation = useMutation({
@@ -1224,30 +1646,72 @@ export function InteractionLayout({
 		onSuccess: () => qc.invalidateQueries({ queryKey: viewsQueryKey }),
 	});
 
+	// View settings & filters are PER-USER: persist to the current user's
+	// personal override (updateMyViewConfig) instead of the shared view row, so
+	// one member's sort/filter/field choices never change what others see.
 	const updateViewConfigMutation = useMutation({
 		mutationFn: (payload: { viewId: string; config: ViewConfig }) =>
-			updateViewById(projectId, payload.viewId, { config: payload.config }),
+			updateMyViewConfig(projectId, payload.viewId, payload.config),
 		onSuccess: () => {
 			setPreviewConfig(undefined);
 			qc.invalidateQueries({ queryKey: viewsQueryKey });
 		},
 	});
 
+	// Publishes the settings-panel draft as the shared view everyone sees.
+	// Two steps, not one: PATCHing the shared config alone would leave the
+	// publisher's own override in place — now redundant with (but no longer
+	// tracking future changes to) what they just made the team default — so
+	// it's cleared right after.
+	const saveForEveryoneMutation = useMutation({
+		mutationFn: async (payload: { viewId: string; config: ViewConfig }) => {
+			await updateViewById(projectId, payload.viewId, {
+				config: payload.config,
+			});
+			await clearMyViewConfig(projectId, payload.viewId);
+		},
+		onSuccess: () => {
+			setPreviewConfig(undefined);
+			qc.invalidateQueries({ queryKey: viewsQueryKey });
+		},
+	});
+
+	const [viewActionError, setViewActionError] = useState<string | null>(null);
+
 	const deleteViewMutation = useMutation({
 		mutationFn: (viewId: string) => deleteViewById(projectId, viewId),
 		onSuccess: (_, deletedId) => {
+			setViewActionError(null);
 			qc.invalidateQueries({ queryKey: viewsQueryKey });
 			if (preferredViewId === deletedId) {
 				const remaining = views.filter((v) => v.id !== deletedId);
 				setPreferredViewId(remaining[0]?.id ?? "");
 			}
 		},
+		onError: (err: unknown) => {
+			setViewActionError(
+				getApiErrorCode(err) === ApiErrorCode.ViewIsLastView
+					? t("layout.shell.viewErrors.isLastView")
+					: t("layout.shell.viewErrors.deleteFailed"),
+			);
+		},
 	});
 
 	const reorderViewMutation = useMutation({
 		mutationFn: (orderedIds: string[]) =>
 			reorderViewsByContext(projectId, context, orderedIds, sprintId),
-		onSuccess: () => qc.invalidateQueries({ queryKey: viewsQueryKey }),
+		onSuccess: () => {
+			setViewActionError(null);
+			qc.invalidateQueries({ queryKey: viewsQueryKey });
+		},
+		onError: (err: unknown) => {
+			setLocalViews(null);
+			setViewActionError(
+				getApiErrorCode(err) === ApiErrorCode.ViewReorderInvalid
+					? t("layout.shell.viewErrors.reorderInvalid")
+					: t("layout.shell.viewErrors.reorderFailed"),
+			);
+		},
 	});
 
 	const [tabDragId, setTabDragId] = useState<string | null>(null);
@@ -1301,16 +1765,61 @@ export function InteractionLayout({
 		},
 	});
 
+	const handleStartSprint = async (sid: string, payload: SprintFormPayload) => {
+		await updateSprintMutation.mutateAsync({ sprintId: sid, payload });
+		navigate({
+			to: "/projects/$projectId/interactions/sprints/$sprintId",
+			params: { projectId, sprintId: sid },
+		});
+	};
+
+	// ── Keyboard shortcuts (page scope) ─────────────────────────────────────
+	const viewContentRef = useRef<HTMLDivElement>(null);
+
+	useEffect(() => {
+		usePageShortcutStore.getState().setActive({
+			prevView: () => {
+				if (displayViews.length < 2) return;
+				const idx = displayViews.findIndex((v) => v.id === activeView?.id);
+				const prevIdx = idx <= 0 ? displayViews.length - 1 : idx - 1;
+				setPreferredViewId(displayViews[prevIdx].id);
+			},
+			nextView: () => {
+				if (displayViews.length < 2) return;
+				const idx = displayViews.findIndex((v) => v.id === activeView?.id);
+				const nextIdx =
+					idx === -1 || idx === displayViews.length - 1 ? 0 : idx + 1;
+				setPreferredViewId(displayViews[nextIdx].id);
+			},
+			focusSearch: () => {
+				setSearchOpen(true);
+				setTimeout(() => searchRef.current?.focus(), 0);
+			},
+			toggleViewSettings: () => {
+				if (!activeView || activeView.layout === "Plugin") return;
+				setSettingsOpen((prev) => !prev);
+			},
+			focusCreateTask: () => {
+				viewContentRef.current
+					?.querySelector<HTMLButtonElement>(
+						'[data-shortcut="add-task-trigger"]',
+					)
+					?.click();
+			},
+		});
+		return () => usePageShortcutStore.getState().clearActive();
+	}, [displayViews, activeView]);
+
 	return (
 		<div className="flex h-full flex-col overflow-hidden">
 			{/* Header */}
 			<div className="shrink-0 border-b border-border/30 px-8 py-5">
-				<div className="flex items-center gap-3">
-					<h1 className="font-[Syne] text-2xl font-bold tracking-tight flex-1">
+				<div className="flex flex-wrap items-center gap-3">
+					<h1 className="font-[Syne] text-2xl font-bold tracking-tight flex-1 min-w-[8rem]">
 						{title}
 					</h1>
 					{headerActions}
-					{context === "backlog" && canCreate && (
+					{context === "backlog" && canManageSprints && (
 						<button
 							type="button"
 							onClick={handleNewSprint}
@@ -1396,7 +1905,7 @@ export function InteractionLayout({
 									{view.name}
 								</button>
 
-								{isActive && (
+								{isActive && canManageViews && (
 									<DropdownMenu>
 										<DropdownMenuTrigger
 											render={
@@ -1420,7 +1929,10 @@ export function InteractionLayout({
 											<DropdownMenuSeparator />
 											<DropdownMenuItem
 												disabled={views.length <= 1}
-												onClick={() => deleteViewMutation.mutate(view.id)}
+												onClick={() => {
+													setViewActionError(null);
+													deleteViewMutation.mutate(view.id);
+												}}
 												className="text-destructive focus:text-destructive"
 											>
 												{t("layout.shell.deleteView")}
@@ -1484,6 +1996,7 @@ export function InteractionLayout({
 						<button
 							type="button"
 							onClick={() => setSearchOpen(true)}
+							title={`${t("layout.shell.searchTasksPlaceholder")} (${formatChord({ mod: true, key: "F" }, isMacPlatform())})`}
 							className="flex size-7 items-center justify-center rounded-md text-muted-foreground/60 hover:text-foreground hover:bg-muted/60 transition-all duration-150"
 						>
 							<Search className="size-3.5" />
@@ -1500,19 +2013,38 @@ export function InteractionLayout({
 								updateViewConfigMutation.mutateAsync({ viewId, config })
 							}
 							onPreview={setPreviewConfig}
-							isPending={updateViewConfigMutation.isPending}
+							isPending={
+								updateViewConfigMutation.isPending ||
+								saveForEveryoneMutation.isPending
+							}
+							isPersonalized={activeView.is_personalized}
+							canSaveForEveryone={canManageViews}
+							onSaveForEveryone={(viewId, config) =>
+								saveForEveryoneMutation.mutateAsync({ viewId, config })
+							}
 						/>
 					)}
 				</div>
 			</div>
 
+			{viewActionError && (
+				<p className="shrink-0 border-b border-border/25 bg-destructive/10 px-8 py-2 text-xs text-destructive">
+					{viewActionError}
+				</p>
+			)}
+
 			{/* View content */}
-			<div className="flex flex-1 flex-col overflow-hidden">
-				{activePluginView ? (
+			<div
+				ref={viewContentRef}
+				className="flex flex-1 flex-col overflow-hidden"
+			>
+				{activePluginView && activeView ? (
 					<RemoteComponent
 						registration={activePluginView}
 						componentProps={{
+							...activePluginViewBaseProps,
 							projectId,
+							viewId: activeView.id,
 							tasks: tasks,
 							statuses,
 							taskTypes,
@@ -1543,7 +2075,8 @@ export function InteractionLayout({
 						members={members}
 						customFields={customFields}
 						sprints={sprints}
-						epics={epicTasks}
+						epics={displayEpics}
+						epicsPagination={epicsPagination}
 						viewConfig={activeViewConfig}
 						canCreate={canCreate}
 						canEdit={canEdit}
@@ -1553,6 +2086,7 @@ export function InteractionLayout({
 						onTaskClick={handleTaskClick}
 						onUpdateTask={canEdit ? handleMoveToColumn : undefined}
 						onMoveToColumn={canEdit ? handleMoveToColumn : undefined}
+						onDeleteTask={canEdit ? handleRequestDeleteTask : undefined}
 						manualSort={isManualSort}
 						onReorderTask={effectiveViewId ? handleReorderTask : undefined}
 						onCollapseChange={
@@ -1578,20 +2112,27 @@ export function InteractionLayout({
 						sprints={sprints}
 						customFields={customFields}
 						columnBy={columnBy}
+						viewConfig={activeViewConfig}
 						canCreate={canCreate}
+						canEdit={canEdit}
+						manualSort={isManualSort}
+						onReorderTask={effectiveViewId ? handleReorderTask : undefined}
+						onMoveToColumn={canEdit ? handleMoveToColumn : undefined}
 						pagination={globalPagination}
 						onCreateTask={handleCreateTask}
 						onTaskClick={handleTaskClick}
 					/>
 				) : (
 					<ListView
+						projectId={projectId}
 						tasks={tasks}
 						taskIdPrefix={taskIdPrefix}
 						statuses={statuses}
 						taskTypes={creatableTaskTypes}
 						members={members}
 						customFields={customFields}
-						epics={epicTasks}
+						epics={displayEpics}
+						epicsPagination={epicsPagination}
 						viewConfig={activeViewConfig}
 						canCreate={canCreate}
 						columnPagination={columnPagination}
@@ -1603,23 +2144,17 @@ export function InteractionLayout({
 						canEdit={canEdit}
 						sortBy={activeViewConfig?.sort_by}
 						onUpdateTaskField={canEdit ? handleMoveToColumn : undefined}
+						onDeleteTask={canEdit ? handleRequestDeleteTask : undefined}
 						sprints={context === "backlog" ? sprints : undefined}
 						onStartSprint={
-							context === "backlog" && canCreate
-								? async (sid, payload) => {
-										await updateSprintMutation.mutateAsync({
-											sprintId: sid,
-											payload,
-										});
-										navigate({
-											to: "/projects/$projectId/interactions/sprints/$sprintId",
-											params: { projectId, sprintId: sid },
-										});
-									}
+							context === "backlog" && canManageSprints
+								? handleStartSprint
 								: undefined
 						}
 						onCreateSprint={
-							context === "backlog" && canCreate ? handleNewSprint : undefined
+							context === "backlog" && canManageSprints
+								? handleNewSprint
+								: undefined
 						}
 						onCollapseChange={
 							isRealView && activeView
@@ -1657,13 +2192,7 @@ export function InteractionLayout({
 				onOpenChange={(v) => {
 					if (!v) {
 						setSelectedTaskId(null);
-						try {
-							const url = new URL(window.location.href);
-							url.searchParams.delete("taskId");
-							window.history.pushState({}, "", url.toString());
-						} catch {
-							/* ignore */
-						}
+						clearTaskIdSearchParam();
 					}
 				}}
 				projectId={projectId}
@@ -1672,6 +2201,49 @@ export function InteractionLayout({
 				members={members}
 				canEdit={canEdit}
 			/>
+
+			<Dialog
+				open={!!deleteConfirmTask}
+				onOpenChange={(v) => {
+					if (!v) setDeleteConfirmTask(null);
+				}}
+			>
+				<DialogContent className="max-w-sm">
+					<DialogHeader>
+						<DialogTitle>
+							{t("taskDetail.header.deleteDialog.title")}
+						</DialogTitle>
+						<DialogDescription>
+							{t("taskDetail.header.deleteDialog.description", {
+								title: deleteConfirmTask?.title ?? "",
+							})}
+						</DialogDescription>
+					</DialogHeader>
+					<DialogFooter>
+						<Button
+							variant="outline"
+							onClick={() => setDeleteConfirmTask(null)}
+							disabled={deleteTaskMutation.isPending}
+						>
+							{t("taskDetail.header.deleteDialog.cancel")}
+						</Button>
+						<Button
+							variant="destructive"
+							onClick={() =>
+								deleteConfirmTask &&
+								deleteTaskMutation.mutate(deleteConfirmTask.id)
+							}
+							disabled={deleteTaskMutation.isPending}
+						>
+							{deleteTaskMutation.isPending ? (
+								<Loader2 className="size-4 animate-spin" />
+							) : (
+								t("taskDetail.header.deleteDialog.delete")
+							)}
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
 		</div>
 	);
 }

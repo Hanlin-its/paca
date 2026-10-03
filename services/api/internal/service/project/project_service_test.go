@@ -7,10 +7,53 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
+	attachmentdom "github.com/Paca-AI/api/internal/domain/attachment"
 	projectdom "github.com/Paca-AI/api/internal/domain/project"
 	taskdom "github.com/Paca-AI/api/internal/domain/task"
-	"github.com/google/uuid"
+	"github.com/Paca-AI/api/internal/platform/authz"
 )
+
+// ---------------------------------------------------------------------------
+// Minimal fake avatar service
+// ---------------------------------------------------------------------------
+
+// fakeAvatarService is a bare-bones attachmentdom.AvatarService double —
+// CompleteAvatarUpload always returns nextKeys, and DeleteAvatarObjects
+// records what it was asked to delete so tests can assert the *previous*
+// avatar's keys were cleaned up after a replace.
+type fakeAvatarService struct {
+	mu          sync.Mutex
+	nextKeys    *attachmentdom.AvatarKeys
+	completeErr error
+	deletedKeys []string
+}
+
+func (f *fakeAvatarService) InitiateAvatarUpload(context.Context, attachmentdom.AvatarUploadInput) (*attachmentdom.UploadSession, error) {
+	return &attachmentdom.UploadSession{FileID: uuid.New(), UploadURL: "https://fake/upload"}, nil
+}
+
+func (f *fakeAvatarService) CompleteAvatarUpload(context.Context, attachmentdom.AvatarCompleteInput) (*attachmentdom.AvatarKeys, error) {
+	if f.completeErr != nil {
+		return nil, f.completeErr
+	}
+	return f.nextKeys, nil
+}
+
+func (f *fakeAvatarService) ResolveAvatarURL(context.Context, *string) (*string, error) {
+	return nil, nil
+}
+
+func (f *fakeAvatarService) DeleteAvatarObjects(_ context.Context, keys ...*string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, k := range keys {
+		if k != nil && *k != "" {
+			f.deletedKeys = append(f.deletedKeys, *k)
+		}
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Minimal fake project repository
@@ -57,6 +100,18 @@ func (r *fakeProjectRepo) Update(_ context.Context, p *projectdom.Project) error
 	r.projects[p.ID] = p
 	return nil
 }
+func (r *fakeProjectRepo) UpdateJevConfig(_ context.Context, projectID uuid.UUID, apiKeySecret, baseURL, model string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.projects[projectID]
+	if !ok {
+		return projectdom.ErrNotFound
+	}
+	p.JevAPIKeySecret = apiKeySecret
+	p.JevBaseURL = baseURL
+	p.JevModel = model
+	return nil
+}
 func (r *fakeProjectRepo) Delete(_ context.Context, id uuid.UUID) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -92,6 +147,9 @@ func (r *fakeProjectRepo) CountMembersWithRole(_ context.Context, _ uuid.UUID) (
 func (r *fakeProjectRepo) ListMembers(_ context.Context, _ uuid.UUID) ([]*projectdom.ProjectMember, error) {
 	return nil, nil
 }
+func (r *fakeProjectRepo) CountDistinctAgentsByProjects(_ context.Context, _ []uuid.UUID) (int64, error) {
+	return 0, nil
+}
 func (r *fakeProjectRepo) FindMember(_ context.Context, _ uuid.UUID, _ uuid.UUID) (*projectdom.ProjectMember, error) {
 	return nil, projectdom.ErrMemberNotFound
 }
@@ -120,6 +178,9 @@ func (r *fakeProjectRepo) FindMemberByID(_ context.Context, _ uuid.UUID) (*proje
 func (r *fakeProjectRepo) AddAgentMember(_ context.Context, _, _, _, _ uuid.UUID) error { return nil }
 func (r *fakeProjectRepo) RemoveAgentMember(_ context.Context, _, _ uuid.UUID) error    { return nil }
 func (r *fakeProjectRepo) UpdateMemberRoleByMemberID(_ context.Context, _, _ uuid.UUID) error {
+	return nil
+}
+func (r *fakeProjectRepo) UpdateMemberDescription(_ context.Context, _ uuid.UUID, _ string) error {
 	return nil
 }
 func (r *fakeProjectRepo) RemoveMemberByMemberID(_ context.Context, _ uuid.UUID) error { return nil }
@@ -160,7 +221,7 @@ func TestCreate_SeedsDefaultTaskTypesAndStatuses(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeProjectRepo()
 	tb := &fakeTaskBootstrapper{}
-	svc := New(repo, tb)
+	svc := New(repo, tb, nil)
 
 	creatorID := uuid.New()
 	p, err := svc.Create(ctx, projectdom.CreateProjectInput{
@@ -277,7 +338,7 @@ func TestCreate_SeedsWithCorrectTimestamps(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeProjectRepo()
 	tb := &fakeTaskBootstrapper{}
-	svc := New(repo, tb)
+	svc := New(repo, tb, nil)
 
 	before := time.Now().Truncate(time.Second)
 	_, err := svc.Create(ctx, projectdom.CreateProjectInput{Name: "Timestamp Test"})
@@ -298,10 +359,63 @@ func TestCreate_SeedsWithCorrectTimestamps(t *testing.T) {
 	}
 }
 
+// TestCreate_EditorRoleHasNoSettingsWritePermissions is a regression test:
+// the seeded "Editor" role previously granted project.settings.{task_types,
+// task_statuses,custom_fields}.write, letting any editor redefine the
+// project's task schema — an Admin-level (project configuration) action, not
+// a content-editing one. Nothing exercised this distinction before, so the
+// over-grant shipped unnoticed.
+func TestCreate_EditorRoleHasNoSettingsWritePermissions(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeProjectRepo()
+	tb := &fakeTaskBootstrapper{}
+	svc := New(repo, tb, nil)
+
+	creatorID := uuid.New()
+	_, err := svc.Create(ctx, projectdom.CreateProjectInput{
+		Name:      "Editor Permissions Test",
+		CreatedBy: &creatorID,
+	})
+	if err != nil {
+		t.Fatalf("Create returned unexpected error: %v", err)
+	}
+
+	var editor *projectdom.ProjectRole
+	for _, r := range repo.roles {
+		if r.RoleName == "Editor" {
+			editor = r
+			break
+		}
+	}
+	if editor == nil {
+		t.Fatal("expected a seeded \"Editor\" role, found none")
+	}
+
+	writePerms := []authz.Permission{
+		authz.PermissionProjectSettingsTaskTypesWrite,
+		authz.PermissionProjectSettingsTaskStatusesWrite,
+		authz.PermissionProjectSettingsCustomFieldsWrite,
+		authz.PermissionProjectSettingsAll,
+	}
+	for _, perm := range writePerms {
+		if granted, _ := editor.Permissions[string(perm)].(bool); granted {
+			t.Errorf("Editor role must not grant %q", perm)
+		}
+	}
+
+	// There's no dedicated read permission for the schema at all (see
+	// authz.PermissionProjectSettingsTaskTypesWrite's doc comment) — viewing
+	// task types/statuses/custom fields is implied by tasks.read, which
+	// Editor must still hold.
+	if granted, _ := editor.Permissions[string(authz.PermissionTasksRead)].(bool); !granted {
+		t.Error("Editor role should still grant tasks.read")
+	}
+}
+
 func TestCreate_NilTaskRepo_DoesNotPanic(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeProjectRepo()
-	svc := New(repo, nil) // nil task repo is allowed
+	svc := New(repo, nil, nil) // nil task repo is allowed
 
 	_, err := svc.Create(ctx, projectdom.CreateProjectInput{Name: "No Task Repo"})
 	if err != nil {
@@ -315,7 +429,7 @@ func TestCreate_NilTaskRepo_DoesNotPanic(t *testing.T) {
 
 func TestCreate_AutoGeneratesPrefix_SingleWord(t *testing.T) {
 	ctx := context.Background()
-	svc := New(newFakeProjectRepo(), nil)
+	svc := New(newFakeProjectRepo(), nil, nil)
 
 	p, err := svc.Create(ctx, projectdom.CreateProjectInput{Name: "paca"})
 	if err != nil {
@@ -328,7 +442,7 @@ func TestCreate_AutoGeneratesPrefix_SingleWord(t *testing.T) {
 
 func TestCreate_AutoGeneratesPrefix_MultiWord(t *testing.T) {
 	ctx := context.Background()
-	svc := New(newFakeProjectRepo(), nil)
+	svc := New(newFakeProjectRepo(), nil, nil)
 
 	p, err := svc.Create(ctx, projectdom.CreateProjectInput{Name: "My Awesome Project"})
 	if err != nil {
@@ -341,7 +455,7 @@ func TestCreate_AutoGeneratesPrefix_MultiWord(t *testing.T) {
 
 func TestCreate_ExplicitPrefixUsed(t *testing.T) {
 	ctx := context.Background()
-	svc := New(newFakeProjectRepo(), nil)
+	svc := New(newFakeProjectRepo(), nil, nil)
 
 	p, err := svc.Create(ctx, projectdom.CreateProjectInput{Name: "My Project", TaskIDPrefix: "MP2"})
 	if err != nil {
@@ -354,7 +468,7 @@ func TestCreate_ExplicitPrefixUsed(t *testing.T) {
 
 func TestCreate_InvalidPrefixReturnsError(t *testing.T) {
 	ctx := context.Background()
-	svc := New(newFakeProjectRepo(), nil)
+	svc := New(newFakeProjectRepo(), nil, nil)
 
 	_, err := svc.Create(ctx, projectdom.CreateProjectInput{Name: "My Project", TaskIDPrefix: "my prefix!"})
 	if err == nil {
@@ -365,7 +479,7 @@ func TestCreate_InvalidPrefixReturnsError(t *testing.T) {
 func TestUpdate_PrefixUpdated(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeProjectRepo()
-	svc := New(repo, nil)
+	svc := New(repo, nil, nil)
 
 	p, _ := svc.Create(ctx, projectdom.CreateProjectInput{Name: "MyProj"})
 
@@ -381,7 +495,7 @@ func TestUpdate_PrefixUpdated(t *testing.T) {
 func TestUpdate_InvalidPrefixReturnsError(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeProjectRepo()
-	svc := New(repo, nil)
+	svc := New(repo, nil, nil)
 
 	p, _ := svc.Create(ctx, projectdom.CreateProjectInput{Name: "MyProj"})
 
@@ -398,7 +512,7 @@ func TestUpdate_InvalidPrefixReturnsError(t *testing.T) {
 func TestDelete_ExistingProject_Succeeds(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeProjectRepo()
-	svc := New(repo, nil)
+	svc := New(repo, nil, nil)
 
 	p, err := svc.Create(ctx, projectdom.CreateProjectInput{Name: "To Delete"})
 	if err != nil {
@@ -417,7 +531,7 @@ func TestDelete_ExistingProject_Succeeds(t *testing.T) {
 
 func TestDelete_NonExistentProject_ReturnsNotFound(t *testing.T) {
 	ctx := context.Background()
-	svc := New(newFakeProjectRepo(), nil)
+	svc := New(newFakeProjectRepo(), nil, nil)
 
 	err := svc.Delete(ctx, uuid.New())
 	if !errors.Is(err, projectdom.ErrNotFound) {
@@ -428,7 +542,7 @@ func TestDelete_NonExistentProject_ReturnsNotFound(t *testing.T) {
 func TestDelete_AlreadyDeletedProject_ReturnsNotFound(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeProjectRepo()
-	svc := New(repo, nil)
+	svc := New(repo, nil, nil)
 
 	p, err := svc.Create(ctx, projectdom.CreateProjectInput{Name: "Double Delete"})
 	if err != nil {
@@ -462,5 +576,118 @@ func TestSuggestPrefix_Cases(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("suggestPrefix(%q) = %q, want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Avatar
+// ---------------------------------------------------------------------------
+
+func TestInitiateAvatarUpload_NoAvatarService_ReturnsError(t *testing.T) {
+	svc := New(newFakeProjectRepo(), nil, nil) // WithAvatarService never called
+	_, err := svc.InitiateAvatarUpload(context.Background(), uuid.New(), "me.png", "image/png", 1024, uuid.New())
+	if !errors.Is(err, ErrAvatarServiceRequired) {
+		t.Fatalf("expected ErrAvatarServiceRequired, got %v", err)
+	}
+}
+
+func TestCompleteAvatarUpload_SwapsKeysAndDeletesOld(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeProjectRepo()
+	oldKey, oldThumbKey := "avatars/projects/p1/old/full.png", "avatars/projects/p1/old/thumb.png"
+	projectID := uuid.New()
+	if err := repo.Create(ctx, &projectdom.Project{
+		ID:             projectID,
+		Name:           "Has Avatar",
+		AvatarKey:      &oldKey,
+		AvatarThumbKey: &oldThumbKey,
+		CreatedAt:      time.Now(),
+	}); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+
+	avatarSvc := &fakeAvatarService{
+		nextKeys: &attachmentdom.AvatarKeys{Key: "avatars/projects/p1/new/full.png", ThumbKey: "avatars/projects/p1/new/thumb.png"},
+	}
+	svc := New(repo, nil, nil).WithAvatarService(avatarSvc)
+
+	p, err := svc.CompleteAvatarUpload(ctx, projectID, uuid.New())
+	if err != nil {
+		t.Fatalf("CompleteAvatarUpload: %v", err)
+	}
+	if p.AvatarKey == nil || *p.AvatarKey != avatarSvc.nextKeys.Key {
+		t.Errorf("expected AvatarKey %q, got %v", avatarSvc.nextKeys.Key, p.AvatarKey)
+	}
+	if p.AvatarThumbKey == nil || *p.AvatarThumbKey != avatarSvc.nextKeys.ThumbKey {
+		t.Errorf("expected AvatarThumbKey %q, got %v", avatarSvc.nextKeys.ThumbKey, p.AvatarThumbKey)
+	}
+
+	stored, err := repo.FindByID(ctx, projectID)
+	if err != nil {
+		t.Fatalf("FindByID after complete: %v", err)
+	}
+	if stored.AvatarKey == nil || *stored.AvatarKey != avatarSvc.nextKeys.Key {
+		t.Errorf("persisted AvatarKey not updated, got %v", stored.AvatarKey)
+	}
+
+	avatarSvc.mu.Lock()
+	defer avatarSvc.mu.Unlock()
+	if len(avatarSvc.deletedKeys) != 2 {
+		t.Fatalf("expected the two old keys to be deleted, got %v", avatarSvc.deletedKeys)
+	}
+	deleted := map[string]bool{avatarSvc.deletedKeys[0]: true, avatarSvc.deletedKeys[1]: true}
+	if !deleted[oldKey] || !deleted[oldThumbKey] {
+		t.Errorf("expected old keys %q/%q to be deleted, got %v", oldKey, oldThumbKey, avatarSvc.deletedKeys)
+	}
+}
+
+func TestRemoveAvatar_NoExistingAvatar_NoOps(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeProjectRepo()
+	projectID := uuid.New()
+	if err := repo.Create(ctx, &projectdom.Project{ID: projectID, Name: "No Avatar", CreatedAt: time.Now()}); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+
+	avatarSvc := &fakeAvatarService{}
+	svc := New(repo, nil, nil).WithAvatarService(avatarSvc)
+
+	if _, err := svc.RemoveAvatar(ctx, projectID); err != nil {
+		t.Fatalf("RemoveAvatar: %v", err)
+	}
+
+	avatarSvc.mu.Lock()
+	defer avatarSvc.mu.Unlock()
+	if len(avatarSvc.deletedKeys) != 0 {
+		t.Errorf("expected no delete calls when project has no avatar, got %v", avatarSvc.deletedKeys)
+	}
+}
+
+func TestRemoveAvatar_ClearsKeysAndDeletesObjects(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeProjectRepo()
+	key, thumbKey := "avatars/projects/p2/full.png", "avatars/projects/p2/thumb.png"
+	projectID := uuid.New()
+	if err := repo.Create(ctx, &projectdom.Project{
+		ID: projectID, Name: "Has Avatar", AvatarKey: &key, AvatarThumbKey: &thumbKey, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+
+	avatarSvc := &fakeAvatarService{}
+	svc := New(repo, nil, nil).WithAvatarService(avatarSvc)
+
+	p, err := svc.RemoveAvatar(ctx, projectID)
+	if err != nil {
+		t.Fatalf("RemoveAvatar: %v", err)
+	}
+	if p.AvatarKey != nil || p.AvatarThumbKey != nil {
+		t.Errorf("expected avatar keys cleared, got %v / %v", p.AvatarKey, p.AvatarThumbKey)
+	}
+
+	avatarSvc.mu.Lock()
+	defer avatarSvc.mu.Unlock()
+	if len(avatarSvc.deletedKeys) != 2 {
+		t.Errorf("expected both keys deleted, got %v", avatarSvc.deletedKeys)
 	}
 }

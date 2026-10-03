@@ -4,7 +4,7 @@ import { CalendarDays, User } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChangePasswordCard } from "@/components/profile/ChangePasswordCard";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { AvatarUpload } from "@/components/shared/avatar-upload";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -21,23 +21,31 @@ import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { apiClient } from "@/lib/api-client";
 import type { SuccessEnvelope } from "@/lib/api-error";
+import { ApiErrorCode, getApiErrorCode } from "@/lib/api-error";
 import type { User as UserType } from "@/lib/auth-api";
 import { currentUserQueryOptions } from "@/lib/auth-api";
 import { formatDate } from "@/lib/format-date";
+import { ExtensionPoint } from "@/lib/plugins/extension-point";
 
 export const Route = createFileRoute("/_authenticated/profile/")({
 	component: ProfilePage,
 });
 
-async function updateProfile(
-	userId: string,
-	payload: { full_name: string },
-): Promise<UserType> {
+async function updateProfile(payload: {
+	full_name: string;
+	email: string;
+}): Promise<UserType> {
 	const { data } = await apiClient.instance.patch<SuccessEnvelope<UserType>>(
-		`/users/${userId}`,
+		"/users/me",
 		payload,
 	);
 	return data.data;
+}
+
+/** Loose RFC 5322-ish check — the server is the source of truth for validity;
+ * this only catches obviously-malformed input before a round trip. */
+function isValidEmail(value: string): boolean {
+	return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
 function getInitials(name: string): string {
@@ -57,22 +65,23 @@ function ProfilePage() {
 
 	const [editing, setEditing] = useState(false);
 	const [fullName, setFullName] = useState(user?.full_name ?? "");
+	const [email, setEmail] = useState(user?.email ?? "");
 	const [serverError, setServerError] = useState<string | null>(null);
 
 	const mutation = useMutation({
-		mutationFn: () => {
-			if (!user) {
-				throw new Error("User is not loaded");
-			}
-			return updateProfile(user.id, { full_name: fullName.trim() });
-		},
+		mutationFn: () =>
+			updateProfile({ full_name: fullName.trim(), email: email.trim() }),
 		onSuccess: (updated) => {
 			queryClient.setQueryData(currentUserQueryOptions.queryKey, updated);
 			setEditing(false);
 			setServerError(null);
 		},
-		onError: () => {
-			setServerError(t("errors.updateFailed"));
+		onError: (err: unknown) => {
+			setServerError(
+				getApiErrorCode(err) === ApiErrorCode.EmailTaken
+					? t("errors.emailTaken")
+					: t("errors.updateFailed"),
+			);
 		},
 	});
 
@@ -153,9 +162,13 @@ function ProfilePage() {
 
 	const handleEdit = () => {
 		setFullName(user.full_name ?? "");
+		setEmail(user.email ?? "");
 		setServerError(null);
 		setEditing(true);
 	};
+
+	const emailInvalid =
+		editing && email.trim() !== "" && !isValidEmail(email.trim());
 
 	const handleCancel = () => {
 		setEditing(false);
@@ -181,11 +194,28 @@ function ProfilePage() {
 			<Card>
 				<CardHeader>
 					<div className="flex items-center gap-4">
-						<Avatar className="size-14 rounded-xl">
-							<AvatarFallback className="rounded-xl bg-primary text-primary-foreground text-lg font-bold">
-								{initials}
-							</AvatarFallback>
-						</Avatar>
+						<AvatarUpload
+							basePath="/users/me"
+							avatarUrl={user.avatar_url}
+							fallback={initials}
+							className="size-14 rounded-xl"
+							fallbackClassName="bg-primary text-primary-foreground text-lg font-bold"
+							labels={{
+								change: t("avatar.change"),
+								remove: t("avatar.remove"),
+								uploading: t("avatar.uploading"),
+								invalidType: t("avatar.errors.invalidType"),
+								tooLarge: t("avatar.errors.tooLarge"),
+								uploadFailed: t("avatar.errors.uploadFailed"),
+								removeFailed: t("avatar.errors.removeFailed"),
+							}}
+							onChange={(result) => {
+								queryClient.setQueryData(
+									currentUserQueryOptions.queryKey,
+									(old) => (old ? { ...old, ...result } : old),
+								);
+							}}
+						/>
 						<div>
 							<CardTitle className="text-lg">{displayName}</CardTitle>
 							<CardDescription className="mt-0.5">
@@ -238,6 +268,36 @@ function ProfilePage() {
 							</p>
 						</div>
 
+						{/* Email field */}
+						<div className="flex flex-col gap-1.5">
+							<Label htmlFor="email">{t("fields.email")}</Label>
+							{editing ? (
+								<>
+									<Input
+										id="email"
+										type="email"
+										value={email}
+										onChange={(e) => setEmail(e.target.value)}
+										placeholder={t("fields.emailPlaceholder")}
+										aria-invalid={emailInvalid}
+									/>
+									{emailInvalid ? (
+										<p className="text-xs text-destructive">
+											{t("errors.invalidEmail")}
+										</p>
+									) : null}
+								</>
+							) : (
+								<p className="text-sm py-1.5">
+									{user.email || (
+										<span className="text-muted-foreground italic">
+											{t("fields.notSet")}
+										</span>
+									)}
+								</p>
+							)}
+						</div>
+
 						{serverError ? (
 							<p className="text-sm text-destructive">{serverError}</p>
 						) : null}
@@ -250,7 +310,9 @@ function ProfilePage() {
 							<Button
 								size="sm"
 								onClick={() => mutation.mutate()}
-								disabled={mutation.isPending || !fullName.trim()}
+								disabled={
+									mutation.isPending || !fullName.trim() || emailInvalid
+								}
 							>
 								{mutation.isPending
 									? t("actions.saving")
@@ -275,6 +337,13 @@ function ProfilePage() {
 
 			{/* Change Password card */}
 			<ChangePasswordCard mustChange={user.must_change_password} />
+
+			{/* Plugin-contributed personal settings (e.g. a plugin's
+			    per-event notification preferences) */}
+			<ExtensionPoint
+				point="user.settings.tab"
+				componentProps={{ userId: user.id }}
+			/>
 		</div>
 	);
 }

@@ -4,31 +4,46 @@ package dto
 import (
 	"time"
 
-	userdom "github.com/Paca-AI/api/internal/domain/user"
 	"github.com/google/uuid"
+
+	userdom "github.com/Paca-AI/api/internal/domain/user"
 )
 
 // CreateUserRequest is the body for POST /admin/users.
-// Only users with the users.write permission can create accounts.
+// Only users with the users.write permission can create accounts. A new
+// account always gets the default USER role; assign another with
+// PUT /admin/users/:userId/global-roles.
 type CreateUserRequest struct {
 	Username string `json:"username"  binding:"required"`
 	Password string `json:"password"  binding:"required,min=8"`
 	FullName string `json:"full_name" binding:"required"`
-	// Role is optional; defaults to "USER" when omitted.
-	// The provided role name is validated against the global_roles table.
+	// Email is optional, used for notification delivery (e.g. a mail
+	// plugin's welcome/invite email) — not for login. When set, a
+	// user.created event carrying it is published for plugins to act on.
+	Email string `json:"email" binding:"omitempty"`
+	// Role is no longer accepted here — assigning a role needs
+	// global_roles.assign, so it has its own route. The field exists only so
+	// a request that still sends one is rejected with a clear 400 instead of
+	// having it silently ignored.
 	Role string `json:"role" binding:"omitempty"`
 }
 
 // UpdateProfileRequest is the body for PATCH /users/me (self-service update).
 type UpdateProfileRequest struct {
 	FullName string `json:"full_name" binding:"required"`
+	// Email is left unchanged when omitted/empty.
+	Email string `json:"email" binding:"omitempty"`
 }
 
-// AdminUpdateUserRequest is the body for PATCH /admin/users/:userId.
+// AdminUpdateUserRequest is the body for PATCH /admin/users/:userId. It edits
+// the profile only; change a user's role with
+// PUT /admin/users/:userId/global-roles.
 type AdminUpdateUserRequest struct {
 	FullName string `json:"full_name" binding:"omitempty"`
-	// Role is optional; the provided name is validated against the global_roles table.
+	// Role is no longer accepted here — see CreateUserRequest.Role.
 	Role string `json:"role" binding:"omitempty"`
+	// Email is left unchanged when omitted/empty.
+	Email string `json:"email" binding:"omitempty"`
 }
 
 // ResetPasswordRequest is the body for PATCH /admin/users/:userId/password.
@@ -47,9 +62,15 @@ type UserResponse struct {
 	ID                 uuid.UUID `json:"id"`
 	Username           string    `json:"username"`
 	FullName           string    `json:"full_name"`
+	Email              *string   `json:"email,omitempty"`
 	Role               string    `json:"role"`
 	MustChangePassword bool      `json:"must_change_password"`
-	CreatedAt          time.Time `json:"created_at"`
+	// AvatarURL/AvatarThumbURL are presigned GET URLs, populated by the
+	// handler (not this mapper) via attachmentdom.AvatarService — nil when
+	// no avatar has been uploaded.
+	AvatarURL      *string   `json:"avatar_url,omitempty"`
+	AvatarThumbURL *string   `json:"avatar_thumb_url,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // PagedUsersResponse wraps a list of users with pagination metadata.
@@ -58,6 +79,10 @@ type PagedUsersResponse struct {
 	Total    int64          `json:"total"`
 	Page     int            `json:"page"`
 	PageSize int            `json:"page_size"`
+	// MustChangePasswordCount is the count across ALL users, not just Items
+	// (the current page) — so the admin users page's stats bar stays
+	// accurate no matter which page is displayed.
+	MustChangePasswordCount int64 `json:"must_change_password_count"`
 }
 
 // UserFromEntity maps a domain user to a transport response.
@@ -66,6 +91,7 @@ func UserFromEntity(u *userdom.User) UserResponse {
 		ID:                 u.ID,
 		Username:           u.Username,
 		FullName:           u.FullName,
+		Email:              u.Email,
 		Role:               u.Role,
 		MustChangePassword: u.MustChangePassword,
 		CreatedAt:          u.CreatedAt,

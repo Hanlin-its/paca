@@ -31,6 +31,18 @@ var ValidStatusCategories = map[StatusCategory]bool{
 	StatusCategoryDone:       true,
 }
 
+// AssignmentMode values — see Task.AssignmentMode's doc comment.
+const (
+	AssignmentModeManual = "manual"
+	AssignmentModeAuto   = "auto"
+)
+
+// ValidAssignmentModes is the set of allowed Task.AssignmentMode values.
+var ValidAssignmentModes = map[string]bool{
+	AssignmentModeManual: true,
+	AssignmentModeAuto:   true,
+}
+
 // TaskType categorises tasks within a project.
 type TaskType struct {
 	ID          uuid.UUID
@@ -83,6 +95,21 @@ var ValidFieldTypes = map[FieldType]bool{
 	FieldTypeURL:         true,
 }
 
+// CustomFieldOption is one selectable value of a select / multi_select
+// custom field. Color is an optional hex string (e.g. "#6366f1") used to
+// render the value as a colored badge; nil means no color was chosen and
+// the UI falls back to its default styling. Value is also the raw string
+// stored in Task.CustomFields under the field's key, so renaming a Value
+// orphans any task data that already references the old string.
+// Value and Color use lowercase json tags because the repository layer
+// marshals CustomFieldOption directly into the options JSONB column (see
+// task_repository.go's marshalOptions/toCustomFieldEntity) — these tags are
+// the on-disk/wire shape, not just an API-layer concern.
+type CustomFieldOption struct {
+	Value string  `json:"value"`
+	Color *string `json:"color,omitempty"`
+}
+
 // CustomFieldDefinition is a project-level schema entry that describes one
 // extra field that can be stored in Task.CustomFields under FieldKey.
 type CustomFieldDefinition struct {
@@ -91,7 +118,7 @@ type CustomFieldDefinition struct {
 	FieldKey    string
 	DisplayName string
 	FieldType   FieldType
-	Options     []string // populated for select / multi_select types
+	Options     []CustomFieldOption // populated for select / multi_select types
 	IsRequired  bool
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
@@ -157,7 +184,7 @@ type Task struct {
 	Description  json.RawMessage
 	Importance   int
 	StoryPoints  *int
-	AssigneeID   *uuid.UUID
+	AssigneeIDs  []uuid.UUID
 	ReporterID   *uuid.UUID
 	CustomFields map[string]any
 	StartDate    *time.Time
@@ -166,6 +193,14 @@ type Task struct {
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 	DeletedAt    *time.Time
+	// AssignmentMode is AssignmentModeManual (default) or AssignmentModeAuto.
+	// When "auto", worker.TaskAutofillConsumer resolves AssigneeIDs via Jev
+	// whenever it's empty — see that consumer's own doc comment. A human
+	// explicitly changing AssigneeIDs flips this back to "manual" (see
+	// service/task's UpdateTask), mirroring
+	// agent_conversations.title_set_by_user's "once touched by a human, stop
+	// auto-managing it" precedent.
+	AssignmentMode string
 	// ViewPosition is a transient field populated only when ListTasks is called
 	// with a view_position sort (i.e. view_id provided + manual sort). It is not
 	// persisted in the tasks table.

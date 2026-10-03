@@ -1,13 +1,18 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+	useInfiniteQuery,
+	useMutation,
+	useQuery,
+	useQueryClient,
+} from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { AlertCircle } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
 	createTask,
-	epicTasksQueryOptions,
+	epicTasksInfiniteQueryOptions,
 	sprintsQueryOptions,
-	subtasksQueryOptions,
+	subtasksInfiniteQueryOptions,
 	taskQueryOptions,
 	updateTask,
 } from "@/lib/interaction-api";
@@ -19,9 +24,11 @@ import {
 	isEpicType,
 	projectQueryOptions,
 } from "@/lib/project-api";
+import { useCurrentContextStore } from "@/lib/shortcuts/current-context-store";
 import { cleanBlocks, cn } from "@/lib/utils";
 import { getTaskTypeIconComponent } from "../../task-types/task-type-icons";
 import { getPriority } from "../priority";
+import type { EpicsPagination } from "../view-utils";
 import { TaskActivityPane as ActivityPane } from "./activity-pane";
 import { AttachmentsSection } from "./attachments-section";
 import { DescriptionSection } from "./description-section";
@@ -78,10 +85,19 @@ export function TaskDetailModal({
 	const task = freshTask ?? taskProp;
 
 	// Fetch subtasks
-	const { data: subtasks = [] } = useQuery({
-		...subtasksQueryOptions(projectId ?? "", task?.id ?? ""),
+	const {
+		data: subtasksData,
+		fetchNextPage: fetchNextSubtasksPage,
+		hasNextPage: hasMoreSubtasks,
+		isFetchingNextPage: isFetchingMoreSubtasks,
+	} = useInfiniteQuery({
+		...subtasksInfiniteQueryOptions(projectId ?? "", task?.id ?? ""),
 		enabled: !!projectId && !!task?.id && (open || mode === "page"),
 	});
+	const subtasks = useMemo(
+		() => subtasksData?.pages.flatMap((p) => p.items) ?? [],
+		[subtasksData],
+	);
 
 	// Fetch sprints for sprint name display + assignment
 	const { data: sprints = [] } = useQuery({
@@ -102,7 +118,6 @@ export function TaskDetailModal({
 	const status = statuses.find((s) => s.id === task?.status_id);
 	const taskType = taskTypes.find((t) => t.id === task?.task_type_id);
 	const priority = getPriority(task?.importance ?? 0);
-	const assignee = members.find((m) => m.id === task?.assignee_id);
 	const reporter = members.find((m) => m.id === task?.reporter_id);
 
 	// ── Task role detection ────────────────────────────────────────────────────
@@ -112,15 +127,33 @@ export function TaskDetailModal({
 	const epicType = findEpicType(taskTypes);
 	const normalTaskTypes = getNormalTaskTypes(taskTypes);
 
-	// For normal tasks: fetch all epics to populate the Epic picker
-	const { data: epicTasks = [] } = useQuery({
-		...epicTasksQueryOptions(projectId ?? "", epicType?.id ?? ""),
+	// For normal tasks: fetch epics (paginated 20-per-page) to populate the
+	// Epic picker, with a "Load more" affordance for projects with >20 epics.
+	const {
+		data: epicPages,
+		fetchNextPage: fetchNextEpicsPage,
+		hasNextPage: hasMoreEpics,
+		isFetchingNextPage: isFetchingMoreEpics,
+	} = useInfiniteQuery({
+		...epicTasksInfiniteQueryOptions(projectId ?? "", epicType?.id ?? ""),
 		enabled:
 			!!projectId &&
 			!!epicType?.id &&
 			taskRole === "normal" &&
 			(open || mode === "page"),
 	});
+	const epicTasks = useMemo(
+		() => epicPages?.pages.flatMap((page) => page.items) ?? [],
+		[epicPages],
+	);
+	const epicsPagination: EpicsPagination = useMemo(
+		() => ({
+			hasMore: !!hasMoreEpics,
+			isLoadingMore: isFetchingMoreEpics,
+			onLoadMore: () => void fetchNextEpicsPage(),
+		}),
+		[hasMoreEpics, isFetchingMoreEpics, fetchNextEpicsPage],
+	);
 
 	// Fetch parent task to display its title/icon (for non-epic parents)
 	const { data: parentTask } = useQuery({
@@ -160,6 +193,14 @@ export function TaskDetailModal({
 					const bStr = b ? [...b].sort().join(",") : "";
 					if (aStr !== bStr) {
 						filtered.tags = a;
+					}
+				} else if (key === "assignee_ids") {
+					const a = newValue as string[] | undefined;
+					const b = oldValue as string[] | undefined;
+					const aStr = a ? [...a].sort().join(",") : "";
+					const bStr = b ? [...b].sort().join(",") : "";
+					if (aStr !== bStr) {
+						filtered.assignee_ids = a;
 					}
 				} else if (key === "custom_fields") {
 					const a = newValue as Record<string, unknown> | undefined;
@@ -212,11 +253,37 @@ export function TaskDetailModal({
 
 	const handleUpdate = canEdit ? updateMutation.mutate : undefined;
 
+	// Register this task as "currently on screen" for the chat composer's
+	// quick-add affordance — same shown/loaded guard every other query above
+	// uses (open in modal mode, or always in page mode), so a closed modal
+	// (still mounted with open=false, per the mode==="modal" && !open early
+	// return below) doesn't stay registered.
+	useEffect(() => {
+		const shown = open || mode === "page";
+		if (!shown || !task) return;
+		useCurrentContextStore.getState().setActive({
+			type: "task",
+			id: task.id,
+			projectId,
+			title: task.title,
+		});
+		return () => {
+			useCurrentContextStore.getState().clearActive("task", task.id);
+		};
+	}, [open, mode, task, projectId]);
+
 	// Close on Escape (modal mode only)
 	useEffect(() => {
 		if (!open || mode === "page") return;
 		const handler = (e: KeyboardEvent) => {
-			if (e.key === "Escape") onOpenChange(false);
+			if (e.key !== "Escape") return;
+			// Escape inside a picker popover closes only that popover.
+			if (
+				e.target instanceof Element &&
+				e.target.closest('[data-slot="popover-content"]')
+			)
+				return;
+			onOpenChange(false);
 		};
 		document.addEventListener("keydown", handler);
 		return () => document.removeEventListener("keydown", handler);
@@ -254,7 +321,7 @@ export function TaskDetailModal({
 			{/* ── Body: stacks on mobile, side-by-side on lg+ ── */}
 			<div className="flex flex-col lg:flex-row flex-1 min-w-0 min-h-0 overflow-y-auto lg:overflow-hidden">
 				{/* Main content area: no own scroll on mobile (body scrolls), scrollable on lg+ */}
-				<div className="lg:flex-1 lg:overflow-y-auto [scrollbar-gutter:stable] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border/60 [&::-webkit-scrollbar-thumb]:hover:bg-border">
+				<div className="lg:flex-1 lg:overflow-y-auto [scrollbar-gutter:stable]">
 					<div className="px-4 lg:px-8 py-5 lg:py-7 space-y-6 lg:space-y-8 max-w-3xl mx-auto">
 						{/* Type badge + Status chip + Title */}
 						<div className="space-y-4">
@@ -350,7 +417,6 @@ export function TaskDetailModal({
 								status={status}
 								taskType={taskType}
 								priority={priority}
-								assignee={assignee}
 								reporter={reporter}
 								statuses={statuses}
 								taskTypes={taskTypes}
@@ -361,6 +427,7 @@ export function TaskDetailModal({
 								canEdit={canEdit}
 								taskRole={taskRole}
 								epicTasks={epicTasks}
+								epicsPagination={epicsPagination}
 								parentTask={parentTask}
 								onUpdate={handleUpdate}
 								onNavigateToTask={navigateToTask}
@@ -387,12 +454,16 @@ export function TaskDetailModal({
 							task={task}
 							taskIdPrefix={taskIdPrefix}
 							normalTaskTypes={normalTaskTypes}
+							hasMore={!!hasMoreSubtasks}
+							isLoadingMore={isFetchingMoreSubtasks}
+							onLoadMore={() => void fetchNextSubtasksPage()}
 							onSubtaskClick={(sub) => navigateToTask(sub.id)}
 							onSubtaskUpdate={(subtaskId, payload) => {
 								if (!projectId) return;
 								updateTask(projectId, subtaskId, payload).then(() => {
 									qc.invalidateQueries({
-										queryKey: subtasksQueryOptions(projectId, task.id).queryKey,
+										queryKey: subtasksInfiniteQueryOptions(projectId, task.id)
+											.queryKey,
 									});
 								});
 							}}
@@ -406,7 +477,8 @@ export function TaskDetailModal({
 									parent_task_id: task.id,
 								}).then(() => {
 									qc.invalidateQueries({
-										queryKey: subtasksQueryOptions(projectId, task.id).queryKey,
+										queryKey: subtasksInfiniteQueryOptions(projectId, task.id)
+											.queryKey,
 									});
 								});
 							}}

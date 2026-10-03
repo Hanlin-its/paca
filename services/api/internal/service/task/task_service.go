@@ -6,22 +6,79 @@ import (
 	"strings"
 	"time"
 
-	taskdom "github.com/Paca-AI/api/internal/domain/task"
 	"github.com/google/uuid"
+
+	taskdom "github.com/Paca-AI/api/internal/domain/task"
+	"github.com/Paca-AI/api/internal/events"
+	activitysvc "github.com/Paca-AI/api/internal/service/activity"
 )
 
 var reservedSystemTypeNames = map[string]bool{
 	"Epic": true,
 }
 
+// automationStatusChecker is the minimal automation-domain surface the task
+// service needs to refuse deleting a status that automation still depends on.
+type automationStatusChecker interface {
+	StatusUsedByAutomation(ctx context.Context, statusID uuid.UUID) (bool, error)
+}
+
 // Service is the concrete implementation of taskdom.Service.
 type Service struct {
-	repo taskdom.Repository
+	repo              taskdom.Repository
+	automationChecker automationStatusChecker
+	activity          activitysvc.Recorder
+}
+
+// Activity topics for changes to a project's task schema. They are recorded
+// against the project entity: the schema belongs to it, and a deleted type or
+// status would otherwise leave nothing to link the entry to.
+const (
+	TopicTaskTypeCreated       = "project.task_type.created"
+	TopicTaskTypeUpdated       = "project.task_type.updated"
+	TopicTaskTypeDeleted       = "project.task_type.deleted"
+	TopicTaskTypeDefaultSet    = "project.task_type.default_set"
+	TopicTaskStatusCreated     = "project.task_status.created"
+	TopicTaskStatusUpdated     = "project.task_status.updated"
+	TopicTaskStatusDeleted     = "project.task_status.deleted"
+	TopicTaskStatusDefaultSet  = "project.task_status.default_set"
+	TopicTaskStatusesReordered = "project.task_status.reordered"
+	TopicCustomFieldCreated    = "project.custom_field.created"
+	TopicCustomFieldUpdated    = "project.custom_field.updated"
+	TopicCustomFieldDeleted    = "project.custom_field.deleted"
+)
+
+// WithActivityRecorder sets where schema changes are recorded. Without it
+// nothing is recorded.
+func (s *Service) WithActivityRecorder(rec activitysvc.Recorder) *Service {
+	s.activity = rec
+	return s
+}
+
+// recordSchema fans a task-schema change out to the activity log; the actor
+// comes from the request context. name is the type/status/field's name at
+// the time, so the entry still reads correctly after it is renamed or gone.
+func (s *Service) recordSchema(ctx context.Context, projectID uuid.UUID, topic, name string) {
+	s.activity.Record(ctx, activitysvc.Entry{
+		ProjectID:  projectID,
+		EntityType: events.EntityProject,
+		EntityID:   projectID,
+		Topic:      topic,
+		Payload:    map[string]any{"project_id": projectID.String(), "name": name},
+	})
 }
 
 // New returns a configured task service.
 func New(repo taskdom.Repository) *Service {
-	return &Service{repo: repo}
+	return &Service{repo: repo, activity: activitysvc.Discard}
+}
+
+// WithAutomationStatusChecker configures a check that refuses to delete a
+// task status still referenced by an automation's node config. Without it,
+// DeleteTaskStatus does not guard against this (e.g. in tests).
+func (s *Service) WithAutomationStatusChecker(checker automationStatusChecker) *Service {
+	s.automationChecker = checker
+	return s
 }
 
 // --- Task Types -------------------------------------------------------------
@@ -61,6 +118,7 @@ func (s *Service) CreateTaskType(ctx context.Context, in taskdom.CreateTaskTypeI
 	if err := s.repo.CreateTaskType(ctx, t); err != nil {
 		return nil, err
 	}
+	s.recordSchema(ctx, t.ProjectID, TopicTaskTypeCreated, t.Name)
 	return t, nil
 }
 
@@ -80,14 +138,21 @@ func (s *Service) UpdateTaskType(ctx context.Context, projectID, id uuid.UUID, i
 	if name := strings.TrimSpace(in.Name); name != "" {
 		t.Name = name
 	}
-	t.Icon = in.Icon
-	t.Color = in.Color
-	t.Description = in.Description
+	if in.Icon != nil {
+		t.Icon = *in.Icon
+	}
+	if in.Color != nil {
+		t.Color = *in.Color
+	}
+	if in.Description != nil {
+		t.Description = *in.Description
+	}
 	t.UpdatedAt = time.Now()
 
 	if err := s.repo.UpdateTaskType(ctx, t); err != nil {
 		return nil, err
 	}
+	s.recordSchema(ctx, t.ProjectID, TopicTaskTypeUpdated, t.Name)
 	return t, nil
 }
 
@@ -103,7 +168,16 @@ func (s *Service) DeleteTaskType(ctx context.Context, projectID, id uuid.UUID) e
 	if t.IsSystem {
 		return taskdom.ErrTypeIsSystem
 	}
-	return s.repo.DeleteTaskType(ctx, id)
+	// New tasks without a type start as the default one, so it has to stay
+	// until another type is made the default.
+	if t.IsDefault {
+		return taskdom.ErrTypeIsDefault
+	}
+	if err := s.repo.DeleteTaskType(ctx, id); err != nil {
+		return err
+	}
+	s.recordSchema(ctx, projectID, TopicTaskTypeDeleted, t.Name)
+	return nil
 }
 
 // SetDefaultTaskType marks typeID as the project's default task type,
@@ -112,7 +186,12 @@ func (s *Service) SetDefaultTaskType(ctx context.Context, projectID, typeID uuid
 	if err := s.repo.SetDefaultTaskType(ctx, projectID, typeID); err != nil {
 		return nil, err
 	}
-	return s.repo.FindTaskTypeByID(ctx, typeID)
+	t, err := s.repo.FindTaskTypeByID(ctx, typeID)
+	if err != nil {
+		return nil, err
+	}
+	s.recordSchema(ctx, projectID, TopicTaskTypeDefaultSet, t.Name)
+	return t, nil
 }
 
 // --- Task Statuses ----------------------------------------------------------
@@ -152,6 +231,7 @@ func (s *Service) CreateTaskStatus(ctx context.Context, in taskdom.CreateTaskSta
 	if err := s.repo.CreateTaskStatus(ctx, st); err != nil {
 		return nil, err
 	}
+	s.recordSchema(ctx, st.ProjectID, TopicTaskStatusCreated, st.Name)
 	return st, nil
 }
 
@@ -185,6 +265,7 @@ func (s *Service) UpdateTaskStatus(ctx context.Context, projectID, id uuid.UUID,
 	if err := s.repo.UpdateTaskStatus(ctx, st); err != nil {
 		return nil, err
 	}
+	s.recordSchema(ctx, st.ProjectID, TopicTaskStatusUpdated, st.Name)
 	return st, nil
 }
 
@@ -197,7 +278,25 @@ func (s *Service) DeleteTaskStatus(ctx context.Context, projectID, id uuid.UUID)
 	if st.ProjectID != projectID {
 		return taskdom.ErrStatusNotFound
 	}
-	return s.repo.DeleteTaskStatus(ctx, id)
+	// New tasks without a status start in the default one, so it has to stay
+	// until another status is made the default.
+	if st.IsDefault {
+		return taskdom.ErrStatusIsDefault
+	}
+	if s.automationChecker != nil {
+		used, err := s.automationChecker.StatusUsedByAutomation(ctx, id)
+		if err != nil {
+			return err
+		}
+		if used {
+			return taskdom.ErrStatusInUseByAutomation
+		}
+	}
+	if err := s.repo.DeleteTaskStatus(ctx, id); err != nil {
+		return err
+	}
+	s.recordSchema(ctx, projectID, TopicTaskStatusDeleted, st.Name)
+	return nil
 }
 
 // SetDefaultTaskStatus marks statusID as the project's default task status,
@@ -206,7 +305,12 @@ func (s *Service) SetDefaultTaskStatus(ctx context.Context, projectID, statusID 
 	if err := s.repo.SetDefaultTaskStatus(ctx, projectID, statusID); err != nil {
 		return nil, err
 	}
-	return s.repo.FindTaskStatusByID(ctx, statusID)
+	st, err := s.repo.FindTaskStatusByID(ctx, statusID)
+	if err != nil {
+		return nil, err
+	}
+	s.recordSchema(ctx, projectID, TopicTaskStatusDefaultSet, st.Name)
+	return st, nil
 }
 
 // ReorderTaskStatuses persists a new display order for the project's task
@@ -215,7 +319,11 @@ func (s *Service) ReorderTaskStatuses(ctx context.Context, projectID uuid.UUID, 
 	if len(statusIDs) == 0 {
 		return taskdom.ErrStatusReorderInvalid
 	}
-	return s.repo.ReorderTaskStatuses(ctx, projectID, statusIDs)
+	if err := s.repo.ReorderTaskStatuses(ctx, projectID, statusIDs); err != nil {
+		return err
+	}
+	s.recordSchema(ctx, projectID, TopicTaskStatusesReordered, "")
+	return nil
 }
 
 // isEpicTaskType returns whether typeID belongs to the system Epic type.
@@ -265,9 +373,30 @@ func (s *Service) CountTasks(ctx context.Context, projectID uuid.UUID, filter ta
 	return s.repo.CountTasks(ctx, projectID, filter)
 }
 
+// CountOpenTasksByProjects returns the number of non-done tasks across all of
+// projectIDs in a single query.
+func (s *Service) CountOpenTasksByProjects(ctx context.Context, projectIDs []uuid.UUID) (int64, error) {
+	return s.repo.CountOpenTasksByProjects(ctx, projectIDs)
+}
+
 // SumTaskField sums a numeric field across all matching tasks, ignoring pagination.
 func (s *Service) SumTaskField(ctx context.Context, projectID uuid.UUID, filter taskdom.TaskFilter, fieldKey string) (float64, error) {
 	return s.repo.SumTaskField(ctx, projectID, filter, fieldKey)
+}
+
+// ListDistinctTags returns every distinct tag value used anywhere in the
+// project — see taskdom.Repository.ListDistinctTags.
+func (s *Service) ListDistinctTags(ctx context.Context, projectID uuid.UUID) ([]string, error) {
+	return s.repo.ListDistinctTags(ctx, projectID)
+}
+
+// ListAssignedTasks returns open tasks assigned to any of memberIDs, across
+// their respective projects — see taskdom.Repository.ListAssignedTasks.
+func (s *Service) ListAssignedTasks(ctx context.Context, memberIDs []uuid.UUID, limit int, cursorAfter *string) ([]*taskdom.Task, bool, error) {
+	if limit < 1 {
+		limit = 10
+	}
+	return s.repo.ListAssignedTasks(ctx, memberIDs, limit, cursorAfter)
 }
 
 // GetTask returns the task with the given ID, verifying it belongs to projectID.
@@ -331,27 +460,38 @@ func (s *Service) CreateTask(ctx context.Context, in taskdom.CreateTaskInput) (*
 	if tags == nil {
 		tags = []string{}
 	}
+	assigneeIDs := in.AssigneeIDs
+	if assigneeIDs == nil {
+		assigneeIDs = []uuid.UUID{}
+	}
+	assignmentMode := in.AssignmentMode
+	if assignmentMode == "" {
+		assignmentMode = taskdom.AssignmentModeManual
+	} else if !taskdom.ValidAssignmentModes[assignmentMode] {
+		return nil, taskdom.ErrTaskAssignmentModeInvalid
+	}
 
 	now := time.Now()
 	t := &taskdom.Task{
-		ID:           uuid.New(),
-		ProjectID:    in.ProjectID,
-		TaskTypeID:   taskTypeID,
-		StatusID:     statusID,
-		SprintID:     in.SprintID,
-		ParentTaskID: in.ParentTaskID,
-		Title:        title,
-		Description:  in.Description,
-		Importance:   in.Importance,
-		StoryPoints:  in.StoryPoints,
-		AssigneeID:   in.AssigneeID,
-		ReporterID:   in.ReporterID,
-		CustomFields: cf,
-		StartDate:    in.StartDate,
-		DueDate:      in.DueDate,
-		Tags:         tags,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:             uuid.New(),
+		ProjectID:      in.ProjectID,
+		TaskTypeID:     taskTypeID,
+		StatusID:       statusID,
+		SprintID:       in.SprintID,
+		ParentTaskID:   in.ParentTaskID,
+		Title:          title,
+		Description:    in.Description,
+		Importance:     in.Importance,
+		StoryPoints:    in.StoryPoints,
+		AssigneeIDs:    assigneeIDs,
+		ReporterID:     in.ReporterID,
+		CustomFields:   cf,
+		StartDate:      in.StartDate,
+		DueDate:        in.DueDate,
+		Tags:           tags,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		AssignmentMode: assignmentMode,
 	}
 
 	if err := s.repo.CreateTask(ctx, t); err != nil {
@@ -369,7 +509,42 @@ func (s *Service) UpdateTask(ctx context.Context, projectID, id uuid.UUID, in ta
 	if t.ProjectID != projectID {
 		return nil, taskdom.ErrTaskNotFound
 	}
+	if err := s.applyTaskUpdate(ctx, t, in); err != nil {
+		return nil, err
+	}
+	if err := s.repo.UpdateTask(ctx, t); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
 
+// UpdateTaskAtomic is UpdateTask, but the read decide bases its decision on
+// and the resulting write happen inside one DB transaction with the row
+// locked for the duration — see taskdom.Repository.UpdateTaskAtomic's doc
+// comment. decide returns (in, true) to validate and apply in through the
+// same applyTaskUpdate path UpdateTask uses, or ok=false to leave the task
+// untouched (no write, no error).
+func (s *Service) UpdateTaskAtomic(ctx context.Context, projectID, id uuid.UUID, decide func(current *taskdom.Task) (taskdom.UpdateTaskInput, bool)) (*taskdom.Task, error) {
+	return s.repo.UpdateTaskAtomic(ctx, id, func(current *taskdom.Task) (*taskdom.Task, error) {
+		if current.ProjectID != projectID {
+			return nil, taskdom.ErrTaskNotFound
+		}
+		in, ok := decide(current)
+		if !ok {
+			return nil, nil
+		}
+		if err := s.applyTaskUpdate(ctx, current, in); err != nil {
+			return nil, err
+		}
+		return current, nil
+	})
+}
+
+// applyTaskUpdate validates in against t's current state and this task's
+// project (parent-cycle/epic-parent constraints) and mutates t in place —
+// shared by UpdateTask and UpdateTaskAtomic so both apply identical
+// validation no matter how the read that produced t was obtained.
+func (s *Service) applyTaskUpdate(ctx context.Context, t *taskdom.Task, in taskdom.UpdateTaskInput) error {
 	if title := strings.TrimSpace(in.Title); title != "" {
 		t.Title = title
 	}
@@ -386,17 +561,17 @@ func (s *Service) UpdateTask(ctx context.Context, projectID, id uuid.UUID, in ta
 	// Validate parent constraints using the post-update effective values.
 	if effectiveParentID != nil {
 		if *effectiveParentID == t.ID {
-			return nil, taskdom.ErrTaskCannotBeOwnParent
+			return taskdom.ErrTaskCannotBeOwnParent
 		}
 		if s.wouldCreateCycle(ctx, t.ID, *effectiveParentID) {
-			return nil, taskdom.ErrTaskParentCycleDetected
+			return taskdom.ErrTaskParentCycleDetected
 		}
 		isEpic, err := s.isEpicTaskType(ctx, effectiveTypeID)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if isEpic {
-			return nil, taskdom.ErrEpicCannotHaveParent
+			return taskdom.ErrEpicCannotHaveParent
 		}
 	}
 
@@ -421,8 +596,24 @@ func (s *Service) UpdateTask(ctx context.Context, projectID, id uuid.UUID, in ta
 	if in.StoryPoints != nil {
 		t.StoryPoints = *in.StoryPoints
 	}
-	if in.AssigneeID != nil {
-		t.AssigneeID = *in.AssigneeID
+	// A human explicitly changing AssigneeIDs without also (re)stating
+	// AssignmentMode in the same request means "I'm picking this myself" —
+	// flip out of auto mode so a later empty-assignee event doesn't
+	// re-trigger Jev resolution and silently override their pick. The
+	// autofill consumer's own assignment writes always resend
+	// AssignmentMode: AssignmentModeAuto alongside AssigneeIDs specifically
+	// to avoid tripping this (see worker.TaskAutofillConsumer).
+	if in.AssigneeIDs != nil {
+		t.AssigneeIDs = *in.AssigneeIDs
+		if in.AssignmentMode == nil && t.AssignmentMode == taskdom.AssignmentModeAuto {
+			t.AssignmentMode = taskdom.AssignmentModeManual
+		}
+	}
+	if in.AssignmentMode != nil {
+		if !taskdom.ValidAssignmentModes[*in.AssignmentMode] {
+			return taskdom.ErrTaskAssignmentModeInvalid
+		}
+		t.AssignmentMode = *in.AssignmentMode
 	}
 	if in.ReporterID != nil {
 		t.ReporterID = *in.ReporterID
@@ -440,11 +631,7 @@ func (s *Service) UpdateTask(ctx context.Context, projectID, id uuid.UUID, in ta
 		t.Tags = *in.Tags
 	}
 	t.UpdatedAt = time.Now()
-
-	if err := s.repo.UpdateTask(ctx, t); err != nil {
-		return nil, err
-	}
-	return t, nil
+	return nil
 }
 
 // DeleteTask soft-deletes a task by ID, verifying it belongs to projectID.
@@ -495,7 +682,7 @@ func (s *Service) CreateCustomFieldDefinition(ctx context.Context, in taskdom.Cr
 
 	opts := in.Options
 	if opts == nil {
-		opts = []string{}
+		opts = []taskdom.CustomFieldOption{}
 	}
 
 	now := time.Now()
@@ -514,6 +701,7 @@ func (s *Service) CreateCustomFieldDefinition(ctx context.Context, in taskdom.Cr
 	if err := s.repo.CreateCustomFieldDefinition(ctx, f); err != nil {
 		return nil, err
 	}
+	s.recordSchema(ctx, f.ProjectID, TopicCustomFieldCreated, f.DisplayName)
 	return f, nil
 }
 
@@ -548,6 +736,7 @@ func (s *Service) UpdateCustomFieldDefinition(ctx context.Context, projectID, id
 	if err := s.repo.UpdateCustomFieldDefinition(ctx, f); err != nil {
 		return nil, err
 	}
+	s.recordSchema(ctx, f.ProjectID, TopicCustomFieldUpdated, f.DisplayName)
 	return f, nil
 }
 
@@ -561,5 +750,9 @@ func (s *Service) DeleteCustomFieldDefinition(ctx context.Context, projectID, id
 	if f.ProjectID != projectID {
 		return taskdom.ErrCustomFieldNotFound
 	}
-	return s.repo.DeleteCustomFieldDefinition(ctx, id)
+	if err := s.repo.DeleteCustomFieldDefinition(ctx, id); err != nil {
+		return err
+	}
+	s.recordSchema(ctx, projectID, TopicCustomFieldDeleted, f.DisplayName)
+	return nil
 }

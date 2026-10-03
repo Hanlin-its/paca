@@ -7,14 +7,19 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	docdom "github.com/Paca-AI/api/internal/domain/doc"
 	projectdom "github.com/Paca-AI/api/internal/domain/project"
+	userdom "github.com/Paca-AI/api/internal/domain/user"
 	"github.com/Paca-AI/api/internal/platform/authz"
 	jwttoken "github.com/Paca-AI/api/internal/platform/token"
+	activitysvc "github.com/Paca-AI/api/internal/service/activity"
 	authsvc "github.com/Paca-AI/api/internal/service/auth"
 	docsvc "github.com/Paca-AI/api/internal/service/doc"
 	projectsvc "github.com/Paca-AI/api/internal/service/project"
@@ -23,7 +28,6 @@ import (
 	usersvc "github.com/Paca-AI/api/internal/service/user"
 	"github.com/Paca-AI/api/internal/transport/http/handler"
 	"github.com/Paca-AI/api/internal/transport/http/router"
-	"github.com/google/uuid"
 )
 
 // ---------------------------------------------------------------------------
@@ -31,19 +35,17 @@ import (
 // ---------------------------------------------------------------------------
 
 type fakeDocRepoIT struct {
-	mu         sync.RWMutex
-	folders    map[uuid.UUID]*docdom.DocFolder
-	docs       map[uuid.UUID]*docdom.Document
-	snapshots  map[uuid.UUID]*docdom.DocSnapshot
-	activities map[uuid.UUID]*docdom.Activity
+	mu        sync.RWMutex
+	folders   map[uuid.UUID]*docdom.DocFolder
+	docs      map[uuid.UUID]*docdom.Document
+	snapshots map[uuid.UUID]*docdom.DocSnapshot
 }
 
 func newFakeDocRepoIT() *fakeDocRepoIT {
 	return &fakeDocRepoIT{
-		folders:    make(map[uuid.UUID]*docdom.DocFolder),
-		docs:       make(map[uuid.UUID]*docdom.Document),
-		snapshots:  make(map[uuid.UUID]*docdom.DocSnapshot),
-		activities: make(map[uuid.UUID]*docdom.Activity),
+		folders:   make(map[uuid.UUID]*docdom.DocFolder),
+		docs:      make(map[uuid.UUID]*docdom.Document),
+		snapshots: make(map[uuid.UUID]*docdom.DocSnapshot),
 	}
 }
 
@@ -97,7 +99,11 @@ func (r *fakeDocRepoIT) DeleteFolder(_ context.Context, id uuid.UUID) error {
 	return nil
 }
 
-func (r *fakeDocRepoIT) ListDocuments(_ context.Context, projectID uuid.UUID, folderID *uuid.UUID) ([]*docdom.Document, error) {
+// ListDocuments ignores cursor/limit — no test in this file exercises
+// pagination, so it always returns the full matching set (equivalent to
+// always passing limit=nil), matching the real repository's own
+// no-pagination-requested behavior.
+func (r *fakeDocRepoIT) ListDocuments(_ context.Context, projectID uuid.UUID, folderID *uuid.UUID, search *string, _ *string, _ *int) ([]*docdom.Document, bool, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	var out []*docdom.Document
@@ -110,10 +116,19 @@ func (r *fakeDocRepoIT) ListDocuments(_ context.Context, projectID uuid.UUID, fo
 				continue
 			}
 		}
+		if search != nil && *search != "" {
+			if !strings.Contains(strings.ToLower(d.Title), strings.ToLower(*search)) {
+				continue
+			}
+		}
 		cp := *d
 		out = append(out, &cp)
 	}
-	return out, nil
+	return out, false, nil
+}
+
+func (r *fakeDocRepoIT) SearchDocuments(context.Context, uuid.UUID, string, int) ([]*docdom.Document, error) {
+	return nil, nil
 }
 
 func (r *fakeDocRepoIT) FindDocumentByID(_ context.Context, id uuid.UUID) (*docdom.Document, error) {
@@ -224,71 +239,22 @@ func (r *fakeDocRepoIT) DeleteRecentSnapshotsExcept(_ context.Context, documentI
 	return nil
 }
 
-func (r *fakeDocRepoIT) ListActivities(_ context.Context, documentID uuid.UUID) ([]*docdom.Activity, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	var out []*docdom.Activity
-	for _, a := range r.activities {
-		if a.DocumentID == documentID && a.DeletedAt == nil {
-			cp := *a
-			out = append(out, &cp)
-		}
-	}
-	return out, nil
-}
-
-func (r *fakeDocRepoIT) FindActivityByID(_ context.Context, id uuid.UUID) (*docdom.Activity, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	a, ok := r.activities[id]
-	if !ok {
-		return nil, docdom.ErrActivityNotFound
-	}
-	cp := *a
-	return &cp, nil
-}
-
-func (r *fakeDocRepoIT) CreateActivity(_ context.Context, a *docdom.Activity) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	cp := *a
-	r.activities[a.ID] = &cp
-	return nil
-}
-
-func (r *fakeDocRepoIT) UpdateActivity(_ context.Context, a *docdom.Activity) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, ok := r.activities[a.ID]; !ok {
-		return docdom.ErrActivityNotFound
-	}
-	cp := *a
-	r.activities[a.ID] = &cp
-	return nil
-}
-
-func (r *fakeDocRepoIT) DeleteActivity(_ context.Context, id uuid.UUID) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	a, ok := r.activities[id]
-	if !ok {
-		return docdom.ErrActivityNotFound
-	}
-	now := time.Now()
-	a.DeletedAt = &now
-	return nil
-}
-
 // ---------------------------------------------------------------------------
 // Doc member lookup stub — resolves any actor to a ProjectMember whose ID
 // is the agent ID (when present) or the user UUID.
 // ---------------------------------------------------------------------------
 
+// The one deliberate exception mirrors production: userdom.SystemActorUserID
+// with no agentID (the shared agent API key used without X-Agent-ID) never
+// resolves, since that identity is never itself a project member.
 type fakeDocMemberLookup struct{}
 
 func (f *fakeDocMemberLookup) FindMemberByActor(_ context.Context, _, actorID uuid.UUID, agentID *uuid.UUID) (*projectdom.ProjectMember, error) {
 	if agentID != nil {
 		return &projectdom.ProjectMember{ID: *agentID}, nil
+	}
+	if actorID == userdom.SystemActorUserID {
+		return nil, projectdom.ErrMemberNotFound
 	}
 	return &projectdom.ProjectMember{ID: actorID}, nil
 }
@@ -305,16 +271,16 @@ func buildDocTestRouter(docRepo *fakeDocRepoIT, store *projectPermStore) http.Ha
 	userService := usersvc.New(userRepo)
 	projectRepo := newFakeProjectRepo()
 	taskRepo := newFakeTaskRepoIT()
-	projectService := projectsvc.New(projectRepo, taskRepo)
+	projectService := projectsvc.New(projectRepo, taskRepo, nil)
 	taskService := tasksvc.New(taskRepo)
 	sprintRepo := newFakeSprintRepoIT()
 	viewRepo := newFakeViewRepoIT()
-	sprintService := sprintsvc.New(sprintRepo, taskRepo)
-	viewService := sprintsvc.NewViewService(viewRepo)
+	sprintService := sprintsvc.New(sprintRepo, taskRepo, nil)
+	viewService := sprintsvc.NewViewService(viewRepo, sprintRepo, taskRepo, nil)
 	activityRepo := newFakeTaskActivityRepo()
-	activityService := tasksvc.NewActivityService(activityRepo, &fakeActivityMemberRepo{}, nil)
+	activityService := tasksvc.NewActivityService(activitysvc.New(activityRepo, &fakeActivityMemberRepo{}, nil), taskRepo, &fakeActivityMemberRepo{})
 	docService := docsvc.New(docRepo, &fakeDocMemberLookup{})
-	docActivityService := docsvc.NewActivityService(docRepo, &fakeDocMemberLookup{}, nil)
+	docActivityService := docsvc.NewActivityService(activitysvc.New(newFakeTaskActivityRepo(), &fakeDocMemberLookup{}, nil), docRepo)
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
 	return router.New(router.Deps{
@@ -935,5 +901,120 @@ func TestIntegrationDocuments_ForbiddenReturns403(t *testing.T) {
 		fmt.Sprintf("/api/v1/projects/%s/docs", projectID), tok, map[string]any{"title": "X"}))
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d (%s)", w.Code, w.Body.String())
+	}
+}
+
+// TestIntegrationDocuments_CrossProjectAccessReturns404 is the end-to-end
+// regression test for GHSA-xwmv-9c7h-g947: document routes authorize the
+// caller against the :projectId in the URL, but a docs.write/docs.read
+// member of ANY project could previously mutate, read, or comment on a
+// document that actually belongs to a different project, just by knowing
+// its UUID. Every operation below targets victimDocID through attackerProj's
+// URL — none of them may succeed, and the victim document/its data must be
+// left completely untouched.
+func TestIntegrationDocuments_CrossProjectAccessReturns404(t *testing.T) {
+	docRepo := newFakeDocRepoIT()
+	victimProjectID := uuid.New()
+	attackerProjectID := uuid.New()
+	store := &projectPermStore{
+		projectPerms: map[uuid.UUID][]authz.Permission{
+			// The attacker legitimately holds docs.read/docs.write in their
+			// own project — that alone must not grant access to another
+			// project's documents by UUID.
+			victimProjectID:   {authz.PermissionDocsRead, authz.PermissionDocsWrite},
+			attackerProjectID: {authz.PermissionDocsRead, authz.PermissionDocsWrite},
+		},
+	}
+	r := buildDocTestRouter(docRepo, store)
+	tok := issueDocToken(t, uuid.NewString())
+	victimBase := fmt.Sprintf("/api/v1/projects/%s/docs", victimProjectID)
+	attackerBase := fmt.Sprintf("/api/v1/projects/%s/docs", attackerProjectID)
+
+	// Set up the victim's document, with a snapshot (via a legitimate
+	// same-project update) and a comment.
+	createW := serve(r, authedJSONReq(t.Context(), http.MethodPost, victimBase, tok, map[string]any{
+		"title":   "Victim Doc",
+		"content": []map[string]any{{"type": "paragraph"}},
+	}))
+	if createW.Code != http.StatusCreated {
+		t.Fatalf("create victim doc: expected 201, got %d (%s)", createW.Code, createW.Body.String())
+	}
+	victimDocID := docIDFrom(t, "document", createW.Body.Bytes())
+	victimDocPath := victimBase + "/" + victimDocID
+
+	updW := serve(r, authedJSONReq(t.Context(), http.MethodPatch, victimDocPath, tok, map[string]any{
+		"content": []map[string]any{{"type": "paragraph"}, {"type": "heading"}},
+	}))
+	if updW.Code != http.StatusOK {
+		t.Fatalf("seed snapshot via same-project update: expected 200, got %d (%s)", updW.Code, updW.Body.String())
+	}
+	snapsW := serve(r, authedJSONReq(t.Context(), http.MethodGet, victimDocPath+"/snapshots", tok, nil))
+	if snapsW.Code != http.StatusOK || docListCount(t, snapsW.Body.Bytes()) != 1 {
+		t.Fatalf("expected 1 snapshot on victim doc, got code=%d body=%s", snapsW.Code, snapsW.Body.String())
+	}
+	var snapEnv struct {
+		Data struct {
+			Items []struct {
+				ID string `json:"id"`
+			} `json:"items"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(snapsW.Body.Bytes(), &snapEnv); err != nil || len(snapEnv.Data.Items) != 1 {
+		t.Fatalf("decode snapshot list: err=%v body=%s", err, snapsW.Body.String())
+	}
+	victimSnapshotID := snapEnv.Data.Items[0].ID
+
+	commentW := serve(r, authedJSONReq(t.Context(), http.MethodPost, victimDocPath+"/comments", tok, map[string]any{
+		"content": []map[string]any{{"type": "paragraph", "content": []map[string]any{{"type": "text", "text": "legit comment"}}}},
+	}))
+	if commentW.Code != http.StatusCreated {
+		t.Fatalf("seed comment via same-project request: expected 201, got %d (%s)", commentW.Code, commentW.Body.String())
+	}
+
+	attackerDocPath := attackerBase + "/" + victimDocID
+
+	// PACA-001: cross-project mutation.
+	if w := serve(r, authedJSONReq(t.Context(), http.MethodPatch, attackerDocPath, tok, map[string]any{"title": "Pwned"})); w.Code != http.StatusNotFound {
+		t.Errorf("cross-project PATCH: expected 404, got %d (%s)", w.Code, w.Body.String())
+	}
+	// PACA-001: cross-project comment injection.
+	if w := serve(r, authedJSONReq(t.Context(), http.MethodPost, attackerDocPath+"/comments", tok, map[string]any{
+		"content": []map[string]any{{"type": "paragraph", "content": []map[string]any{{"type": "text", "text": "injected"}}}},
+	})); w.Code != http.StatusNotFound {
+		t.Errorf("cross-project comment: expected 404, got %d (%s)", w.Code, w.Body.String())
+	}
+	// PACA-002: cross-project snapshot list/read disclosure.
+	if w := serve(r, authedJSONReq(t.Context(), http.MethodGet, attackerDocPath+"/snapshots", tok, nil)); w.Code != http.StatusNotFound {
+		t.Errorf("cross-project ListSnapshots: expected 404, got %d (%s)", w.Code, w.Body.String())
+	}
+	if w := serve(r, authedJSONReq(t.Context(), http.MethodGet, attackerDocPath+"/snapshots/"+victimSnapshotID, tok, nil)); w.Code != http.StatusNotFound {
+		t.Errorf("cross-project GetSnapshot: expected 404, got %d (%s)", w.Code, w.Body.String())
+	}
+	// PACA-002: cross-project activity/history disclosure.
+	if w := serve(r, authedJSONReq(t.Context(), http.MethodGet, attackerDocPath+"/activities", tok, nil)); w.Code != http.StatusNotFound {
+		t.Errorf("cross-project ListActivities: expected 404, got %d (%s)", w.Code, w.Body.String())
+	}
+	// PACA-001: cross-project deletion — checked last since a broken fix
+	// would remove the document the assertions above depend on.
+	if w := serve(r, authedJSONReq(t.Context(), http.MethodDelete, attackerDocPath, tok, nil)); w.Code != http.StatusNotFound {
+		t.Errorf("cross-project DELETE: expected 404, got %d (%s)", w.Code, w.Body.String())
+	}
+
+	// The victim document must be completely untouched by every rejected
+	// cross-project request above.
+	getW := serve(r, authedJSONReq(t.Context(), http.MethodGet, victimDocPath, tok, nil))
+	if getW.Code != http.StatusOK {
+		t.Fatalf("victim doc should still exist: expected 200, got %d (%s)", getW.Code, getW.Body.String())
+	}
+	var docEnv struct {
+		Data struct {
+			Title string `json:"title"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(getW.Body.Bytes(), &docEnv); err != nil {
+		t.Fatalf("decode victim doc: %v", err)
+	}
+	if docEnv.Data.Title != "Victim Doc" {
+		t.Errorf("victim doc title must be unchanged, got %q", docEnv.Data.Title)
 	}
 }

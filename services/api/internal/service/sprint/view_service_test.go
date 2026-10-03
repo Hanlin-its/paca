@@ -6,26 +6,134 @@ import (
 	"sync"
 	"testing"
 
-	sprintdom "github.com/Paca-AI/api/internal/domain/sprint"
-	sprintsvc "github.com/Paca-AI/api/internal/service/sprint"
 	"github.com/google/uuid"
+
+	sprintdom "github.com/Paca-AI/api/internal/domain/sprint"
+	taskdom "github.com/Paca-AI/api/internal/domain/task"
+	sprintsvc "github.com/Paca-AI/api/internal/service/sprint"
 )
+
+// ---------------------------------------------------------------------------
+// Permissive sprint/task repos
+//
+// Most tests in this file exercise view behavior (plugin config validation,
+// deletion counting, rename semantics, ...) that has nothing to do with
+// cross-project ownership, and construct their fixture views with a bare
+// uuid.New() SprintID and no ProjectID at all. These stand-ins always
+// resolve any ID successfully so that ViewService's sprint/task ownership
+// checks (see sprintInProject in view_service.go) never reject those
+// fixtures. Tests that specifically verify the ownership check itself (see
+// the "Cross-project isolation" section below) use the real fakeSprintRepo/
+// fakeTaskRepo from sprint_service_test.go instead, seeded with matching or
+// mismatched project IDs as needed.
+// ---------------------------------------------------------------------------
+
+type permissiveSprintRepo struct{}
+
+func (permissiveSprintRepo) ListSprints(context.Context, uuid.UUID) ([]*sprintdom.Sprint, error) {
+	return nil, nil
+}
+func (permissiveSprintRepo) FindSprintByID(_ context.Context, id uuid.UUID) (*sprintdom.Sprint, error) {
+	return &sprintdom.Sprint{ID: id}, nil
+}
+func (permissiveSprintRepo) CreateSprint(context.Context, *sprintdom.Sprint) error { return nil }
+func (permissiveSprintRepo) UpdateSprint(context.Context, *sprintdom.Sprint) error { return nil }
+func (permissiveSprintRepo) DeleteSprint(context.Context, uuid.UUID) error         { return nil }
+
+var _ sprintdom.SprintRepository = permissiveSprintRepo{}
+
+type permissiveTaskRepo struct{}
+
+func (permissiveTaskRepo) ListTasks(context.Context, uuid.UUID, taskdom.TaskFilter, int, taskdom.TaskSort) ([]*taskdom.Task, bool, error) {
+	return nil, false, nil
+}
+func (permissiveTaskRepo) CountTasks(context.Context, uuid.UUID, taskdom.TaskFilter) (int64, error) {
+	return 0, nil
+}
+func (permissiveTaskRepo) SumTaskField(context.Context, uuid.UUID, taskdom.TaskFilter, string) (float64, error) {
+	return 0, nil
+}
+func (permissiveTaskRepo) FindTaskByID(_ context.Context, id uuid.UUID) (*taskdom.Task, error) {
+	return &taskdom.Task{ID: id}, nil
+}
+func (permissiveTaskRepo) FindTaskByNumber(context.Context, uuid.UUID, int64) (*taskdom.Task, error) {
+	return nil, taskdom.ErrTaskNotFound
+}
+func (permissiveTaskRepo) CreateTask(context.Context, *taskdom.Task) error { return nil }
+func (permissiveTaskRepo) UpdateTask(context.Context, *taskdom.Task) error { return nil }
+func (permissiveTaskRepo) UpdateTaskAtomic(_ context.Context, id uuid.UUID, decide func(current *taskdom.Task) (*taskdom.Task, error)) (*taskdom.Task, error) {
+	next, err := decide(&taskdom.Task{ID: id})
+	if err != nil {
+		return nil, err
+	}
+	if next == nil {
+		return &taskdom.Task{ID: id}, nil
+	}
+	return next, nil
+}
+func (permissiveTaskRepo) DeleteTask(context.Context, uuid.UUID) error { return nil }
+func (permissiveTaskRepo) BulkMoveSprintTasks(context.Context, uuid.UUID, uuid.UUID, *uuid.UUID) error {
+	return nil
+}
+func (permissiveTaskRepo) ListAssignedTasks(context.Context, []uuid.UUID, int, *string) ([]*taskdom.Task, bool, error) {
+	return nil, false, nil
+}
+func (permissiveTaskRepo) CountOpenTasksByProjects(context.Context, []uuid.UUID) (int64, error) {
+	return 0, nil
+}
+func (permissiveTaskRepo) ListDistinctTags(context.Context, uuid.UUID) ([]string, error) {
+	return nil, nil
+}
+
+var _ taskdom.TaskRepository = permissiveTaskRepo{}
 
 // ---------------------------------------------------------------------------
 // Fake ViewRepository
 // ---------------------------------------------------------------------------
 
 type fakeViewRepo struct {
-	mu        sync.RWMutex
-	views     map[uuid.UUID]*sprintdom.SprintView
-	positions map[string]*sprintdom.ViewTaskPosition // key: viewID+":"+taskID
+	mu          sync.RWMutex
+	views       map[uuid.UUID]*sprintdom.SprintView
+	positions   map[string]*sprintdom.ViewTaskPosition // key: viewID+":"+taskID
+	userConfigs map[string]sprintdom.ViewConfig        // key: viewID+":"+userID
 }
 
 func newFakeViewRepo() *fakeViewRepo {
 	return &fakeViewRepo{
-		views:     make(map[uuid.UUID]*sprintdom.SprintView),
-		positions: make(map[string]*sprintdom.ViewTaskPosition),
+		views:       make(map[uuid.UUID]*sprintdom.SprintView),
+		positions:   make(map[string]*sprintdom.ViewTaskPosition),
+		userConfigs: make(map[string]sprintdom.ViewConfig),
 	}
+}
+
+func userCfgKey(viewID, userID uuid.UUID) string {
+	return viewID.String() + ":" + userID.String()
+}
+
+func (r *fakeViewRepo) GetUserViewConfigs(_ context.Context, userID uuid.UUID, viewIDs []uuid.UUID) (map[uuid.UUID]sprintdom.ViewConfig, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[uuid.UUID]sprintdom.ViewConfig)
+	for _, vid := range viewIDs {
+		if cfg, ok := r.userConfigs[userCfgKey(vid, userID)]; ok {
+			out[vid] = cfg
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeViewRepo) UpsertUserViewConfig(_ context.Context, viewID, userID uuid.UUID, cfg sprintdom.ViewConfig) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.userConfigs[userCfgKey(viewID, userID)] = cfg
+	return nil
+}
+
+func (r *fakeViewRepo) DeleteUserViewConfig(_ context.Context, viewID, userID uuid.UUID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.userConfigs, userCfgKey(viewID, userID))
+	return nil
 }
 
 func posKey(viewID, taskID uuid.UUID) string {
@@ -173,7 +281,7 @@ func (r *fakeViewRepo) ReorderViews(_ context.Context, items []sprintdom.ViewReo
 func TestViewService_CreateView_OK(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeViewRepo()
-	svc := sprintsvc.NewViewService(repo)
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	sprintID := uuid.New()
 	v, err := svc.CreateView(ctx, sprintdom.CreateViewInput{
@@ -198,7 +306,7 @@ func TestViewService_CreateView_OK(t *testing.T) {
 
 func TestViewService_CreateView_DefaultTypeIsTable(t *testing.T) {
 	ctx := context.Background()
-	svc := sprintsvc.NewViewService(newFakeViewRepo())
+	svc := sprintsvc.NewViewService(newFakeViewRepo(), permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	v, err := svc.CreateView(ctx, sprintdom.CreateViewInput{
 		SprintID:    uuidPtr(uuid.New()),
@@ -215,7 +323,7 @@ func TestViewService_CreateView_DefaultTypeIsTable(t *testing.T) {
 
 func TestViewService_CreateView_EmptyNameReturnsError(t *testing.T) {
 	ctx := context.Background()
-	svc := sprintsvc.NewViewService(newFakeViewRepo())
+	svc := sprintsvc.NewViewService(newFakeViewRepo(), permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	_, err := svc.CreateView(ctx, sprintdom.CreateViewInput{
 		SprintID:    uuidPtr(uuid.New()),
@@ -230,7 +338,7 @@ func TestViewService_CreateView_EmptyNameReturnsError(t *testing.T) {
 
 func TestViewService_CreateView_InvalidTypeReturnsError(t *testing.T) {
 	ctx := context.Background()
-	svc := sprintsvc.NewViewService(newFakeViewRepo())
+	svc := sprintsvc.NewViewService(newFakeViewRepo(), permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	_, err := svc.CreateView(ctx, sprintdom.CreateViewInput{
 		SprintID:    uuidPtr(uuid.New()),
@@ -243,10 +351,156 @@ func TestViewService_CreateView_InvalidTypeReturnsError(t *testing.T) {
 	}
 }
 
+func TestViewService_CreateView_PluginWithoutConfigReturnsError(t *testing.T) {
+	ctx := context.Background()
+	svc := sprintsvc.NewViewService(newFakeViewRepo(), permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
+
+	_, err := svc.CreateView(ctx, sprintdom.CreateViewInput{
+		SprintID:    uuidPtr(uuid.New()),
+		Name:        "Dashboard",
+		ViewType:    sprintdom.ViewTypePlugin,
+		ViewContext: sprintdom.ViewContextSprint,
+	})
+	if err != sprintdom.ErrViewPluginConfigRequired {
+		t.Errorf("expected ErrViewPluginConfigRequired, got %v", err)
+	}
+}
+
+func TestViewService_CreateView_PluginWithPartialConfigReturnsError(t *testing.T) {
+	ctx := context.Background()
+	svc := sprintsvc.NewViewService(newFakeViewRepo(), permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
+
+	_, err := svc.CreateView(ctx, sprintdom.CreateViewInput{
+		SprintID:    uuidPtr(uuid.New()),
+		Name:        "Dashboard",
+		ViewType:    sprintdom.ViewTypePlugin,
+		Config:      sprintdom.ViewConfig{PluginID: "com.paca.dashboard"}, // missing PluginComponent
+		ViewContext: sprintdom.ViewContextSprint,
+	})
+	if err != sprintdom.ErrViewPluginConfigRequired {
+		t.Errorf("expected ErrViewPluginConfigRequired, got %v", err)
+	}
+}
+
+func TestViewService_CreateView_PluginWithWhitespaceOnlyConfigReturnsError(t *testing.T) {
+	ctx := context.Background()
+	svc := sprintsvc.NewViewService(newFakeViewRepo(), permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
+
+	_, err := svc.CreateView(ctx, sprintdom.CreateViewInput{
+		SprintID: uuidPtr(uuid.New()),
+		Name:     "Dashboard",
+		ViewType: sprintdom.ViewTypePlugin,
+		Config: sprintdom.ViewConfig{
+			PluginID:        "  ",
+			PluginComponent: "  ",
+		},
+		ViewContext: sprintdom.ViewContextSprint,
+	})
+	if err != sprintdom.ErrViewPluginConfigRequired {
+		t.Errorf("expected ErrViewPluginConfigRequired, got %v", err)
+	}
+}
+
+func TestViewService_CreateView_PluginWithConfig_OK(t *testing.T) {
+	ctx := context.Background()
+	svc := sprintsvc.NewViewService(newFakeViewRepo(), permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
+
+	v, err := svc.CreateView(ctx, sprintdom.CreateViewInput{
+		SprintID: uuidPtr(uuid.New()),
+		Name:     "Dashboard",
+		ViewType: sprintdom.ViewTypePlugin,
+		Config: sprintdom.ViewConfig{
+			PluginID:        "com.paca.dashboard",
+			PluginComponent: "DashboardIntegrationView",
+		},
+		ViewContext: sprintdom.ViewContextSprint,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if v.Config.PluginID != "com.paca.dashboard" || v.Config.PluginComponent != "DashboardIntegrationView" {
+		t.Errorf("plugin config not persisted: %+v", v.Config)
+	}
+}
+
+func TestViewService_UpdateView_ChangeToPluginWithoutConfigReturnsError(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeViewRepo()
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
+
+	created, _ := svc.CreateView(ctx, sprintdom.CreateViewInput{
+		SprintID:    uuidPtr(uuid.New()),
+		Name:        "Table",
+		ViewType:    sprintdom.ViewTypeTable,
+		ViewContext: sprintdom.ViewContextSprint,
+	})
+
+	newType := sprintdom.ViewTypePlugin
+	_, err := svc.UpdateView(ctx, created.ProjectID, created.ID, sprintdom.UpdateViewInput{ViewType: &newType})
+	if err != sprintdom.ErrViewPluginConfigRequired {
+		t.Errorf("expected ErrViewPluginConfigRequired, got %v", err)
+	}
+}
+
+func TestViewService_UpdateView_ClearingPluginConfigWithoutTypeChangeReturnsError(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeViewRepo()
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
+
+	created, _ := svc.CreateView(ctx, sprintdom.CreateViewInput{
+		SprintID: uuidPtr(uuid.New()),
+		Name:     "Dashboard",
+		ViewType: sprintdom.ViewTypePlugin,
+		Config: sprintdom.ViewConfig{
+			PluginID:        "com.paca.dashboard",
+			PluginComponent: "DashboardIntegrationView",
+		},
+		ViewContext: sprintdom.ViewContextSprint,
+	})
+
+	emptyCfg := sprintdom.ViewConfig{}
+	_, err := svc.UpdateView(ctx, created.ProjectID, created.ID, sprintdom.UpdateViewInput{Config: &emptyCfg})
+	if err != sprintdom.ErrViewPluginConfigRequired {
+		t.Errorf("expected ErrViewPluginConfigRequired, got %v", err)
+	}
+}
+
+func TestViewService_UpdateView_RenameKeepsExistingPluginConfig(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeViewRepo()
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
+
+	created, err := svc.CreateView(ctx, sprintdom.CreateViewInput{
+		SprintID: uuidPtr(uuid.New()),
+		Name:     "Dashboard",
+		ViewType: sprintdom.ViewTypePlugin,
+		Config: sprintdom.ViewConfig{
+			PluginID:        "com.paca.dashboard",
+			PluginComponent: "DashboardIntegrationView",
+		},
+		ViewContext: sprintdom.ViewContextSprint,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error creating view: %v", err)
+	}
+
+	newName := "Dashboard (renamed)"
+	updated, err := svc.UpdateView(ctx, created.ProjectID, created.ID, sprintdom.UpdateViewInput{Name: &newName})
+	if err != nil {
+		t.Fatalf("unexpected error updating unrelated field on valid plugin view: %v", err)
+	}
+	if updated.Name != newName {
+		t.Errorf("Name: want %q, got %q", newName, updated.Name)
+	}
+	if updated.Config.PluginID != "com.paca.dashboard" || updated.Config.PluginComponent != "DashboardIntegrationView" {
+		t.Errorf("plugin config should be preserved untouched, got %+v", updated.Config)
+	}
+}
+
 func TestViewService_GetView_OK(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeViewRepo()
-	svc := sprintsvc.NewViewService(repo)
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	created, _ := svc.CreateView(ctx, sprintdom.CreateViewInput{
 		SprintID:    uuidPtr(uuid.New()),
@@ -266,7 +520,7 @@ func TestViewService_GetView_OK(t *testing.T) {
 
 func TestViewService_GetView_NotFound(t *testing.T) {
 	ctx := context.Background()
-	svc := sprintsvc.NewViewService(newFakeViewRepo())
+	svc := sprintsvc.NewViewService(newFakeViewRepo(), permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	_, err := svc.GetView(ctx, uuid.New(), uuid.New())
 	if err != sprintdom.ErrViewNotFound {
@@ -277,7 +531,7 @@ func TestViewService_GetView_NotFound(t *testing.T) {
 func TestViewService_UpdateView_Name(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeViewRepo()
-	svc := sprintsvc.NewViewService(repo)
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	created, _ := svc.CreateView(ctx, sprintdom.CreateViewInput{
 		SprintID:    uuidPtr(uuid.New()),
@@ -299,7 +553,7 @@ func TestViewService_UpdateView_Name(t *testing.T) {
 func TestViewService_UpdateView_Config(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeViewRepo()
-	svc := sprintsvc.NewViewService(repo)
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	created, _ := svc.CreateView(ctx, sprintdom.CreateViewInput{
 		SprintID:    uuidPtr(uuid.New()),
@@ -321,7 +575,7 @@ func TestViewService_UpdateView_Config(t *testing.T) {
 func TestViewService_UpdateView_Config_PageSize(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeViewRepo()
-	svc := sprintsvc.NewViewService(repo)
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	created, _ := svc.CreateView(ctx, sprintdom.CreateViewInput{
 		SprintID:    uuidPtr(uuid.New()),
@@ -345,7 +599,7 @@ func TestViewService_UpdateView_Config_PageSize(t *testing.T) {
 
 func TestViewService_UpdateView_NotFound(t *testing.T) {
 	ctx := context.Background()
-	svc := sprintsvc.NewViewService(newFakeViewRepo())
+	svc := sprintsvc.NewViewService(newFakeViewRepo(), permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	name := "Does not matter"
 	_, err := svc.UpdateView(ctx, uuid.New(), uuid.New(), sprintdom.UpdateViewInput{Name: &name})
@@ -357,7 +611,7 @@ func TestViewService_UpdateView_NotFound(t *testing.T) {
 func TestViewService_DeleteView_OK(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeViewRepo()
-	svc := sprintsvc.NewViewService(repo)
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	sprintID := uuid.New()
 	v1, _ := svc.CreateView(ctx, sprintdom.CreateViewInput{SprintID: &sprintID, Name: "V1", ViewType: sprintdom.ViewTypeTable, ViewContext: sprintdom.ViewContextSprint})
@@ -376,7 +630,7 @@ func TestViewService_DeleteView_OK(t *testing.T) {
 func TestViewService_DeleteView_LastViewRejected(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeViewRepo()
-	svc := sprintsvc.NewViewService(repo)
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	v, _ := svc.CreateView(ctx, sprintdom.CreateViewInput{
 		SprintID:    uuidPtr(uuid.New()),
@@ -393,7 +647,7 @@ func TestViewService_DeleteView_LastViewRejected(t *testing.T) {
 
 func TestViewService_DeleteView_NotFound(t *testing.T) {
 	ctx := context.Background()
-	svc := sprintsvc.NewViewService(newFakeViewRepo())
+	svc := sprintsvc.NewViewService(newFakeViewRepo(), permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	err := svc.DeleteView(ctx, uuid.New(), uuid.New())
 	if err != sprintdom.ErrViewNotFound {
@@ -404,7 +658,7 @@ func TestViewService_DeleteView_NotFound(t *testing.T) {
 func TestViewService_MoveTask_OK(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeViewRepo()
-	svc := sprintsvc.NewViewService(repo)
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	v, _ := svc.CreateView(ctx, sprintdom.CreateViewInput{
 		SprintID:    uuidPtr(uuid.New()),
@@ -440,7 +694,7 @@ func TestViewService_MoveTask_OK(t *testing.T) {
 
 func TestViewService_MoveTask_ViewNotFound(t *testing.T) {
 	ctx := context.Background()
-	svc := sprintsvc.NewViewService(newFakeViewRepo())
+	svc := sprintsvc.NewViewService(newFakeViewRepo(), permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	err := svc.MoveTask(ctx, uuid.New(), uuid.New(), sprintdom.MoveTaskInput{
 		TaskID:   uuid.New(),
@@ -454,13 +708,13 @@ func TestViewService_MoveTask_ViewNotFound(t *testing.T) {
 func TestViewService_ListViews_OK(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeViewRepo()
-	svc := sprintsvc.NewViewService(repo)
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	sprintID := uuid.New()
 	_, _ = svc.CreateView(ctx, sprintdom.CreateViewInput{SprintID: &sprintID, Name: "A", ViewType: sprintdom.ViewTypeTable, ViewContext: sprintdom.ViewContextSprint})
 	_, _ = svc.CreateView(ctx, sprintdom.CreateViewInput{SprintID: &sprintID, Name: "B", ViewType: sprintdom.ViewTypeRoadmap, ViewContext: sprintdom.ViewContextSprint})
 
-	views, err := svc.ListViews(ctx, sprintID)
+	views, err := svc.ListViews(ctx, uuid.Nil, sprintID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -475,7 +729,7 @@ func TestViewService_ListViews_OK(t *testing.T) {
 
 func TestViewService_ListBacklogViews_Empty(t *testing.T) {
 	ctx := context.Background()
-	svc := sprintsvc.NewViewService(newFakeViewRepo())
+	svc := sprintsvc.NewViewService(newFakeViewRepo(), permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	views, err := svc.ListProjectViews(ctx, uuid.New(), sprintdom.ViewContextBacklog)
 	if err != nil {
@@ -489,11 +743,12 @@ func TestViewService_ListBacklogViews_Empty(t *testing.T) {
 func TestViewService_ListBacklogViews_ReturnsOnlyBacklogViews(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeViewRepo()
-	svc := sprintsvc.NewViewService(repo)
-
 	projectID := uuid.New()
 	otherProjectID := uuid.New()
 	sprintID := uuid.New()
+	sprintRepo := newFakeSprintRepo()
+	sprintRepo.sprints[sprintID] = &sprintdom.Sprint{ID: sprintID, ProjectID: projectID}
+	svc := sprintsvc.NewViewService(repo, sprintRepo, permissiveTaskRepo{}, nil)
 
 	// backlog view for our project
 	_, _ = svc.CreateView(ctx, sprintdom.CreateViewInput{ProjectID: projectID, Name: "Backlog Table", ViewType: sprintdom.ViewTypeTable, ViewContext: sprintdom.ViewContextBacklog})
@@ -522,7 +777,7 @@ func TestViewService_ListBacklogViews_ReturnsOnlyBacklogViews(t *testing.T) {
 
 func TestViewService_CreateBacklogView_NilSprintID(t *testing.T) {
 	ctx := context.Background()
-	svc := sprintsvc.NewViewService(newFakeViewRepo())
+	svc := sprintsvc.NewViewService(newFakeViewRepo(), permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	projectID := uuid.New()
 	v, err := svc.CreateView(ctx, sprintdom.CreateViewInput{
@@ -545,7 +800,7 @@ func TestViewService_CreateBacklogView_NilSprintID(t *testing.T) {
 func TestViewService_DeleteBacklogView_LastViewRejected(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeViewRepo()
-	svc := sprintsvc.NewViewService(repo)
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	projectID := uuid.New()
 	v, _ := svc.CreateView(ctx, sprintdom.CreateViewInput{
@@ -564,7 +819,7 @@ func TestViewService_DeleteBacklogView_LastViewRejected(t *testing.T) {
 func TestViewService_DeleteBacklogView_OK(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeViewRepo()
-	svc := sprintsvc.NewViewService(repo)
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	projectID := uuid.New()
 	v1, _ := svc.CreateView(ctx, sprintdom.CreateViewInput{ProjectID: projectID, Name: "BL1", ViewType: sprintdom.ViewTypeTable, ViewContext: sprintdom.ViewContextBacklog})
@@ -582,17 +837,18 @@ func TestViewService_DeleteBacklogView_OK(t *testing.T) {
 func TestViewService_BacklogAndSprintViewsDontInterfere(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeViewRepo()
-	svc := sprintsvc.NewViewService(repo)
-
 	projectID := uuid.New()
 	sprintID := uuid.New()
+	sprintRepo := newFakeSprintRepo()
+	sprintRepo.sprints[sprintID] = &sprintdom.Sprint{ID: sprintID, ProjectID: projectID}
+	svc := sprintsvc.NewViewService(repo, sprintRepo, permissiveTaskRepo{}, nil)
 
 	// Create one sprint view and one backlog view for the same project
 	sv, _ := svc.CreateView(ctx, sprintdom.CreateViewInput{SprintID: &sprintID, ProjectID: projectID, Name: "Sprint Board", ViewType: sprintdom.ViewTypeBoard, ViewContext: sprintdom.ViewContextSprint})
 	bv, _ := svc.CreateView(ctx, sprintdom.CreateViewInput{ProjectID: projectID, Name: "Backlog Table", ViewType: sprintdom.ViewTypeTable, ViewContext: sprintdom.ViewContextBacklog})
 
 	// ListViews should only return sprint view
-	sprintViews, _ := svc.ListViews(ctx, sprintID)
+	sprintViews, _ := svc.ListViews(ctx, projectID, sprintID)
 	if len(sprintViews) != 1 || sprintViews[0].ID != sv.ID {
 		t.Errorf("ListViews returned wrong results: %v", sprintViews)
 	}
@@ -622,7 +878,7 @@ func TestViewService_BacklogAndSprintViewsDontInterfere(t *testing.T) {
 func TestViewService_ReorderViews_OK(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeViewRepo()
-	svc := sprintsvc.NewViewService(repo)
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	sprintID := uuid.New()
 	v1, _ := svc.CreateView(ctx, sprintdom.CreateViewInput{SprintID: uuidPtr(sprintID), Name: "A", ViewType: sprintdom.ViewTypeTable, ViewContext: sprintdom.ViewContextSprint})
@@ -630,7 +886,7 @@ func TestViewService_ReorderViews_OK(t *testing.T) {
 	v3, _ := svc.CreateView(ctx, sprintdom.CreateViewInput{SprintID: uuidPtr(sprintID), Name: "C", ViewType: sprintdom.ViewTypeRoadmap, ViewContext: sprintdom.ViewContextSprint})
 
 	// Reorder: C, A, B
-	if err := svc.ReorderViews(ctx, sprintID, []uuid.UUID{v3.ID, v1.ID, v2.ID}); err != nil {
+	if err := svc.ReorderViews(ctx, uuid.Nil, sprintID, []uuid.UUID{v3.ID, v1.ID, v2.ID}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -651,14 +907,14 @@ func TestViewService_ReorderViews_OK(t *testing.T) {
 
 func TestViewService_ReorderViews_CountMismatch(t *testing.T) {
 	ctx := context.Background()
-	svc := sprintsvc.NewViewService(newFakeViewRepo())
+	svc := sprintsvc.NewViewService(newFakeViewRepo(), permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	sprintID := uuid.New()
 	v1, _ := svc.CreateView(ctx, sprintdom.CreateViewInput{SprintID: uuidPtr(sprintID), Name: "A", ViewType: sprintdom.ViewTypeTable, ViewContext: sprintdom.ViewContextSprint})
 	_, _ = svc.CreateView(ctx, sprintdom.CreateViewInput{SprintID: uuidPtr(sprintID), Name: "B", ViewType: sprintdom.ViewTypeBoard, ViewContext: sprintdom.ViewContextSprint})
 
 	// Only one ID provided for two views
-	err := svc.ReorderViews(ctx, sprintID, []uuid.UUID{v1.ID})
+	err := svc.ReorderViews(ctx, uuid.Nil, sprintID, []uuid.UUID{v1.ID})
 	if err != sprintdom.ErrViewReorderInvalid {
 		t.Errorf("expected ErrViewReorderInvalid, got %v", err)
 	}
@@ -666,12 +922,12 @@ func TestViewService_ReorderViews_CountMismatch(t *testing.T) {
 
 func TestViewService_ReorderViews_UnknownID(t *testing.T) {
 	ctx := context.Background()
-	svc := sprintsvc.NewViewService(newFakeViewRepo())
+	svc := sprintsvc.NewViewService(newFakeViewRepo(), permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	sprintID := uuid.New()
 	v1, _ := svc.CreateView(ctx, sprintdom.CreateViewInput{SprintID: uuidPtr(sprintID), Name: "A", ViewType: sprintdom.ViewTypeTable, ViewContext: sprintdom.ViewContextSprint})
 
-	err := svc.ReorderViews(ctx, sprintID, []uuid.UUID{v1.ID, uuid.New()})
+	err := svc.ReorderViews(ctx, uuid.Nil, sprintID, []uuid.UUID{v1.ID, uuid.New()})
 	if err != sprintdom.ErrViewReorderInvalid {
 		t.Errorf("expected ErrViewReorderInvalid, got %v", err)
 	}
@@ -679,11 +935,11 @@ func TestViewService_ReorderViews_UnknownID(t *testing.T) {
 
 func TestViewService_ReorderViews_EmptyList(t *testing.T) {
 	ctx := context.Background()
-	svc := sprintsvc.NewViewService(newFakeViewRepo())
+	svc := sprintsvc.NewViewService(newFakeViewRepo(), permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	sprintID := uuid.New()
 	// No views exist; empty list should succeed (0 == 0)
-	if err := svc.ReorderViews(ctx, sprintID, []uuid.UUID{}); err != nil {
+	if err := svc.ReorderViews(ctx, uuid.Nil, sprintID, []uuid.UUID{}); err != nil {
 		t.Errorf("expected nil for empty+empty, got %v", err)
 	}
 }
@@ -691,7 +947,7 @@ func TestViewService_ReorderViews_EmptyList(t *testing.T) {
 func TestViewService_ReorderBacklogViews_OK(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeViewRepo()
-	svc := sprintsvc.NewViewService(repo)
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	projectID := uuid.New()
 	b1, _ := svc.CreateView(ctx, sprintdom.CreateViewInput{ProjectID: projectID, Name: "X", ViewType: sprintdom.ViewTypeTable, ViewContext: sprintdom.ViewContextBacklog})
@@ -717,7 +973,7 @@ func TestViewService_ReorderBacklogViews_OK(t *testing.T) {
 
 func TestViewService_ListTimelineViews_Empty(t *testing.T) {
 	ctx := context.Background()
-	svc := sprintsvc.NewViewService(newFakeViewRepo())
+	svc := sprintsvc.NewViewService(newFakeViewRepo(), permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	views, err := svc.ListProjectViews(ctx, uuid.New(), sprintdom.ViewContextTimeline)
 	if err != nil {
@@ -731,11 +987,12 @@ func TestViewService_ListTimelineViews_Empty(t *testing.T) {
 func TestViewService_ListTimelineViews_ReturnsOnlyTimelineViews(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeViewRepo()
-	svc := sprintsvc.NewViewService(repo)
-
 	projectID := uuid.New()
 	otherID := uuid.New()
 	sprintID := uuid.New()
+	sprintRepo := newFakeSprintRepo()
+	sprintRepo.sprints[sprintID] = &sprintdom.Sprint{ID: sprintID, ProjectID: projectID}
+	svc := sprintsvc.NewViewService(repo, sprintRepo, permissiveTaskRepo{}, nil)
 
 	// Two timeline views for our project.
 	tv1, _ := svc.CreateView(ctx, sprintdom.CreateViewInput{ProjectID: projectID, Name: "Roadmap", ViewType: sprintdom.ViewTypeRoadmap, ViewContext: sprintdom.ViewContextTimeline})
@@ -767,7 +1024,7 @@ func TestViewService_ListTimelineViews_ReturnsOnlyTimelineViews(t *testing.T) {
 
 func TestViewService_CreateTimelineView_HasCorrectContext(t *testing.T) {
 	ctx := context.Background()
-	svc := sprintsvc.NewViewService(newFakeViewRepo())
+	svc := sprintsvc.NewViewService(newFakeViewRepo(), permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	projectID := uuid.New()
 	v, err := svc.CreateView(ctx, sprintdom.CreateViewInput{
@@ -790,7 +1047,7 @@ func TestViewService_CreateTimelineView_HasCorrectContext(t *testing.T) {
 func TestViewService_DeleteTimelineView_LastViewRejected(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeViewRepo()
-	svc := sprintsvc.NewViewService(repo)
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	projectID := uuid.New()
 	v, _ := svc.CreateView(ctx, sprintdom.CreateViewInput{
@@ -808,7 +1065,7 @@ func TestViewService_DeleteTimelineView_LastViewRejected(t *testing.T) {
 func TestViewService_DeleteTimelineView_OK(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeViewRepo()
-	svc := sprintsvc.NewViewService(repo)
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	projectID := uuid.New()
 	v1, _ := svc.CreateView(ctx, sprintdom.CreateViewInput{ProjectID: projectID, Name: "TL1", ViewType: sprintdom.ViewTypeRoadmap, ViewContext: sprintdom.ViewContextTimeline})
@@ -828,7 +1085,7 @@ func TestViewService_TimelineAndBacklogViewsDontInterfere(t *testing.T) {
 	// correctly blocked.
 	ctx := context.Background()
 	repo := newFakeViewRepo()
-	svc := sprintsvc.NewViewService(repo)
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	projectID := uuid.New()
 	tv, _ := svc.CreateView(ctx, sprintdom.CreateViewInput{ProjectID: projectID, Name: "Roadmap", ViewType: sprintdom.ViewTypeRoadmap, ViewContext: sprintdom.ViewContextTimeline})
@@ -857,7 +1114,7 @@ func TestViewService_TimelineAndBacklogViewsDontInterfere(t *testing.T) {
 func TestViewService_ReorderTimelineViews_OK(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeViewRepo()
-	svc := sprintsvc.NewViewService(repo)
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	projectID := uuid.New()
 	t1, _ := svc.CreateView(ctx, sprintdom.CreateViewInput{ProjectID: projectID, Name: "A", ViewType: sprintdom.ViewTypeRoadmap, ViewContext: sprintdom.ViewContextTimeline})
@@ -881,7 +1138,7 @@ func TestViewService_ReorderTimelineViews_OK(t *testing.T) {
 func TestViewService_ViewContextPreservedAfterUpdate(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeViewRepo()
-	svc := sprintsvc.NewViewService(repo)
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
 
 	projectID := uuid.New()
 	v, _ := svc.CreateView(ctx, sprintdom.CreateViewInput{
@@ -899,5 +1156,467 @@ func TestViewService_ViewContextPreservedAfterUpdate(t *testing.T) {
 	// ViewContext must survive an update since UpdateView only touches name/type/config/position.
 	if updated.ViewContext != sprintdom.ViewContextTimeline {
 		t.Errorf("ViewContext changed after update: got %q", updated.ViewContext)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Per-user view config (settings/filters must not leak across users)
+// ---------------------------------------------------------------------------
+
+// seedProjectView creates a project-scoped view with the given shared config and
+// returns it. Fails the test on error.
+func seedProjectView(t *testing.T, svc *sprintsvc.ViewService, projectID uuid.UUID, shared sprintdom.ViewConfig) *sprintdom.SprintView {
+	t.Helper()
+	v, err := svc.CreateView(context.Background(), sprintdom.CreateViewInput{
+		ProjectID:   projectID,
+		Name:        "Table",
+		ViewType:    sprintdom.ViewTypeTable,
+		Config:      shared,
+		ViewContext: sprintdom.ViewContextBacklog,
+	})
+	if err != nil {
+		t.Fatalf("seed view: %v", err)
+	}
+	return v
+}
+
+func TestViewService_SetUserViewConfig_StoresPerUserAndReturnsIt(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeViewRepo()
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
+
+	projectID := uuid.New()
+	view := seedProjectView(t, svc, projectID, sprintdom.ViewConfig{SortBy: "created"})
+	userA := uuid.New()
+
+	personal := sprintdom.ViewConfig{SortBy: "importance"}
+	got, err := svc.SetUserViewConfig(ctx, projectID, view.ID, userA, personal)
+	if err != nil {
+		t.Fatalf("SetUserViewConfig: %v", err)
+	}
+	if got.Config.SortBy != "importance" {
+		t.Errorf("returned view config = %q, want %q", got.Config.SortBy, "importance")
+	}
+
+	// The shared row must be untouched.
+	shared, err := repo.FindViewByID(ctx, view.ID)
+	if err != nil {
+		t.Fatalf("FindViewByID: %v", err)
+	}
+	if shared.Config.SortBy != "created" {
+		t.Errorf("shared view config leaked: got %q, want %q", shared.Config.SortBy, "created")
+	}
+
+	// Stored under (view, userA); a different user has no override.
+	forA, _ := repo.GetUserViewConfigs(ctx, userA, []uuid.UUID{view.ID})
+	if cfg, ok := forA[view.ID]; !ok || cfg.SortBy != "importance" {
+		t.Errorf("userA override not stored: %+v (ok=%v)", cfg, ok)
+	}
+	forB, _ := repo.GetUserViewConfigs(ctx, uuid.New(), []uuid.UUID{view.ID})
+	if _, ok := forB[view.ID]; ok {
+		t.Errorf("another user unexpectedly has an override")
+	}
+}
+
+func TestViewService_SetUserViewConfig_WrongProjectReturnsNotFound(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeViewRepo()
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
+
+	view := seedProjectView(t, svc, uuid.New(), sprintdom.ViewConfig{})
+	_, err := svc.SetUserViewConfig(ctx, uuid.New() /* wrong project */, view.ID, uuid.New(), sprintdom.ViewConfig{})
+	if err != sprintdom.ErrViewNotFound {
+		t.Errorf("expected ErrViewNotFound, got %v", err)
+	}
+}
+
+func TestViewService_OverlayUserConfigs_AppliesOverrideAndKeepsSharedElsewhere(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeViewRepo()
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
+
+	projectID := uuid.New()
+	v1 := seedProjectView(t, svc, projectID, sprintdom.ViewConfig{SortBy: "created"})
+	v2 := seedProjectView(t, svc, projectID, sprintdom.ViewConfig{SortBy: "created"})
+	userA := uuid.New()
+
+	if _, err := svc.SetUserViewConfig(ctx, projectID, v1.ID, userA, sprintdom.ViewConfig{SortBy: "importance"}); err != nil {
+		t.Fatalf("SetUserViewConfig: %v", err)
+	}
+
+	// Simulate the shared views coming back from the (shared) cache/list.
+	views := []*sprintdom.SprintView{
+		{ID: v1.ID, ProjectID: projectID, Config: sprintdom.ViewConfig{SortBy: "created"}},
+		{ID: v2.ID, ProjectID: projectID, Config: sprintdom.ViewConfig{SortBy: "created"}},
+	}
+	if err := svc.OverlayUserConfigs(ctx, userA, views); err != nil {
+		t.Fatalf("OverlayUserConfigs: %v", err)
+	}
+	if views[0].Config.SortBy != "importance" {
+		t.Errorf("v1 not overlaid with personal config: got %q", views[0].Config.SortBy)
+	}
+	if views[1].Config.SortBy != "created" {
+		t.Errorf("v2 shared config changed: got %q, want %q", views[1].Config.SortBy, "created")
+	}
+}
+
+func TestViewService_OverlayUserConfigs_OtherUserSeesSharedNotYours(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeViewRepo()
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
+
+	projectID := uuid.New()
+	v := seedProjectView(t, svc, projectID, sprintdom.ViewConfig{SortBy: "created"})
+	userA, userB := uuid.New(), uuid.New()
+
+	if _, err := svc.SetUserViewConfig(ctx, projectID, v.ID, userA, sprintdom.ViewConfig{SortBy: "importance"}); err != nil {
+		t.Fatalf("SetUserViewConfig: %v", err)
+	}
+
+	// userB must still see the shared default — this is the bug being fixed.
+	views := []*sprintdom.SprintView{{ID: v.ID, ProjectID: projectID, Config: sprintdom.ViewConfig{SortBy: "created"}}}
+	if err := svc.OverlayUserConfigs(ctx, userB, views); err != nil {
+		t.Fatalf("OverlayUserConfigs: %v", err)
+	}
+	if views[0].Config.SortBy != "created" {
+		t.Errorf("userA's personal config leaked to userB: got %q, want %q", views[0].Config.SortBy, "created")
+	}
+}
+
+func TestViewService_OverlayUserConfigs_NilUserIsNoop(t *testing.T) {
+	ctx := context.Background()
+	svc := sprintsvc.NewViewService(newFakeViewRepo(), permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
+
+	views := []*sprintdom.SprintView{{ID: uuid.New(), Config: sprintdom.ViewConfig{SortBy: "created"}}}
+	if err := svc.OverlayUserConfigs(ctx, uuid.Nil, views); err != nil {
+		t.Fatalf("OverlayUserConfigs: %v", err)
+	}
+	if views[0].Config.SortBy != "created" {
+		t.Errorf("nil user should be a no-op, got %q", views[0].Config.SortBy)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Field-level merge: personalizing one field must not freeze every other
+// field away from later shared-default changes (the bug this redesign fixes).
+// ---------------------------------------------------------------------------
+
+func TestViewService_OverlayUserConfigs_UnsetFieldsTrackLaterSharedChanges(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeViewRepo()
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
+
+	projectID := uuid.New()
+	view := seedProjectView(t, svc, projectID, sprintdom.ViewConfig{SortBy: "created", PageSize: 25})
+	userA := uuid.New()
+
+	// User personalizes only SortBy; PageSize in their save matches shared,
+	// so it must not be captured in the stored override.
+	if _, err := svc.SetUserViewConfig(ctx, projectID, view.ID, userA, sprintdom.ViewConfig{SortBy: "importance", PageSize: 25}); err != nil {
+		t.Fatalf("SetUserViewConfig: %v", err)
+	}
+
+	// The shared default's PageSize changes later (e.g. an admin edit, or
+	// "set as team default" from another member).
+	shared, err := repo.FindViewByID(ctx, view.ID)
+	if err != nil {
+		t.Fatalf("FindViewByID: %v", err)
+	}
+	shared.Config.PageSize = 50
+	if err := repo.UpdateView(ctx, shared); err != nil {
+		t.Fatalf("UpdateView: %v", err)
+	}
+
+	// Simulate the shared view coming back from a fresh list/cache read.
+	views := []*sprintdom.SprintView{{ID: view.ID, ProjectID: projectID, Config: shared.Config}}
+	if err := svc.OverlayUserConfigs(ctx, userA, views); err != nil {
+		t.Fatalf("OverlayUserConfigs: %v", err)
+	}
+	if views[0].Config.SortBy != "importance" {
+		t.Errorf("personalized field lost: got %q, want %q", views[0].Config.SortBy, "importance")
+	}
+	if views[0].Config.PageSize != 50 {
+		t.Errorf("un-personalized field frozen: got %d, want 50 (should track the new shared default)", views[0].Config.PageSize)
+	}
+}
+
+func TestViewService_SetUserViewConfig_RevertingToSharedValuesClearsOverride(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeViewRepo()
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
+
+	projectID := uuid.New()
+	view := seedProjectView(t, svc, projectID, sprintdom.ViewConfig{SortBy: "created"})
+	userA := uuid.New()
+
+	if _, err := svc.SetUserViewConfig(ctx, projectID, view.ID, userA, sprintdom.ViewConfig{SortBy: "importance"}); err != nil {
+		t.Fatalf("SetUserViewConfig (personalize): %v", err)
+	}
+	got, err := svc.SetUserViewConfig(ctx, projectID, view.ID, userA, sprintdom.ViewConfig{SortBy: "created"})
+	if err != nil {
+		t.Fatalf("SetUserViewConfig (revert): %v", err)
+	}
+	if got.HasPersonalConfig {
+		t.Errorf("expected HasPersonalConfig=false after reverting to shared values")
+	}
+
+	overrides, err := repo.GetUserViewConfigs(ctx, userA, []uuid.UUID{view.ID})
+	if err != nil {
+		t.Fatalf("GetUserViewConfigs: %v", err)
+	}
+	if _, ok := overrides[view.ID]; ok {
+		t.Errorf("expected override row to be removed once every field matches shared")
+	}
+}
+
+func TestViewService_ClearUserViewConfig_RemovesOverride(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeViewRepo()
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
+
+	projectID := uuid.New()
+	view := seedProjectView(t, svc, projectID, sprintdom.ViewConfig{SortBy: "created"})
+	userA := uuid.New()
+
+	if _, err := svc.SetUserViewConfig(ctx, projectID, view.ID, userA, sprintdom.ViewConfig{SortBy: "importance"}); err != nil {
+		t.Fatalf("SetUserViewConfig: %v", err)
+	}
+	got, err := svc.ClearUserViewConfig(ctx, projectID, view.ID, userA)
+	if err != nil {
+		t.Fatalf("ClearUserViewConfig: %v", err)
+	}
+	if got.Config.SortBy != "created" {
+		t.Errorf("expected shared default after clearing, got %q", got.Config.SortBy)
+	}
+
+	overrides, err := repo.GetUserViewConfigs(ctx, userA, []uuid.UUID{view.ID})
+	if err != nil {
+		t.Fatalf("GetUserViewConfigs: %v", err)
+	}
+	if _, ok := overrides[view.ID]; ok {
+		t.Errorf("expected override row to be gone after ClearUserViewConfig")
+	}
+}
+
+func TestViewService_ClearUserViewConfig_WrongProjectReturnsNotFound(t *testing.T) {
+	ctx := context.Background()
+	svc := sprintsvc.NewViewService(newFakeViewRepo(), permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
+
+	view := seedProjectView(t, svc, uuid.New(), sprintdom.ViewConfig{})
+	_, err := svc.ClearUserViewConfig(ctx, uuid.New() /* wrong project */, view.ID, uuid.New())
+	if err != sprintdom.ErrViewNotFound {
+		t.Errorf("expected ErrViewNotFound, got %v", err)
+	}
+}
+
+func TestViewService_OverlayUserConfigs_SetsHasPersonalConfigFlag(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeViewRepo()
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
+
+	projectID := uuid.New()
+	v1 := seedProjectView(t, svc, projectID, sprintdom.ViewConfig{SortBy: "created"})
+	v2 := seedProjectView(t, svc, projectID, sprintdom.ViewConfig{SortBy: "created"})
+	userA := uuid.New()
+
+	if _, err := svc.SetUserViewConfig(ctx, projectID, v1.ID, userA, sprintdom.ViewConfig{SortBy: "importance"}); err != nil {
+		t.Fatalf("SetUserViewConfig: %v", err)
+	}
+
+	views := []*sprintdom.SprintView{
+		{ID: v1.ID, ProjectID: projectID, Config: sprintdom.ViewConfig{SortBy: "created"}},
+		{ID: v2.ID, ProjectID: projectID, Config: sprintdom.ViewConfig{SortBy: "created"}},
+	}
+	if err := svc.OverlayUserConfigs(ctx, userA, views); err != nil {
+		t.Fatalf("OverlayUserConfigs: %v", err)
+	}
+	if !views[0].HasPersonalConfig {
+		t.Errorf("v1: expected HasPersonalConfig=true")
+	}
+	if views[1].HasPersonalConfig {
+		t.Errorf("v2: expected HasPersonalConfig=false")
+	}
+}
+
+// TestViewService_SharedConfig_SurvivesPersonalization verifies that a
+// personalized view still exposes the original shared value (not the merged
+// effective one) via SharedConfig, both right after SetUserViewConfig and on
+// a later OverlayUserConfigs read — this is what the frontend's "reset to
+// team default" reads.
+func TestViewService_SharedConfig_SurvivesPersonalization(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeViewRepo()
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, permissiveTaskRepo{}, nil)
+
+	projectID := uuid.New()
+	view := seedProjectView(t, svc, projectID, sprintdom.ViewConfig{SortBy: "created", PageSize: 25})
+	userA := uuid.New()
+
+	got, err := svc.SetUserViewConfig(ctx, projectID, view.ID, userA, sprintdom.ViewConfig{SortBy: "importance", PageSize: 25})
+	if err != nil {
+		t.Fatalf("SetUserViewConfig: %v", err)
+	}
+	if got.Config.SortBy != "importance" {
+		t.Errorf("effective SortBy = %q, want %q", got.Config.SortBy, "importance")
+	}
+	if got.SharedConfig.SortBy != "created" || got.SharedConfig.PageSize != 25 {
+		t.Errorf("SharedConfig after SetUserViewConfig = %+v, want shared row {created 25}", got.SharedConfig)
+	}
+
+	views := []*sprintdom.SprintView{{ID: view.ID, ProjectID: projectID, Config: sprintdom.ViewConfig{SortBy: "created", PageSize: 25}}}
+	if err := svc.OverlayUserConfigs(ctx, userA, views); err != nil {
+		t.Fatalf("OverlayUserConfigs: %v", err)
+	}
+	if views[0].Config.SortBy != "importance" {
+		t.Errorf("effective SortBy after overlay = %q, want %q", views[0].Config.SortBy, "importance")
+	}
+	if views[0].SharedConfig.SortBy != "created" {
+		t.Errorf("SharedConfig after overlay = %+v, want SortBy=created", views[0].SharedConfig)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Cross-project isolation tests (same bug class as GHSA-xwmv-9c7h-g947)
+//
+// Sprint-context view routes are authorized against the URL project, but
+// sprint_id (ListViews/CreateView/ReorderViews) and task_id (MoveTask/
+// BulkMoveTasks) are caller-supplied. A member of project A must not be
+// able to read or write project B's sprint views, or plant/move task
+// positions, by supplying B's sprint/task UUID.
+// ---------------------------------------------------------------------------
+
+func TestViewService_ListViews_WrongProject_ReturnsNotFound(t *testing.T) {
+	ctx := context.Background()
+	sprintID := uuid.New()
+	ownerProjectID := uuid.New()
+	attackerProjectID := uuid.New()
+	sprintRepo := newFakeSprintRepo()
+	sprintRepo.sprints[sprintID] = &sprintdom.Sprint{ID: sprintID, ProjectID: ownerProjectID}
+	svc := sprintsvc.NewViewService(newFakeViewRepo(), sprintRepo, permissiveTaskRepo{}, nil)
+
+	_, err := svc.ListViews(ctx, attackerProjectID, sprintID)
+	if err != sprintdom.ErrSprintNotFound {
+		t.Fatalf("expected ErrSprintNotFound for cross-project ListViews, got %v", err)
+	}
+}
+
+func TestViewService_CreateView_WrongProject_ReturnsNotFound(t *testing.T) {
+	ctx := context.Background()
+	sprintID := uuid.New()
+	ownerProjectID := uuid.New()
+	attackerProjectID := uuid.New()
+	sprintRepo := newFakeSprintRepo()
+	sprintRepo.sprints[sprintID] = &sprintdom.Sprint{ID: sprintID, ProjectID: ownerProjectID}
+	repo := newFakeViewRepo()
+	svc := sprintsvc.NewViewService(repo, sprintRepo, permissiveTaskRepo{}, nil)
+
+	// attackerProjectID legitimately has views.write permission on itself,
+	// but sprintID belongs to a different project.
+	_, err := svc.CreateView(ctx, sprintdom.CreateViewInput{
+		SprintID:    &sprintID,
+		ProjectID:   attackerProjectID,
+		Name:        "Injected",
+		ViewType:    sprintdom.ViewTypeTable,
+		ViewContext: sprintdom.ViewContextSprint,
+	})
+	if err != sprintdom.ErrSprintNotFound {
+		t.Fatalf("expected ErrSprintNotFound for cross-project CreateView, got %v", err)
+	}
+	if len(repo.views) != 0 {
+		t.Errorf("no view should have been persisted, found %d", len(repo.views))
+	}
+}
+
+func TestViewService_ReorderViews_WrongProject_ReturnsNotFound(t *testing.T) {
+	ctx := context.Background()
+	sprintID := uuid.New()
+	ownerProjectID := uuid.New()
+	attackerProjectID := uuid.New()
+	sprintRepo := newFakeSprintRepo()
+	sprintRepo.sprints[sprintID] = &sprintdom.Sprint{ID: sprintID, ProjectID: ownerProjectID}
+	repo := newFakeViewRepo()
+	svc := sprintsvc.NewViewService(repo, sprintRepo, permissiveTaskRepo{}, nil)
+
+	v, err := svc.CreateView(ctx, sprintdom.CreateViewInput{
+		SprintID:    &sprintID,
+		ProjectID:   ownerProjectID,
+		Name:        "Victim View",
+		ViewType:    sprintdom.ViewTypeTable,
+		ViewContext: sprintdom.ViewContextSprint,
+	})
+	if err != nil {
+		t.Fatalf("setup: unexpected error creating victim view: %v", err)
+	}
+
+	err = svc.ReorderViews(ctx, attackerProjectID, sprintID, []uuid.UUID{v.ID})
+	if err != sprintdom.ErrSprintNotFound {
+		t.Fatalf("expected ErrSprintNotFound for cross-project ReorderViews, got %v", err)
+	}
+}
+
+func TestViewService_MoveTask_WrongProject_ReturnsNotFound(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeViewRepo()
+	taskID := uuid.New()
+	ownerProjectID := uuid.New()
+	attackerProjectID := uuid.New()
+	taskRepo := newFakeTaskRepo()
+	taskRepo.tasks[taskID] = &taskdom.Task{ID: taskID, ProjectID: ownerProjectID}
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, taskRepo, nil)
+
+	v, err := svc.CreateView(ctx, sprintdom.CreateViewInput{
+		ProjectID:   attackerProjectID,
+		Name:        "Attacker View",
+		ViewType:    sprintdom.ViewTypeBoard,
+		ViewContext: sprintdom.ViewContextBacklog,
+	})
+	if err != nil {
+		t.Fatalf("setup: unexpected error creating attacker's own view: %v", err)
+	}
+
+	// v belongs to attackerProjectID (the view check passes); taskID belongs
+	// to a different project — the position write must still be rejected.
+	err = svc.MoveTask(ctx, attackerProjectID, v.ID, sprintdom.MoveTaskInput{TaskID: taskID, Position: 0})
+	if err != taskdom.ErrTaskNotFound {
+		t.Fatalf("expected ErrTaskNotFound for cross-project MoveTask, got %v", err)
+	}
+	if len(repo.positions) != 0 {
+		t.Errorf("no task position should have been persisted, found %d", len(repo.positions))
+	}
+}
+
+func TestViewService_BulkMoveTasks_WrongProject_ReturnsNotFound(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeViewRepo()
+	ownTaskID := uuid.New()
+	foreignTaskID := uuid.New()
+	ownerProjectID := uuid.New()
+	attackerProjectID := uuid.New()
+	taskRepo := newFakeTaskRepo()
+	taskRepo.tasks[ownTaskID] = &taskdom.Task{ID: ownTaskID, ProjectID: attackerProjectID}
+	taskRepo.tasks[foreignTaskID] = &taskdom.Task{ID: foreignTaskID, ProjectID: ownerProjectID}
+	svc := sprintsvc.NewViewService(repo, permissiveSprintRepo{}, taskRepo, nil)
+
+	v, err := svc.CreateView(ctx, sprintdom.CreateViewInput{
+		ProjectID:   attackerProjectID,
+		Name:        "Attacker View",
+		ViewType:    sprintdom.ViewTypeBoard,
+		ViewContext: sprintdom.ViewContextBacklog,
+	})
+	if err != nil {
+		t.Fatalf("setup: unexpected error creating attacker's own view: %v", err)
+	}
+
+	// One legitimate task and one foreign-project task in the same batch —
+	// the whole batch must be rejected and nothing written.
+	err = svc.BulkMoveTasks(ctx, attackerProjectID, v.ID, []sprintdom.MoveTaskInput{
+		{TaskID: ownTaskID, Position: 0},
+		{TaskID: foreignTaskID, Position: 1},
+	})
+	if err != taskdom.ErrTaskNotFound {
+		t.Fatalf("expected ErrTaskNotFound for cross-project BulkMoveTasks, got %v", err)
+	}
+	if len(repo.positions) != 0 {
+		t.Errorf("no task position should have been persisted, found %d", len(repo.positions))
 	}
 }

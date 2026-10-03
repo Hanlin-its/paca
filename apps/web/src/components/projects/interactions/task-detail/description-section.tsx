@@ -3,10 +3,11 @@ import "@blocknote/shadcn/style.css";
 
 import { SideMenuController, useCreateBlockNote } from "@blocknote/react";
 import { BlockNoteView } from "@blocknote/shadcn";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bot, Sparkles } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { createAnnotationPasteHandler } from "@/components/shared/blocknote-annotation-paste-handler";
 import { CustomSideMenu } from "@/components/shared/blocknote-custom-side-menu";
 import { customSchema } from "@/components/shared/blocknote-schema";
 import { normalizeBlockContent } from "@/components/shared/comment-blocknote";
@@ -54,7 +55,8 @@ export function DescriptionSection({
 }: DescriptionSectionProps) {
 	const { t } = useTranslation("projects");
 	const { resolvedMode } = useThemeMode();
-	const { teamMembers, tasks, documents } = useMentionData(projectId);
+	const { teamMembers, documents } = useMentionData(projectId);
+	const qc = useQueryClient();
 	const [writeWithAIOpen, setWriteWithAIOpen] = useState(false);
 	const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
 
@@ -70,6 +72,18 @@ export function DescriptionSection({
 			return writeTaskDescriptionWithAI(projectId, taskId, selectedAgentId);
 		},
 		onSuccess: () => {
+			// Mirrors the assign-to-agent / mention-agent flows: don't rely solely
+			// on the realtime websocket event to surface the new "started an AI
+			// session" activity — refresh immediately so it shows without a reload.
+			if (projectId) {
+				qc.invalidateQueries({
+					queryKey: ["projects", projectId],
+					predicate: (q) => {
+						const key = q.queryKey as string[];
+						return key.includes("tasks") || key.includes("backlog-tasks");
+					},
+				});
+			}
 			setWriteWithAIOpen(false);
 			setSelectedAgentId(null);
 		},
@@ -98,6 +112,7 @@ export function DescriptionSection({
 
 	const editor = useCreateBlockNote({
 		schema: customSchema,
+		pasteHandler: createAnnotationPasteHandler(),
 		/**
 		 * Called by BlockNote when the user inserts an image / file / video / audio.
 		 * Uploads via the task attachment API and returns a stable custom URI.
@@ -191,6 +206,17 @@ export function DescriptionSection({
 		[save],
 	);
 
+	// Mod+S saves immediately instead of waiting for blur (mirrors doc-editor.tsx).
+	const handleKeyDown = useCallback(
+		(e: React.KeyboardEvent<HTMLDivElement>) => {
+			if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+				e.preventDefault();
+				save();
+			}
+		},
+		[save],
+	);
+
 	return (
 		<div className="space-y-3">
 			<div className="flex items-center justify-between">
@@ -214,6 +240,7 @@ export function DescriptionSection({
 			<div
 				className="rounded-xl border border-border/25 bg-card/50 hover:border-border/50 transition-all duration-200 overflow-hidden [&_.bn-editor]:min-h-20 [&_.bn-editor]:py-3 [&_.bn-editor]:text-base [&_.bn-editor]:leading-relaxed"
 				onBlur={handleBlur}
+				onKeyDown={handleKeyDown}
 			>
 				<BlockNoteView
 					editor={editor}
@@ -228,7 +255,7 @@ export function DescriptionSection({
 						<MentionSuggestionMenus
 							editor={editor}
 							teamMembers={teamMembers}
-							tasks={tasks}
+							projectId={projectId}
 							documents={documents}
 						/>
 					)}

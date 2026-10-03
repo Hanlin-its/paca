@@ -2,6 +2,13 @@
 	"activityPane": {
 		"title": "Activity",
 		"empty": "No activity yet",
+		"emptyComments": "No comments yet",
+		"showAllActivity": "Show all activity",
+		"filter": {
+			"label": "Filter activity",
+			"comments": "Comments",
+			"all": "All activity"
+		},
 		"editingComment": "Editing comment...",
 		"cancel": "Cancel",
 		"sendHint": "⌘↵ to send",
@@ -11,15 +18,6 @@
 		"delete": "Delete",
 		"viewDiff": "View diff",
 		"revert": "Revert",
-		"timeAgo": {
-			"justNow": "just now",
-			"minutes_one": "{{count}}m ago",
-			"minutes_other": "{{count}}m ago",
-			"hours_one": "{{count}}h ago",
-			"hours_other": "{{count}}h ago",
-			"days_one": "{{count}}d ago",
-			"days_other": "{{count}}d ago"
-		},
 		"errors": {
 			"revertFailed": "Revert failed. Please try again."
 		}
@@ -27,11 +25,21 @@
 	"contentDiff": {
 		"emptyLine": "(empty line)",
 		"noDifferences": "No text differences",
+		"diffTooLarge": "Diff too large to preview ({{lines}} lines)",
+		"collapsedLines": "{{count}} unchanged lines hidden",
 		"changeDiff": "Change diff",
 		"removed": "Removed",
 		"added": "Added"
 	},
 	"home": {
+		"updateBanner": {
+			"title": "Update available",
+			"upstream": "Paca released {{version}}.",
+			"fork": "Your version {{version}} is available.",
+			"current": "You're on {{version}}.",
+			"viewRelease": "View release",
+			"dismiss": "Dismiss"
+		},
 		"greeting": {
 			"morning": "Good morning",
 			"afternoon": "Good afternoon",
@@ -61,15 +69,27 @@
 			},
 			"aiAgents": {
 				"label": "AI Agents",
-				"sub": "None configured"
+				"sub": "None configured",
+				"subActive": "{{count}} configured"
 			}
+		},
+		"myTasks": {
+			"title": "My Tasks",
+			"subtitle": "Open tasks assigned to you, across all projects",
+			"emptyTitle": "You're all caught up",
+			"emptyDescription": "No open tasks are assigned to you right now.",
+			"loadError": "Couldn't load your tasks. Please try again.",
+			"loadMore": "Load more",
+			"loading": "Loading…"
 		},
 		"projectsSection": {
 			"title": "Projects",
 			"countInWorkspace_one": "{{count}} project in your workspace",
 			"countInWorkspace_other": "{{count}} projects in your workspace",
 			"newShort": "New",
-			"newProjectCard": "New project"
+			"newProjectCard": "New project",
+			"loadMore": "Load more projects",
+			"loadingMore": "Loading more…"
 		},
 		"projectCard": {
 			"public": "Public",

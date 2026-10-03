@@ -11,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
+
 	globalroledom "github.com/Paca-AI/api/internal/domain/globalrole"
 	userdom "github.com/Paca-AI/api/internal/domain/user"
 	"github.com/Paca-AI/api/internal/platform/authz"
@@ -18,8 +21,6 @@ import (
 	authsvc "github.com/Paca-AI/api/internal/service/auth"
 	"github.com/Paca-AI/api/internal/transport/http/handler"
 	"github.com/Paca-AI/api/internal/transport/http/router"
-	"github.com/google/uuid"
-	"golang.org/x/crypto/bcrypt"
 )
 
 // -- fakes -------------------------------------------------------------------
@@ -61,6 +62,20 @@ func (r *fakeUserRepo) FindByUsernameIncludingDeleted(ctx context.Context, usern
 	return r.FindByUsername(ctx, username)
 }
 
+func (r *fakeUserRepo) FindByEmail(_ context.Context, email string) (*userdom.User, error) {
+	for _, u := range r.byID {
+		if u.Email != nil && *u.Email == email {
+			return u, nil
+		}
+	}
+	return nil, userdom.ErrNotFound
+}
+
+// FindDefault is the role a new user starts with: USER, as on a fresh install.
+func (r *fakeUserRepo) FindDefault(context.Context) (*globalroledom.GlobalRole, error) {
+	return &globalroledom.GlobalRole{ID: fakeRoleIDUser, Name: userdom.RoleUser, IsDefault: true}, nil
+}
+
 func (r *fakeUserRepo) FindByName(_ context.Context, name string) (*globalroledom.GlobalRole, error) {
 	switch name {
 	case userdom.RoleUser:
@@ -83,7 +98,7 @@ func (r *fakeUserRepo) Update(_ context.Context, u *userdom.User) error {
 	r.byID[u.ID] = u
 	return nil
 }
-func (r *fakeUserRepo) List(_ context.Context, offset, limit int) ([]*userdom.User, int64, error) {
+func (r *fakeUserRepo) List(_ context.Context, offset, limit int, _ userdom.ListFilter) ([]*userdom.User, int64, error) {
 	all := make([]*userdom.User, 0, len(r.byID))
 	for _, u := range r.byID {
 		all = append(all, u)
@@ -97,6 +112,13 @@ func (r *fakeUserRepo) List(_ context.Context, offset, limit int) ([]*userdom.Us
 		end = len(all)
 	}
 	return all[offset:end], total, nil
+}
+
+func (r *fakeUserRepo) CountUsers(_ context.Context) (int64, error) {
+	return int64(len(r.byID)), nil
+}
+func (r *fakeUserRepo) CountUsersMustChangePassword(_ context.Context) (int64, error) {
+	return 0, nil
 }
 func (r *fakeUserRepo) Delete(_ context.Context, id uuid.UUID) error {
 	u, ok := r.byID[id]

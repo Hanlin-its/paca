@@ -141,10 +141,11 @@ fi
 BACKEND_DIR="$PACA_DIR/plugins/local/backend/$PLUGIN_ID"
 FRONTEND_DIR="$PACA_DIR/plugins/local/frontend/$PLUGIN_ID"
 MCP_DIR="$PACA_DIR/plugins/local/mcp/$PLUGIN_ID"
+SKILLS_DIR="$PACA_DIR/plugins/local/skills/$PLUGIN_ID"
 
 # Check if plugin exists
 PLUGIN_EXISTS=false
-if [[ -d "$BACKEND_DIR" ]] || [[ -d "$FRONTEND_DIR" ]]; then
+if [[ -d "$BACKEND_DIR" ]] || [[ -d "$FRONTEND_DIR" ]] || [[ -d "$MCP_DIR" ]] || [[ -d "$SKILLS_DIR" ]]; then
     PLUGIN_EXISTS=true
 fi
 
@@ -154,6 +155,7 @@ if [[ "$PLUGIN_EXISTS" = false ]]; then
     print_info "  Backend: $BACKEND_DIR"
     print_info "  Frontend: $FRONTEND_DIR"
     print_info "  MCP: $MCP_DIR"
+    print_info "  Skills: $SKILLS_DIR"
     exit 1
 fi
 
@@ -238,7 +240,7 @@ if [[ "$REMOVE_ARTIFACTS_ONLY" = false ]]; then
 
     # Remove plugin registration
     print_step "Removing plugin registration..."
-    DELETE_RESPONSE=$(curl -s -X DELETE "${API_ENDPOINT}/plugins/${PLUGIN_UUID}" \
+    DELETE_RESPONSE=$(curl -s -X DELETE "${API_ENDPOINT}/admin/plugins/${PLUGIN_UUID}" \
         -H "${AUTH_HEADER}" \
         -w "\n%{http_code}")
 
@@ -285,6 +287,15 @@ if [[ "$UNREGISTER_ONLY" = false ]]; then
         print_success "MCP artifacts removed"
     else
         print_info "No MCP artifacts found"
+    fi
+
+    # Remove skills artifacts (if exists)
+    if [[ -d "$SKILLS_DIR" ]]; then
+        print_info "Removing skills artifacts: $SKILLS_DIR"
+        rm -rf "$SKILLS_DIR"
+        print_success "Skills artifacts removed"
+    else
+        print_info "No skills artifacts found"
     fi
 else
     print_step "Skipping artifact removal (--unregister-only)"

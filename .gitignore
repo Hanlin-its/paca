@@ -17,6 +17,7 @@ todos.json
 
 # air (Go hot-reload) build artifacts
 services/api/tmp/
+services/agent-runner/tmp/
 
 # Local database dumps from the dev db-backup service
 deploy/backups/
@@ -41,3 +42,10 @@ plugins/local
 
 # Python artifacts
 __pycache__/
+
+# Helm dependency charts fetched by `helm dependency update` (see
+# deploy/helm/paca/Chart.yaml's "dependencies" and the committed Chart.lock)
+deploy/helm/paca/charts/*.tgz
+
+# Personal helm values files (contain live secrets) - see deploy/helm/README.md
+deploy/helm/*.values.yaml

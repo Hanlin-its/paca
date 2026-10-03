@@ -10,10 +10,12 @@ import type {
 } from "@/lib/project-api";
 
 import { ListGroup } from "./list-group";
+import type { SprintFormPayload } from "./sprint-form-modal";
 import {
 	applyStatusFilterToColumnDefs,
 	type ColumnGroupDef,
 	DEFAULT_VISIBLE_FIELDS,
+	type EpicsPagination,
 	getColumnGroupDefs,
 	getSwimlaneDefs,
 	getTaskColumnKeys,
@@ -23,6 +25,7 @@ import {
 // ── Props ─────────────────────────────────────────────────────────────────────
 
 export interface ListViewProps {
+	projectId: string;
 	tasks: Task[];
 	taskIdPrefix?: string;
 	statuses: TaskStatus[];
@@ -30,6 +33,8 @@ export interface ListViewProps {
 	members?: ProjectMember[];
 	customFields?: CustomFieldDefinition[];
 	epics?: Task[];
+	/** Load-more state for the epic picker, shared by every group/row/card. */
+	epicsPagination?: EpicsPagination;
 	viewConfig?: ViewConfig;
 	canCreate: boolean;
 	onCreateTask: (
@@ -48,15 +53,11 @@ export interface ListViewProps {
 	sprints?: Sprint[];
 	onStartSprint?: (
 		sprintId: string,
-		payload: {
-			name: string;
-			goal: string | null;
-			start_date: string | null;
-			end_date: string | null;
-			status: "active";
-		},
+		payload: SprintFormPayload,
 	) => Promise<void>;
 	onCreateSprint?: () => void;
+	/** Opens the delete-confirmation dialog — Mod+Backspace shortcut. */
+	onDeleteTask?: (taskId: string) => void;
 	onCollapseChange?: (collapsedColumns: string[]) => void;
 	columnPagination?: Record<
 		string,
@@ -73,6 +74,7 @@ export interface ListViewProps {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export function ListView({
+	projectId,
 	tasks,
 	taskIdPrefix = "",
 	statuses,
@@ -80,6 +82,7 @@ export function ListView({
 	members = [],
 	customFields = [],
 	epics = [],
+	epicsPagination,
 	viewConfig,
 	canCreate,
 	onCreateTask,
@@ -93,6 +96,7 @@ export function ListView({
 	sprints,
 	onStartSprint,
 	onCreateSprint,
+	onDeleteTask,
 	onCollapseChange,
 	columnPagination,
 }: ListViewProps) {
@@ -202,7 +206,7 @@ export function ListView({
 
 	return (
 		<div className="flex flex-col overflow-auto">
-			{effectiveGroupDefs.map((grp) => {
+			{effectiveGroupDefs.map((grp, idx) => {
 				const groupTasks = getGroupTasks(grp.key);
 				const status = isStatusGrouping
 					? statuses.find((s) => s.id === grp.key)
@@ -217,12 +221,22 @@ export function ListView({
 					<ListGroup
 						key={grp.key}
 						groupDef={grp}
+						prevGroupDef={idx > 0 ? effectiveGroupDefs[idx - 1] : undefined}
+						nextGroupDef={
+							idx < effectiveGroupDefs.length - 1
+								? effectiveGroupDefs[idx + 1]
+								: undefined
+						}
+						allGroupDefs={effectiveGroupDefs}
+						onDeleteTask={onDeleteTask}
+						projectId={projectId}
 						tasks={groupTasks}
 						statuses={statuses}
 						taskTypes={taskTypes}
 						members={members}
 						customFields={customFields}
 						epics={epics}
+						epicsPagination={epicsPagination}
 						canCreate={canCreate}
 						defaultCollapsed={defaultCollapsed}
 						fieldSum={fieldSum}
@@ -240,6 +254,10 @@ export function ListView({
 						visibleFields={visibleFields}
 						taskIdPrefix={taskIdPrefix}
 						sprint={sprints?.find((s) => s.id === grp.key)}
+						otherActiveSprint={
+							sprints?.find((s) => s.status === "active" && s.id !== grp.key) ??
+							null
+						}
 						onStartSprint={onStartSprint}
 						onCreateSprint={onCreateSprint}
 						columnBy={columnBy}

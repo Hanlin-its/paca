@@ -3,23 +3,40 @@ package agentsvc
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/Paca-AI/api/internal/apierr"
 	agentdom "github.com/Paca-AI/api/internal/domain/agent"
+	attachmentdom "github.com/Paca-AI/api/internal/domain/attachment"
+	environmentdom "github.com/Paca-AI/api/internal/domain/environment"
+	globalroledom "github.com/Paca-AI/api/internal/domain/globalrole"
 	plugindom "github.com/Paca-AI/api/internal/domain/plugin"
+	projectdom "github.com/Paca-AI/api/internal/domain/project"
 	"github.com/Paca-AI/api/internal/events"
+	"github.com/Paca-AI/api/internal/platform/authz"
 	"github.com/Paca-AI/api/internal/platform/messaging"
 	"github.com/Paca-AI/api/internal/platform/secret"
-	"github.com/google/uuid"
+	activitysvc "github.com/Paca-AI/api/internal/service/activity"
 )
 
 // projectMemberWriter is the minimal interface this service needs to bust the
-// member list cache after an agent is added or removed.
+// member list cache after an agent is added or removed, and to validate the
+// project_role_id a caller supplies to CreateAgent actually belongs to the
+// target project (see CreateAgent's FindRoleByID check — GHSA-xxc8-ggm7-vmxp).
 type projectMemberWriter interface {
 	InvalidateMembersCache(ctx context.Context, projectID uuid.UUID) error
+	FindRoleByID(ctx context.Context, id uuid.UUID) (*projectdom.ProjectRole, error)
 }
 
 // pluginFinder is the minimal interface to find VCS plugins.
@@ -27,24 +44,176 @@ type pluginFinder interface {
 	FindByCapability(ctx context.Context, capability string) ([]*plugindom.Plugin, error)
 }
 
+// globalRoleFinder validates a caller-supplied global_role_id before it's
+// bound to a global agent — see SetGlobalAgentRole's FindByID check. Global
+// roles have no project-ownership dimension the way project roles do;
+// existence is the whole check.
+type globalRoleFinder interface {
+	FindByID(ctx context.Context, id uuid.UUID) (*globalroledom.GlobalRole, error)
+	// FindDefault is the role a new global agent starts with, the same one a
+	// new user starts with.
+	FindDefault(ctx context.Context) (*globalroledom.GlobalRole, error)
+}
+
+// defaultParallelismLimit/parallelismLimitCap clamp Agent.ParallelismLimit
+// the same way CreateAgent/UpdateAgent already clamp MaxIterations —
+// applied by CreateAgent/UpdateAgent/CreateGlobalAgent/UpdateGlobalAgent at
+// write time, and again defensively by checkParallelismCapacity in case a
+// row (or a directly-constructed Agent, e.g. in a test) predates this field.
+const (
+	defaultParallelismLimit = 1
+	parallelismLimitCap     = 10
+)
+
 // Service is the concrete AI Agent service.
 type Service struct {
 	repo       agentdom.Repository
 	projRepo   projectMemberWriter
 	publisher  *messaging.Publisher
+	activity   activitysvc.Recorder
 	pluginRepo pluginFinder
 	encryptor  *secret.Encryptor
+	avatarSvc  attachmentdom.AvatarService
+	// environmentSvc resolves/validates static environments — used by
+	// CreateAgent/UpdateAgent to validate default_environment_id (see
+	// validateDefaultEnvironment) and by StartChatSession/
+	// StartGlobalChatSession to resolve which environment+folder a new
+	// conversation attaches to (see ResolveConversationWorkdir). Nil is a
+	// valid, supported configuration (mirrors avatarSvc/encryptor above) —
+	// every call site guards against it and behaves as if environments
+	// don't exist yet, rather than panicking.
+	environmentSvc environmentdom.Service
+	// authorizer backs authorizeConversationsReadForConversation's
+	// conversations.read check in GetConversationForAgent — see that
+	// method's doc comment.
+	// Nil is a valid, supported configuration (same convention as
+	// environmentSvc/encryptor above): the check is skipped rather than
+	// failing closed, since every existing GetConversationForAgent test
+	// constructs a bare Service with no authorizer. Production wiring
+	// (bootstrap/app.go) always configures one via WithAuthorizer.
+	authorizer *authz.Authorizer
+	// globalRoleSvc backs SetGlobalAgentRole's validation
+	// that a caller-supplied global_role_id actually names an existing
+	// global role (GHSA-xxc8-ggm7-vmxp's same root cause, applied to global
+	// agents). Nil is a valid, supported configuration (same convention as
+	// environmentSvc/authorizer above): the check is skipped rather than
+	// failing closed. Production wiring (bootstrap/app.go) always configures
+	// one via WithGlobalRoleService — the real security boundary here is the
+	// router-level global_roles.assign gate on the route that reaches
+	// SetGlobalAgentRole, not this existence check, so skipping it when
+	// unwired is safe.
+	globalRoleSvc globalRoleFinder
 }
 
 // New returns a configured agent service.
 func New(repo agentdom.Repository, projRepo projectMemberWriter, publisher *messaging.Publisher, pluginRepo pluginFinder) *Service {
-	return &Service{repo: repo, projRepo: projRepo, publisher: publisher, pluginRepo: pluginRepo}
+	return &Service{repo: repo, projRepo: projRepo, publisher: publisher, pluginRepo: pluginRepo, activity: activitysvc.NewRecorder(publisher)}
 }
 
 // WithEncryptor configures AES-256-GCM encryption for the LLM API key stored at rest.
 func (s *Service) WithEncryptor(enc *secret.Encryptor) *Service {
 	s.encryptor = enc
 	return s
+}
+
+// WithAvatarService configures avatar upload support.
+func (s *Service) WithAvatarService(svc attachmentdom.AvatarService) *Service {
+	s.avatarSvc = svc
+	return s
+}
+
+// WithEnvironmentService wires in the static-environment service — see the
+// environmentSvc field's doc comment for what it's used for.
+func (s *Service) WithEnvironmentService(svc environmentdom.Service) *Service {
+	s.environmentSvc = svc
+	return s
+}
+
+// WithGlobalRoleService wires in the global role lookup used to validate
+// global_role_id — see the globalRoleSvc field's doc comment.
+func (s *Service) WithGlobalRoleService(svc globalRoleFinder) *Service {
+	s.globalRoleSvc = svc
+	return s
+}
+
+// WithAuthorizer wires in the permission authorizer — see the authorizer
+// field's doc comment for what it's used for.
+func (s *Service) WithAuthorizer(a *authz.Authorizer) *Service {
+	s.authorizer = a
+	return s
+}
+
+// validateDefaultEnvironment resolves and validates a candidate
+// default_environment_id for an agent being created/updated in projectID:
+// uuid.Nil clears it (returns nil, nil — see UpdateAgentInput.
+// DefaultEnvironmentID's doc comment for why uuid.Nil, not a bare nil
+// pointer, means "clear"); any other value must resolve to a real
+// environment belonging to projectID, and the agent must be project-scoped
+// (a global agent has no single project's environments to default to —
+// see Agent.DefaultEnvironmentID's doc comment).
+func (s *Service) validateDefaultEnvironment(ctx context.Context, projectID uuid.UUID, candidate uuid.UUID, scope agentdom.AgentScope) (*uuid.UUID, error) {
+	if candidate == uuid.Nil {
+		return nil, nil
+	}
+	if scope == agentdom.AgentScopeGlobal {
+		return nil, agentdom.ErrDefaultEnvironmentInvalid
+	}
+	if s.environmentSvc == nil {
+		return nil, agentdom.ErrDefaultEnvironmentInvalid
+	}
+	if _, err := s.environmentSvc.GetEnvironment(ctx, projectID, candidate); err != nil {
+		return nil, agentdom.ErrDefaultEnvironmentInvalid
+	}
+	id := candidate
+	return &id, nil
+}
+
+// validateDefaultFolder resolves and validates a candidate
+// default_folder_id for an agent being created/updated in projectID:
+// uuid.Nil clears it (same convention validateDefaultEnvironment uses);
+// any other value must belong to resolvedEnvID — the agent's own
+// (already-resolved, by validateDefaultEnvironment, earlier in the same
+// call) default environment, since a default folder is meaningless without
+// one to scope it to (see Agent.DefaultFolderID's doc comment) — and the
+// agent must be project-scoped. GetEnvironment already returns Folders
+// populated (see environmentdom.EnvironmentService.GetEnvironment's doc
+// comment), so this needs no separate folder lookup.
+func (s *Service) validateDefaultFolder(ctx context.Context, projectID uuid.UUID, candidate uuid.UUID, resolvedEnvID *uuid.UUID, scope agentdom.AgentScope) (*uuid.UUID, error) {
+	if candidate == uuid.Nil {
+		return nil, nil
+	}
+	if scope == agentdom.AgentScopeGlobal {
+		return nil, agentdom.ErrDefaultFolderInvalid
+	}
+	if resolvedEnvID == nil {
+		return nil, agentdom.ErrDefaultFolderInvalid
+	}
+	if s.environmentSvc == nil {
+		return nil, agentdom.ErrDefaultFolderInvalid
+	}
+	env, err := s.environmentSvc.GetEnvironment(ctx, projectID, *resolvedEnvID)
+	if err != nil {
+		return nil, agentdom.ErrDefaultFolderInvalid
+	}
+	for _, f := range env.Folders {
+		if f.ID == candidate {
+			id := candidate
+			return &id, nil
+		}
+	}
+	return nil, agentdom.ErrDefaultFolderInvalid
+}
+
+// uuidPtrEqual reports whether a and b are both nil, or both non-nil and
+// equal — UpdateAgent's own way of detecting whether
+// validateDefaultEnvironment actually changed a.DefaultEnvironmentID
+// (rather than re-resolving to the same value it already had) without
+// duplicating a nil-then-dereference check inline at each call site.
+func uuidPtrEqual(a, b *uuid.UUID) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // encryptKey encrypts plaintext if an encryptor is configured; otherwise returns plaintext unchanged.
@@ -59,21 +228,19 @@ func (s *Service) encryptKey(plaintext string) (string, error) {
 // Agents
 // -------------------------------------------------------------------------
 
-// ListAgents returns all agents in the given project.
-func (s *Service) ListAgents(ctx context.Context, projectID uuid.UUID) ([]*agentdom.Agent, error) {
-	return s.repo.ListAgents(ctx, projectID)
+// ListAgents returns agents visible in the given project, optionally
+// narrowed to a single AgentScope. See AgentRepository.ListAgents.
+func (s *Service) ListAgents(ctx context.Context, projectID uuid.UUID, scope agentdom.AgentScope) ([]*agentdom.Agent, error) {
+	return s.repo.ListAgents(ctx, projectID, scope)
 }
 
-// GetAgent returns a single agent after verifying project ownership.
+// GetAgent returns a single agent visible in projectID — its own
+// project-scoped agent, or a global agent currently invited into the
+// project (see FindVisibleAgentInProject) — so a project's agent detail
+// page resolves the same agents its list view shows, rather than 404ing on
+// an invited global agent.
 func (s *Service) GetAgent(ctx context.Context, projectID, agentID uuid.UUID) (*agentdom.Agent, error) {
-	a, err := s.repo.FindAgentByID(ctx, agentID)
-	if err != nil {
-		return nil, err
-	}
-	if a.ProjectID != projectID {
-		return nil, agentdom.ErrAgentNotFound
-	}
-	return a, nil
+	return s.repo.FindVisibleAgentInProject(ctx, projectID, agentID)
 }
 
 // CreateAgent validates input, creates the agent, and sets up project membership.
@@ -92,35 +259,92 @@ func (s *Service) CreateAgent(ctx context.Context, projectID uuid.UUID, in agent
 		return nil, agentdom.ErrAgentHandleTaken
 	}
 
-	encryptedKey, err := s.encryptKey(in.LLMAPIKey)
-	if err != nil {
-		return nil, fmt.Errorf("encrypt LLM API key: %w", err)
+	agentType := in.AgentType
+	if agentType == "" {
+		agentType = agentdom.AgentTypeLLM
+	}
+	if agentType != agentdom.AgentTypeLLM && agentType != agentdom.AgentTypeACP && agentType != agentdom.AgentTypeProviderCLI {
+		return nil, agentdom.ErrAgentTypeInvalid
 	}
 
 	now := time.Now()
 	a := &agentdom.Agent{
-		ID:                            uuid.New(),
-		ProjectID:                     projectID,
-		Name:                          name,
-		Handle:                        handle,
-		LLMProvider:                   in.LLMProvider,
-		LLMModel:                      in.LLMModel,
-		LLMAPIKeySecret:               encryptedKey,
-		LLMBaseURL:                    in.LLMBaseURL,
-		SystemPrompt:                  in.SystemPrompt,
-		TaskTriggerPrompt:             in.TaskTriggerPrompt,
-		DocCommentTriggerPrompt:       in.DocCommentTriggerPrompt,
-		ChatTriggerPrompt:             in.ChatTriggerPrompt,
-		DescriptionWriteTriggerPrompt: in.DescriptionWriteTriggerPrompt,
-		CanCloneRepos:                 in.CanCloneRepos,
-		CanCreatePRs:                  in.CanCreatePRs,
-		MaxIterations:                 in.MaxIterations,
-		TimeoutMinutes:                in.TimeoutMinutes,
-		GitCommitterName:              in.GitCommitterName,
-		GitCommitterEmail:             in.GitCommitterEmail,
-		CreatedBy:                     in.CreatedBy,
-		CreatedAt:                     now,
-		UpdatedAt:                     now,
+		ID:               uuid.New(),
+		ProjectID:        projectID,
+		Name:             name,
+		Handle:           handle,
+		Description:      strings.TrimSpace(in.Description),
+		AgentType:        agentType,
+		MaxIterations:    in.MaxIterations,
+		TimeoutMinutes:   in.TimeoutMinutes,
+		ParallelismLimit: in.ParallelismLimit,
+		CreatedBy:        in.CreatedBy,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+
+	switch agentType {
+	case agentdom.AgentTypeACP:
+		if !agentdom.ValidACPProviders[in.ACPProvider] {
+			return nil, agentdom.ErrACPProviderInvalid
+		}
+		if in.ACPProvider == agentdom.ACPProviderCustom && len(in.ACPCommand) == 0 {
+			return nil, agentdom.ErrACPCommandRequired
+		}
+		provider := in.ACPProvider
+		a.ACPProvider = &provider
+		a.ACPCommand = in.ACPCommand
+	case agentdom.AgentTypeProviderCLI:
+		if !agentdom.ValidCLIProviders[in.CLIProvider] {
+			return nil, agentdom.ErrCLIProviderInvalid
+		}
+		authMode := in.CLIAuthMode
+		if authMode == "" {
+			authMode = agentdom.CLIAuthModeLogin
+		}
+		if authMode != agentdom.CLIAuthModeAPIKey && authMode != agentdom.CLIAuthModeLogin {
+			return nil, agentdom.ErrCLIAuthModeInvalid
+		}
+		if authMode == agentdom.CLIAuthModeAPIKey && !agentdom.CLIProvidersWithAPIKeyAuth[in.CLIProvider] {
+			return nil, agentdom.ErrCLIProviderNoAPIKeyAuth
+		}
+		provider := in.CLIProvider
+		a.CLIProvider = &provider
+		a.CLIModel = in.CLIModel
+		a.CLIAuthMode = authMode
+		if in.CLIAPIKey != "" {
+			encryptedKey, err := s.encryptKey(in.CLIAPIKey)
+			if err != nil {
+				return nil, fmt.Errorf("encrypt CLI API key: %w", err)
+			}
+			a.CLIAPIKeySecret = encryptedKey
+		}
+		// System prompt and git committer identity are meaningless here too
+		// (same reasoning as the ACP case below) — the underlying CLI owns
+		// its own persona/system-prompt mechanism and its own git identity.
+	default:
+		encryptedKey, err := s.encryptKey(in.LLMAPIKey)
+		if err != nil {
+			return nil, fmt.Errorf("encrypt LLM API key: %w", err)
+		}
+		a.LLMProvider = in.LLMProvider
+		a.LLMModel = in.LLMModel
+		a.LLMAPIKeySecret = encryptedKey
+		a.LLMBaseURL = in.LLMBaseURL
+		// System prompt and git committer identity are LLM-only (see the
+		// doc comment on Agent.SystemPrompt) — an ACP agent's local CLI
+		// owns both of these itself, so they're left unset for ACP agents
+		// rather than accepting values that would never take effect.
+		a.SystemPrompt = in.SystemPrompt
+		a.GitCommitterName = in.GitCommitterName
+		a.GitCommitterEmail = in.GitCommitterEmail
+		a.DockerEnabled = in.DockerEnabled
+		if a.GitCommitterName == "" {
+			a.GitCommitterName = "paca-agent"
+		}
+		if a.GitCommitterEmail == "" {
+			a.GitCommitterEmail = "280579135+paca-agent@users.noreply.github.com"
+		}
 	}
 	const maxIterationsLimit = 500
 	const defaultMaxIterations = 500
@@ -136,11 +360,50 @@ func (s *Service) CreateAgent(ctx context.Context, projectID uuid.UUID, in agent
 	} else if a.TimeoutMinutes > timeoutMinutesLimit {
 		a.TimeoutMinutes = timeoutMinutesLimit
 	}
-	if a.GitCommitterName == "" {
-		a.GitCommitterName = "paca-agent"
+	if a.ParallelismLimit <= 0 {
+		a.ParallelismLimit = defaultParallelismLimit
+	} else if a.ParallelismLimit > parallelismLimitCap {
+		a.ParallelismLimit = parallelismLimitCap
 	}
-	if a.GitCommitterEmail == "" {
-		a.GitCommitterEmail = "280579135+paca-agent@users.noreply.github.com"
+
+	if in.DefaultEnvironmentID != nil {
+		envID, err := s.validateDefaultEnvironment(ctx, projectID, *in.DefaultEnvironmentID, agentdom.AgentScopeProject)
+		if err != nil {
+			return nil, err
+		}
+		a.DefaultEnvironmentID = envID
+	}
+	if in.DefaultFolderID != nil {
+		folderID, err := s.validateDefaultFolder(ctx, projectID, *in.DefaultFolderID, a.DefaultEnvironmentID, agentdom.AgentScopeProject)
+		if err != nil {
+			return nil, err
+		}
+		a.DefaultFolderID = folderID
+	}
+	// provider_cli agents never fall back to an ephemeral sandbox — their
+	// CLI's login state must persist across conversations, which only a
+	// static environment's volume provides (see Agent.DefaultEnvironmentID's
+	// doc comment). Checked after resolution above so an *invalid*
+	// environment ID still surfaces the more specific ErrDefaultEnvironmentInvalid.
+	if agentType == agentdom.AgentTypeProviderCLI && a.DefaultEnvironmentID == nil {
+		return nil, agentdom.ErrDefaultEnvironmentRequiredForCLIProvider
+	}
+	if err := validateParallelismLimit(a); err != nil {
+		return nil, err
+	}
+
+	// CreateAgent grants membership at whatever role in.ProjectRoleID names,
+	// so — like AddMember/UpdateMemberRole* — that role must actually belong
+	// to this project before it's bound to the new agent. Without this a
+	// caller could name any role ID at all, including one scoped to a
+	// different project or a global template role such as PROJECT_OWNER
+	// (ProjectID == nil), and inherit its permissions (GHSA-xxc8-ggm7-vmxp).
+	role, err := s.projRepo.FindRoleByID(ctx, in.ProjectRoleID)
+	if err != nil {
+		return nil, err
+	}
+	if role.ProjectID == nil || *role.ProjectID != projectID {
+		return nil, projectdom.ErrRoleNotFound
 	}
 
 	// Atomically create the agent and its project membership in one transaction.
@@ -153,6 +416,7 @@ func (s *Service) CreateAgent(ctx context.Context, projectID uuid.UUID, in agent
 	// Best-effort cache invalidation so the new member appears immediately.
 	_ = s.projRepo.InvalidateMembersCache(ctx, projectID)
 
+	s.recordAgent(ctx, projectID, a, TopicProjectAgentCreated)
 	return a, nil
 }
 
@@ -175,42 +439,94 @@ func (s *Service) UpdateAgent(ctx context.Context, projectID, agentID uuid.UUID,
 			a.Handle = h
 		}
 	}
-	if in.LLMProvider != nil {
-		a.LLMProvider = *in.LLMProvider
+	if in.Description != nil {
+		a.Description = strings.TrimSpace(*in.Description)
 	}
-	if in.LLMModel != nil {
-		a.LLMModel = *in.LLMModel
-	}
-	if in.LLMAPIKey != nil {
-		encryptedKey, err := s.encryptKey(*in.LLMAPIKey)
-		if err != nil {
-			return nil, fmt.Errorf("encrypt LLM API key: %w", err)
+	// LLM/ACP/provider_cli fields are guarded by the agent's existing
+	// (immutable) type — agent_type can't be changed through this API, so
+	// applying another shape's fields would only ever leave stale/wrong
+	// data on the agent (e.g. an encrypted LLM API key sitting unused on an
+	// ACP agent). A request that happens to include more than one type's
+	// fields (e.g. a generic client payload) silently has the irrelevant
+	// ones ignored rather than erroring, matching CreateAgent's per-type
+	// field selection. Anything other than the explicit ACP/provider_cli
+	// types is treated as LLM (its default, as in CreateAgent) so an agent
+	// loaded with an unset AgentType isn't silently locked out of updating
+	// its LLM fields. SystemPrompt and the git committer identity fields
+	// ride along in the LLM block — like the LLM fields, they're
+	// meaningless on an ACP or provider_cli agent (see the doc comment on
+	// Agent.SystemPrompt), so a request that sets them on one is silently
+	// ignored too.
+	if a.AgentType == agentdom.AgentTypeLLM || a.AgentType == "" {
+		if in.LLMProvider != nil {
+			a.LLMProvider = *in.LLMProvider
 		}
-		a.LLMAPIKeySecret = encryptedKey
+		if in.LLMModel != nil {
+			a.LLMModel = *in.LLMModel
+		}
+		if in.LLMAPIKey != nil {
+			encryptedKey, err := s.encryptKey(*in.LLMAPIKey)
+			if err != nil {
+				return nil, fmt.Errorf("encrypt LLM API key: %w", err)
+			}
+			a.LLMAPIKeySecret = encryptedKey
+		}
+		if in.LLMBaseURL != nil {
+			a.LLMBaseURL = *in.LLMBaseURL
+		}
+		if in.SystemPrompt != nil {
+			a.SystemPrompt = *in.SystemPrompt
+		}
+		if in.GitCommitterName != nil {
+			a.GitCommitterName = *in.GitCommitterName
+		}
+		if in.GitCommitterEmail != nil {
+			a.GitCommitterEmail = *in.GitCommitterEmail
+		}
+		if in.DockerEnabled != nil {
+			a.DockerEnabled = *in.DockerEnabled
+		}
 	}
-	if in.LLMBaseURL != nil {
-		a.LLMBaseURL = *in.LLMBaseURL
+	if a.AgentType == agentdom.AgentTypeACP {
+		if in.ACPProvider != nil {
+			if !agentdom.ValidACPProviders[*in.ACPProvider] {
+				return nil, agentdom.ErrACPProviderInvalid
+			}
+			a.ACPProvider = in.ACPProvider
+		}
+		if in.ACPCommand != nil {
+			a.ACPCommand = in.ACPCommand
+		}
+		if a.ACPProvider != nil && *a.ACPProvider == agentdom.ACPProviderCustom && len(a.ACPCommand) == 0 {
+			return nil, agentdom.ErrACPCommandRequired
+		}
 	}
-	if in.SystemPrompt != nil {
-		a.SystemPrompt = *in.SystemPrompt
-	}
-	if in.TaskTriggerPrompt != nil {
-		a.TaskTriggerPrompt = *in.TaskTriggerPrompt
-	}
-	if in.DocCommentTriggerPrompt != nil {
-		a.DocCommentTriggerPrompt = *in.DocCommentTriggerPrompt
-	}
-	if in.ChatTriggerPrompt != nil {
-		a.ChatTriggerPrompt = *in.ChatTriggerPrompt
-	}
-	if in.DescriptionWriteTriggerPrompt != nil {
-		a.DescriptionWriteTriggerPrompt = *in.DescriptionWriteTriggerPrompt
-	}
-	if in.CanCloneRepos != nil {
-		a.CanCloneRepos = *in.CanCloneRepos
-	}
-	if in.CanCreatePRs != nil {
-		a.CanCreatePRs = *in.CanCreatePRs
+	if a.AgentType == agentdom.AgentTypeProviderCLI {
+		if in.CLIProvider != nil {
+			if !agentdom.ValidCLIProviders[*in.CLIProvider] {
+				return nil, agentdom.ErrCLIProviderInvalid
+			}
+			a.CLIProvider = in.CLIProvider
+		}
+		if in.CLIModel != nil {
+			a.CLIModel = *in.CLIModel
+		}
+		if in.CLIAuthMode != nil {
+			if *in.CLIAuthMode != agentdom.CLIAuthModeAPIKey && *in.CLIAuthMode != agentdom.CLIAuthModeLogin {
+				return nil, agentdom.ErrCLIAuthModeInvalid
+			}
+			a.CLIAuthMode = *in.CLIAuthMode
+		}
+		if a.CLIAuthMode == agentdom.CLIAuthModeAPIKey && a.CLIProvider != nil && !agentdom.CLIProvidersWithAPIKeyAuth[*a.CLIProvider] {
+			return nil, agentdom.ErrCLIProviderNoAPIKeyAuth
+		}
+		if in.CLIAPIKey != nil {
+			encryptedKey, err := s.encryptKey(*in.CLIAPIKey)
+			if err != nil {
+				return nil, fmt.Errorf("encrypt CLI API key: %w", err)
+			}
+			a.CLIAPIKeySecret = encryptedKey
+		}
 	}
 	const maxIterationsLimit = 500
 	const defaultMaxIterations = 500
@@ -234,17 +550,73 @@ func (s *Service) UpdateAgent(ctx context.Context, projectID, agentID uuid.UUID,
 		}
 		a.TimeoutMinutes = v
 	}
-	if in.GitCommitterName != nil {
-		a.GitCommitterName = *in.GitCommitterName
+	oldParallelismLimit := a.ParallelismLimit
+	if oldParallelismLimit <= 0 {
+		oldParallelismLimit = defaultParallelismLimit
 	}
-	if in.GitCommitterEmail != nil {
-		a.GitCommitterEmail = *in.GitCommitterEmail
+	if in.ParallelismLimit != nil {
+		v := *in.ParallelismLimit
+		if v <= 0 {
+			v = defaultParallelismLimit
+		} else if v > parallelismLimitCap {
+			v = parallelismLimitCap
+		}
+		a.ParallelismLimit = v
+	}
+	if in.AccessMode != nil {
+		if *in.AccessMode != agentdom.AccessModeOpen && *in.AccessMode != agentdom.AccessModeRestricted {
+			return nil, agentdom.ErrAgentAccessModeInvalid
+		}
+		a.AccessMode = *in.AccessMode
+	}
+	if in.DefaultEnvironmentID != nil {
+		envID, err := s.validateDefaultEnvironment(ctx, projectID, *in.DefaultEnvironmentID, a.AgentScope)
+		if err != nil {
+			return nil, err
+		}
+		envChanged := !uuidPtrEqual(a.DefaultEnvironmentID, envID)
+		a.DefaultEnvironmentID = envID
+		// The agent's existing default folder belongs to the OLD
+		// environment — if the environment just changed and this same
+		// request didn't also specify a new default_folder_id (handled
+		// below, which would overwrite this), the stale folder reference
+		// can never be valid again, so it's cleared here rather than left
+		// dangling for validateDefaultFolder to reject on every future
+		// update until someone notices.
+		if envChanged && in.DefaultFolderID == nil {
+			a.DefaultFolderID = nil
+		}
+	}
+	if in.DefaultFolderID != nil {
+		folderID, err := s.validateDefaultFolder(ctx, projectID, *in.DefaultFolderID, a.DefaultEnvironmentID, a.AgentScope)
+		if err != nil {
+			return nil, err
+		}
+		a.DefaultFolderID = folderID
+	}
+	// Same "never falls back to ephemeral" guarantee as CreateAgent — also
+	// catches an update that tries to CLEAR default_environment_id (via
+	// DefaultEnvironmentID: &uuid.Nil) on an existing provider_cli agent.
+	if a.AgentType == agentdom.AgentTypeProviderCLI && a.DefaultEnvironmentID == nil {
+		return nil, agentdom.ErrDefaultEnvironmentRequiredForCLIProvider
+	}
+	if err := validateParallelismLimit(a); err != nil {
+		return nil, err
 	}
 	a.UpdatedAt = time.Now()
 
 	if err := s.repo.UpdateAgent(ctx, a); err != nil {
 		return nil, err
 	}
+	// Raising the limit frees slots with no terminal-status event of their
+	// own to react to — see AdvanceQueue's doc comment. Best-effort: a
+	// missed catch-up here just leaves the newly-freed slot(s) idle until the
+	// next conversation of this agent's actually finishes (which advances
+	// the queue anyway), not a correctness problem.
+	if a.ParallelismLimit > oldParallelismLimit {
+		_, _ = s.AdvanceQueue(ctx, a.ID, a.ParallelismLimit-oldParallelismLimit)
+	}
+	s.recordAgent(ctx, projectID, a, TopicProjectAgentUpdated)
 	return a, nil
 }
 
@@ -260,7 +632,739 @@ func (s *Service) DeleteAgent(ctx context.Context, projectID, agentID uuid.UUID)
 	}
 	// Best-effort cache invalidation so the deleted member disappears immediately.
 	_ = s.projRepo.InvalidateMembersCache(ctx, projectID)
+	s.recordAgent(ctx, projectID, a, TopicProjectAgentDeleted)
 	return nil
+}
+
+// Activity topics for a project agent's own configuration. The work an agent
+// does is recorded by the task/doc services, with the agent as actor. Not
+// "agent.*": services/realtime routes that prefix to the tasks room as
+// conversation events.
+const (
+	TopicProjectAgentCreated = "project_agent.created"
+	TopicProjectAgentUpdated = "project_agent.updated"
+	TopicProjectAgentDeleted = "project_agent.deleted"
+)
+
+// recordAgent fans a project agent's create/update/delete out to the
+// activity log; the actor comes from the request context.
+func (s *Service) recordAgent(ctx context.Context, projectID uuid.UUID, a *agentdom.Agent, topic string) {
+	s.activity.Record(ctx, activitysvc.Entry{
+		ProjectID:  projectID,
+		EntityType: events.EntityAgent,
+		EntityID:   a.ID,
+		Topic:      topic,
+		Payload:    map[string]any{"project_id": projectID.String(), "agent_id": a.ID.String(), "name": a.Name, "handle": a.Handle},
+	})
+}
+
+// -------------------------------------------------------------------------
+// Global agents (AgentScope == AgentScopeGlobal)
+//
+// These are intentionally self-contained rather than sharing bodies with
+// CreateAgent/UpdateAgent/DeleteAgent above: the two shapes diverge in how
+// they establish project access (a project-scoped agent gets exactly one
+// project_members row at creation time; a global agent gets zero, and is
+// attached to projects later via the invite flow, see
+// project.MemberService.AddMember), and keeping them separate means the
+// existing, tested project-scoped methods are never touched by this change.
+// -------------------------------------------------------------------------
+
+// ListGlobalAgents returns all global-scope agents.
+func (s *Service) ListGlobalAgents(ctx context.Context) ([]*agentdom.Agent, error) {
+	return s.repo.ListGlobalAgents(ctx)
+}
+
+// GetGlobalAgent returns a single agent after verifying it is global-scope.
+func (s *Service) GetGlobalAgent(ctx context.Context, agentID uuid.UUID) (*agentdom.Agent, error) {
+	a, err := s.repo.FindAgentByID(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+	if a.AgentScope != agentdom.AgentScopeGlobal {
+		return nil, agentdom.ErrAgentNotFound
+	}
+	return a, nil
+}
+
+// CreateGlobalAgent validates input and creates a global-scope agent. Unlike
+// CreateAgent, no project_members row is created — the agent starts out
+// invited into zero projects. It starts with the default global role (the
+// same one a new user gets), like a new user does; a different role, or none,
+// is a separate action (SetGlobalAgentRole), so creation carries no role.
+func (s *Service) CreateGlobalAgent(ctx context.Context, in agentdom.CreateGlobalAgentInput) (*agentdom.Agent, error) {
+	handle := strings.TrimSpace(in.Handle)
+	if handle == "" {
+		return nil, agentdom.ErrAgentHandleInvalid
+	}
+	name := strings.TrimSpace(in.Name)
+	if name == "" {
+		return nil, agentdom.ErrAgentNameInvalid
+	}
+
+	if existing, err := s.repo.FindGlobalAgentByHandle(ctx, handle); err == nil && existing != nil {
+		return nil, agentdom.ErrAgentHandleTaken
+	}
+
+	agentType := in.AgentType
+	if agentType == "" {
+		agentType = agentdom.AgentTypeLLM
+	}
+	// provider_cli is rejected explicitly (a clearer error than falling
+	// through to the generic type-invalid one) — a global agent has no
+	// single project's environments to default to, and provider_cli
+	// requires one (see Agent.DefaultEnvironmentID's doc comment).
+	if agentType == agentdom.AgentTypeProviderCLI {
+		return nil, agentdom.ErrCLIProviderNotSupportedForGlobalAgents
+	}
+	if agentType != agentdom.AgentTypeLLM && agentType != agentdom.AgentTypeACP {
+		return nil, agentdom.ErrAgentTypeInvalid
+	}
+
+	now := time.Now()
+	a := &agentdom.Agent{
+		ID:               uuid.New(),
+		AgentScope:       agentdom.AgentScopeGlobal,
+		Name:             name,
+		Handle:           handle,
+		Description:      strings.TrimSpace(in.Description),
+		AgentType:        agentType,
+		MaxIterations:    in.MaxIterations,
+		TimeoutMinutes:   in.TimeoutMinutes,
+		ParallelismLimit: in.ParallelismLimit,
+		CreatedBy:        in.CreatedBy,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+
+	if agentType == agentdom.AgentTypeACP {
+		if !agentdom.ValidACPProviders[in.ACPProvider] {
+			return nil, agentdom.ErrACPProviderInvalid
+		}
+		if in.ACPProvider == agentdom.ACPProviderCustom && len(in.ACPCommand) == 0 {
+			return nil, agentdom.ErrACPCommandRequired
+		}
+		provider := in.ACPProvider
+		a.ACPProvider = &provider
+		a.ACPCommand = in.ACPCommand
+	} else {
+		encryptedKey, err := s.encryptKey(in.LLMAPIKey)
+		if err != nil {
+			return nil, fmt.Errorf("encrypt LLM API key: %w", err)
+		}
+		a.LLMProvider = in.LLMProvider
+		a.LLMModel = in.LLMModel
+		a.LLMAPIKeySecret = encryptedKey
+		a.LLMBaseURL = in.LLMBaseURL
+		a.SystemPrompt = in.SystemPrompt
+		a.GitCommitterName = in.GitCommitterName
+		a.GitCommitterEmail = in.GitCommitterEmail
+		a.DockerEnabled = in.DockerEnabled
+		if a.GitCommitterName == "" {
+			a.GitCommitterName = "paca-agent"
+		}
+		if a.GitCommitterEmail == "" {
+			a.GitCommitterEmail = "280579135+paca-agent@users.noreply.github.com"
+		}
+	}
+	const maxIterationsLimit = 500
+	const defaultMaxIterations = 500
+	const timeoutMinutesLimit = 480 // 8 hours
+
+	if a.MaxIterations <= 0 {
+		a.MaxIterations = defaultMaxIterations
+	} else if a.MaxIterations > maxIterationsLimit {
+		a.MaxIterations = maxIterationsLimit
+	}
+	if a.TimeoutMinutes <= 0 {
+		a.TimeoutMinutes = 30
+	} else if a.TimeoutMinutes > timeoutMinutesLimit {
+		a.TimeoutMinutes = timeoutMinutesLimit
+	}
+	if a.ParallelismLimit <= 0 {
+		a.ParallelismLimit = defaultParallelismLimit
+	} else if a.ParallelismLimit > parallelismLimitCap {
+		a.ParallelismLimit = parallelismLimitCap
+	}
+	if err := validateParallelismLimit(a); err != nil {
+		return nil, err
+	}
+
+	if s.globalRoleSvc != nil {
+		role, err := s.globalRoleSvc.FindDefault(ctx)
+		switch {
+		case err == nil:
+			a.GlobalRoleID = &role.ID
+		case errors.Is(err, globalroledom.ErrNoDefault):
+			// No default is set: the agent starts with no global role, which
+			// is a valid state (it just has no global permissions).
+		default:
+			return nil, fmt.Errorf("create global agent: default role: %w", err)
+		}
+	}
+
+	if err := s.repo.CreateGlobalAgent(ctx, a); err != nil {
+		return nil, fmt.Errorf("create global agent: %w", err)
+	}
+	return a, nil
+}
+
+// SetGlobalAgentRole binds a global agent to the global role that decides what
+// it may do, or unbinds it when roleID is nil. A role must name an existing
+// global role before it is bound (GHSA-xxc8-ggm7-vmxp); unbinding needs no
+// lookup. Whether the caller may assign roles at all is not decided here: the
+// only route that reaches this declares global_roles.assign in the router.
+func (s *Service) SetGlobalAgentRole(ctx context.Context, agentID uuid.UUID, roleID *uuid.UUID) (*agentdom.Agent, error) {
+	a, err := s.GetGlobalAgent(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+	if roleID != nil && s.globalRoleSvc != nil {
+		if _, err := s.globalRoleSvc.FindByID(ctx, *roleID); err != nil {
+			return nil, err
+		}
+	}
+
+	a.GlobalRoleID = roleID
+	a.UpdatedAt = time.Now()
+	if err := s.repo.UpdateAgent(ctx, a); err != nil {
+		return nil, err
+	}
+	return a, nil
+}
+
+// UpdateGlobalAgent patches mutable fields of an existing global agent. Its
+// global role is not among them — see SetGlobalAgentRole.
+func (s *Service) UpdateGlobalAgent(ctx context.Context, agentID uuid.UUID, in agentdom.UpdateAgentInput) (*agentdom.Agent, error) {
+	a, err := s.GetGlobalAgent(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+
+	if in.Name != nil {
+		a.Name = strings.TrimSpace(*in.Name)
+	}
+	if in.Handle != nil {
+		h := strings.TrimSpace(*in.Handle)
+		if h != a.Handle {
+			if existing, err := s.repo.FindGlobalAgentByHandle(ctx, h); err == nil && existing != nil {
+				return nil, agentdom.ErrAgentHandleTaken
+			}
+			a.Handle = h
+		}
+	}
+	if in.Description != nil {
+		a.Description = strings.TrimSpace(*in.Description)
+	}
+	// See the equivalent block in UpdateAgent for why LLM/ACP fields are
+	// guarded by the agent's existing (immutable) type.
+	if a.AgentType != agentdom.AgentTypeACP {
+		if in.LLMProvider != nil {
+			a.LLMProvider = *in.LLMProvider
+		}
+		if in.LLMModel != nil {
+			a.LLMModel = *in.LLMModel
+		}
+		if in.LLMAPIKey != nil {
+			encryptedKey, err := s.encryptKey(*in.LLMAPIKey)
+			if err != nil {
+				return nil, fmt.Errorf("encrypt LLM API key: %w", err)
+			}
+			a.LLMAPIKeySecret = encryptedKey
+		}
+		if in.LLMBaseURL != nil {
+			a.LLMBaseURL = *in.LLMBaseURL
+		}
+		if in.SystemPrompt != nil {
+			a.SystemPrompt = *in.SystemPrompt
+		}
+		if in.GitCommitterName != nil {
+			a.GitCommitterName = *in.GitCommitterName
+		}
+		if in.GitCommitterEmail != nil {
+			a.GitCommitterEmail = *in.GitCommitterEmail
+		}
+		if in.DockerEnabled != nil {
+			a.DockerEnabled = *in.DockerEnabled
+		}
+	}
+	if a.AgentType == agentdom.AgentTypeACP {
+		if in.ACPProvider != nil {
+			if !agentdom.ValidACPProviders[*in.ACPProvider] {
+				return nil, agentdom.ErrACPProviderInvalid
+			}
+			a.ACPProvider = in.ACPProvider
+		}
+		if in.ACPCommand != nil {
+			a.ACPCommand = in.ACPCommand
+		}
+		if a.ACPProvider != nil && *a.ACPProvider == agentdom.ACPProviderCustom && len(a.ACPCommand) == 0 {
+			return nil, agentdom.ErrACPCommandRequired
+		}
+	}
+	const maxIterationsLimit = 500
+	const defaultMaxIterations = 500
+	const timeoutMinutesLimit = 480
+
+	if in.MaxIterations != nil {
+		v := *in.MaxIterations
+		if v <= 0 {
+			v = defaultMaxIterations
+		} else if v > maxIterationsLimit {
+			v = maxIterationsLimit
+		}
+		a.MaxIterations = v
+	}
+	if in.TimeoutMinutes != nil {
+		v := *in.TimeoutMinutes
+		if v <= 0 {
+			v = 30
+		} else if v > timeoutMinutesLimit {
+			v = timeoutMinutesLimit
+		}
+		a.TimeoutMinutes = v
+	}
+	oldParallelismLimit := a.ParallelismLimit
+	if oldParallelismLimit <= 0 {
+		oldParallelismLimit = defaultParallelismLimit
+	}
+	if in.ParallelismLimit != nil {
+		v := *in.ParallelismLimit
+		if v <= 0 {
+			v = defaultParallelismLimit
+		} else if v > parallelismLimitCap {
+			v = parallelismLimitCap
+		}
+		a.ParallelismLimit = v
+	}
+	if in.AccessMode != nil {
+		if *in.AccessMode != agentdom.AccessModeOpen && *in.AccessMode != agentdom.AccessModeRestricted {
+			return nil, agentdom.ErrAgentAccessModeInvalid
+		}
+		a.AccessMode = *in.AccessMode
+	}
+	if err := validateParallelismLimit(a); err != nil {
+		return nil, err
+	}
+	a.UpdatedAt = time.Now()
+
+	if err := s.repo.UpdateAgent(ctx, a); err != nil {
+		return nil, err
+	}
+	// See UpdateAgent's identical catch-up call for why.
+	if a.ParallelismLimit > oldParallelismLimit {
+		_, _ = s.AdvanceQueue(ctx, a.ID, a.ParallelismLimit-oldParallelismLimit)
+	}
+	return a, nil
+}
+
+// DeleteGlobalAgent soft-deletes a global agent and every project_members
+// row referencing it, across every project it was invited into.
+func (s *Service) DeleteGlobalAgent(ctx context.Context, agentID uuid.UUID) error {
+	a, err := s.GetGlobalAgent(ctx, agentID)
+	if err != nil {
+		return err
+	}
+	// Snapshot affected projects before the cascade delete so their
+	// member-list caches can be invalidated once membership is actually gone.
+	projectIDs, err := s.repo.ListInvitedProjectIDs(ctx, a.ID)
+	if err != nil {
+		return err
+	}
+	if err := s.repo.SoftDeleteGlobalAgentCascade(ctx, a.ID); err != nil {
+		return err
+	}
+	for _, projectID := range projectIDs {
+		_ = s.projRepo.InvalidateMembersCache(ctx, projectID)
+	}
+	return nil
+}
+
+// ListInvitedProjectIDs returns the IDs of every project a global agent
+// currently has an active project_members row in.
+func (s *Service) ListInvitedProjectIDs(ctx context.Context, agentID uuid.UUID) ([]uuid.UUID, error) {
+	return s.repo.ListInvitedProjectIDs(ctx, agentID)
+}
+
+// generateHashedSecret returns a fresh 32 random bytes as both its hex
+// plaintext and the hex SHA-256 hash of that plaintext — the shared
+// generation step behind every "issue a new bridge token / MCP key" method
+// below, all of which persist only the hash and return the plaintext once.
+func generateHashedSecret() (plaintext, hash string, err error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", "", err
+	}
+	plaintext = hex.EncodeToString(raw)
+	sum := sha256.Sum256([]byte(plaintext))
+	return plaintext, hex.EncodeToString(sum[:]), nil
+}
+
+// GenerateACPBridgeToken issues a new local-bridge auth token for an ACP-type
+// agent, replacing any existing one. Only the token's SHA-256 hash is
+// persisted (services/ai-agent hashes an incoming token the same way to
+// verify it) — the plaintext is returned once here and cannot be recovered
+// afterward.
+func (s *Service) GenerateACPBridgeToken(ctx context.Context, projectID, agentID uuid.UUID) (string, error) {
+	a, err := s.GetAgent(ctx, projectID, agentID)
+	if err != nil {
+		return "", err
+	}
+	if a.AgentType != agentdom.AgentTypeACP {
+		return "", agentdom.ErrAgentTypeInvalid
+	}
+	plaintext, hash, err := generateHashedSecret()
+	if err != nil {
+		return "", fmt.Errorf("generate bridge token: %w", err)
+	}
+	if err := s.repo.SetACPBridgeTokenHash(ctx, agentID, hash); err != nil {
+		return "", fmt.Errorf("store bridge token hash: %w", err)
+	}
+	return plaintext, nil
+}
+
+// GenerateGlobalACPBridgeToken is GenerateACPBridgeToken's global-agent
+// sibling — identical token generation, ownership verified via
+// GetGlobalAgent (AgentScope == global) instead of a projectID match.
+func (s *Service) GenerateGlobalACPBridgeToken(ctx context.Context, agentID uuid.UUID) (string, error) {
+	a, err := s.GetGlobalAgent(ctx, agentID)
+	if err != nil {
+		return "", err
+	}
+	if a.AgentType != agentdom.AgentTypeACP {
+		return "", agentdom.ErrAgentTypeInvalid
+	}
+	plaintext, hash, err := generateHashedSecret()
+	if err != nil {
+		return "", fmt.Errorf("generate bridge token: %w", err)
+	}
+	if err := s.repo.SetACPBridgeTokenHash(ctx, agentID, hash); err != nil {
+		return "", fmt.Errorf("store bridge token hash: %w", err)
+	}
+	return plaintext, nil
+}
+
+// GenerateAgentMCPKey issues a new MCP API key for an ACP-type agent,
+// replacing any existing one, and returns the plaintext once — only its
+// SHA-256 hash is persisted. Overwriting the hash means the previous key
+// stops authenticating immediately (see AgentRepository.SetMCPAPIKeyHash).
+func (s *Service) GenerateAgentMCPKey(ctx context.Context, projectID, agentID uuid.UUID) (string, error) {
+	a, err := s.GetAgent(ctx, projectID, agentID)
+	if err != nil {
+		return "", err
+	}
+	if a.AgentType != agentdom.AgentTypeACP {
+		return "", agentdom.ErrAgentTypeInvalid
+	}
+	plaintext, hash, err := generateHashedSecret()
+	if err != nil {
+		return "", fmt.Errorf("generate MCP API key: %w", err)
+	}
+	if err := s.repo.SetMCPAPIKeyHash(ctx, agentID, hash); err != nil {
+		return "", fmt.Errorf("store MCP API key hash: %w", err)
+	}
+	return plaintext, nil
+}
+
+// GenerateGlobalAgentMCPKey is GenerateAgentMCPKey's global-agent sibling —
+// ownership verified via GetGlobalAgent instead of a projectID match.
+func (s *Service) GenerateGlobalAgentMCPKey(ctx context.Context, agentID uuid.UUID) (string, error) {
+	a, err := s.GetGlobalAgent(ctx, agentID)
+	if err != nil {
+		return "", err
+	}
+	if a.AgentType != agentdom.AgentTypeACP {
+		return "", agentdom.ErrAgentTypeInvalid
+	}
+	plaintext, hash, err := generateHashedSecret()
+	if err != nil {
+		return "", fmt.Errorf("generate MCP API key: %w", err)
+	}
+	if err := s.repo.SetMCPAPIKeyHash(ctx, agentID, hash); err != nil {
+		return "", fmt.Errorf("store MCP API key hash: %w", err)
+	}
+	return plaintext, nil
+}
+
+// VerifyCLILogin probes whether a provider_cli agent's underlying CLI is
+// currently authenticated inside its default environment (each CLI's own
+// real status subcommand where one is confirmed to exist, a file-existence
+// guess only as a last resort — see environmentdom.Service.VerifyCLIAuth's
+// doc comment), and, on success, persists the verification timestamp via
+// SetCLILoginVerifiedAt. Returns ErrAgentNotProviderCLI for any other
+// agent_type, and ErrDefaultEnvironmentRequiredForCLIProvider if somehow
+// called on a provider_cli agent with no default environment (shouldn't
+// happen — CreateAgent/UpdateAgent both enforce one — but checked
+// defensively rather than assumed).
+func (s *Service) VerifyCLILogin(ctx context.Context, projectID, agentID uuid.UUID) (bool, error) {
+	a, err := s.GetAgent(ctx, projectID, agentID)
+	if err != nil {
+		return false, err
+	}
+	if a.AgentType != agentdom.AgentTypeProviderCLI {
+		return false, agentdom.ErrAgentNotProviderCLI
+	}
+	if a.DefaultEnvironmentID == nil || a.CLIProvider == nil {
+		return false, agentdom.ErrDefaultEnvironmentRequiredForCLIProvider
+	}
+	if s.environmentSvc == nil {
+		return false, fmt.Errorf("environment service not configured")
+	}
+	authenticated, err := s.environmentSvc.VerifyCLIAuth(ctx, projectID, *a.DefaultEnvironmentID, *a.CLIProvider)
+	if err != nil {
+		return false, err
+	}
+	if authenticated {
+		if err := s.repo.SetCLILoginVerifiedAt(ctx, agentID, time.Now()); err != nil {
+			return false, err
+		}
+	}
+	return authenticated, nil
+}
+
+// ErrAvatarServiceRequired indicates a missing AvatarService dependency when
+// an avatar-upload path is invoked.
+var ErrAvatarServiceRequired = errors.New("agent svc: avatar service required")
+
+// InitiateAvatarUpload starts an avatar upload for a project-scoped agent.
+func (s *Service) InitiateAvatarUpload(ctx context.Context, projectID, agentID uuid.UUID, fileName, contentType string, fileSize int64, uploadedBy uuid.UUID) (*attachmentdom.UploadSession, error) {
+	if s.avatarSvc == nil {
+		return nil, ErrAvatarServiceRequired
+	}
+	if _, err := s.GetAgent(ctx, projectID, agentID); err != nil {
+		return nil, err
+	}
+	return s.avatarSvc.InitiateAvatarUpload(ctx, attachmentdom.AvatarUploadInput{
+		OwnerKind:   attachmentdom.AvatarOwnerAgent,
+		OwnerID:     agentID,
+		FileName:    fileName,
+		ContentType: contentType,
+		FileSize:    fileSize,
+		UploadedBy:  uploadedBy,
+	})
+}
+
+// CompleteAvatarUpload finishes an avatar upload for a project-scoped agent.
+func (s *Service) CompleteAvatarUpload(ctx context.Context, projectID, agentID, fileID uuid.UUID) (*agentdom.Agent, error) {
+	a, err := s.GetAgent(ctx, projectID, agentID)
+	if err != nil {
+		return nil, err
+	}
+	return s.completeAvatarUpload(ctx, a, fileID)
+}
+
+// RemoveAvatar clears a project-scoped agent's avatar.
+func (s *Service) RemoveAvatar(ctx context.Context, projectID, agentID uuid.UUID) (*agentdom.Agent, error) {
+	a, err := s.GetAgent(ctx, projectID, agentID)
+	if err != nil {
+		return nil, err
+	}
+	return s.removeAvatar(ctx, a)
+}
+
+// InitiateGlobalAvatarUpload is InitiateAvatarUpload's global-agent sibling.
+func (s *Service) InitiateGlobalAvatarUpload(ctx context.Context, agentID uuid.UUID, fileName, contentType string, fileSize int64, uploadedBy uuid.UUID) (*attachmentdom.UploadSession, error) {
+	if s.avatarSvc == nil {
+		return nil, ErrAvatarServiceRequired
+	}
+	if _, err := s.GetGlobalAgent(ctx, agentID); err != nil {
+		return nil, err
+	}
+	return s.avatarSvc.InitiateAvatarUpload(ctx, attachmentdom.AvatarUploadInput{
+		OwnerKind:   attachmentdom.AvatarOwnerAgent,
+		OwnerID:     agentID,
+		FileName:    fileName,
+		ContentType: contentType,
+		FileSize:    fileSize,
+		UploadedBy:  uploadedBy,
+	})
+}
+
+// CompleteGlobalAvatarUpload is CompleteAvatarUpload's global-agent sibling.
+func (s *Service) CompleteGlobalAvatarUpload(ctx context.Context, agentID, fileID uuid.UUID) (*agentdom.Agent, error) {
+	a, err := s.GetGlobalAgent(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+	return s.completeAvatarUpload(ctx, a, fileID)
+}
+
+// RemoveGlobalAvatar is RemoveAvatar's global-agent sibling.
+func (s *Service) RemoveGlobalAvatar(ctx context.Context, agentID uuid.UUID) (*agentdom.Agent, error) {
+	a, err := s.GetGlobalAgent(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+	return s.removeAvatar(ctx, a)
+}
+
+// completeAvatarUpload is the shared tail of CompleteAvatarUpload and
+// CompleteGlobalAvatarUpload once the agent has been loaded and its scope
+// verified by the caller.
+func (s *Service) completeAvatarUpload(ctx context.Context, a *agentdom.Agent, fileID uuid.UUID) (*agentdom.Agent, error) {
+	if s.avatarSvc == nil {
+		return nil, ErrAvatarServiceRequired
+	}
+	keys, err := s.avatarSvc.CompleteAvatarUpload(ctx, attachmentdom.AvatarCompleteInput{
+		OwnerKind: attachmentdom.AvatarOwnerAgent,
+		OwnerID:   a.ID,
+		FileID:    fileID,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	oldKey, oldThumbKey := a.AvatarKey, a.AvatarThumbKey
+	a.AvatarKey = &keys.Key
+	a.AvatarThumbKey = &keys.ThumbKey
+	if err := s.repo.UpdateAgent(ctx, a); err != nil {
+		return nil, err
+	}
+
+	s.avatarSvc.DeleteAvatarObjects(ctx, oldKey, oldThumbKey)
+	return a, nil
+}
+
+// removeAvatar is the shared tail of RemoveAvatar and RemoveGlobalAvatar
+// once the agent has been loaded and its scope verified by the caller.
+func (s *Service) removeAvatar(ctx context.Context, a *agentdom.Agent) (*agentdom.Agent, error) {
+	if s.avatarSvc == nil {
+		return nil, ErrAvatarServiceRequired
+	}
+	oldKey, oldThumbKey := a.AvatarKey, a.AvatarThumbKey
+	if oldKey == nil && oldThumbKey == nil {
+		return a, nil
+	}
+	a.AvatarKey = nil
+	a.AvatarThumbKey = nil
+	if err := s.repo.UpdateAgent(ctx, a); err != nil {
+		return nil, err
+	}
+
+	s.avatarSvc.DeleteAvatarObjects(ctx, oldKey, oldThumbKey)
+	return a, nil
+}
+
+// requireGooseManagedAgent rejects MCP server / skill / environment
+// variable mutations targeting an ACP-type agent (renamed from
+// requireNonACPAgent — the name now reflects what it actually permits, not
+// just what it excludes). ACP agents run entirely in the user's own local
+// CLI via paca-acp-bridge; services/ai-agent's acp_dispatch.py never reads
+// any of these tables when dispatching an ACP turn, so accepting the write
+// here would silently no-op rather than have any effect — better to reject
+// it outright.
+//
+// llm and provider_cli agents both pass this check, deliberately: an llm
+// agent's skills/MCP servers are read by Goose's own native discovery;
+// a provider_cli agent's are instead synced into the underlying CLI's own
+// config files on every conversation attach (see
+// docs/ai-agent/overview.md's provider_cli section) — Paca-side storage and
+// the create/update/delete API are identical for both types, only the
+// *consumer* of that configuration differs at execution time.
+//
+// Read (List*) operations are left permissive for every type since
+// returning an empty list is harmless.
+func (s *Service) requireGooseManagedAgent(ctx context.Context, agentID uuid.UUID) error {
+	agent, err := s.repo.FindAgentByID(ctx, agentID)
+	if err != nil {
+		return err
+	}
+	if agent.AgentType == agentdom.AgentTypeACP {
+		return agentdom.ErrNotSupportedForACPAgent
+	}
+	return nil
+}
+
+// -------------------------------------------------------------------------
+// Access grants — see agentdom.AgentAccessGrantService's doc comment.
+// -------------------------------------------------------------------------
+
+// HasAgentUsageAccess reports whether memberID may use agentID — see
+// agentdom.AgentAccessGrantService.HasAgentUsageAccess.
+func (s *Service) HasAgentUsageAccess(ctx context.Context, projectID, agentID, memberID uuid.UUID) (bool, error) {
+	agent, err := s.repo.FindVisibleAgentInProject(ctx, projectID, agentID)
+	if err != nil {
+		return false, err
+	}
+	return s.hasAgentUsageAccess(ctx, agent, memberID)
+}
+
+// hasAgentUsageAccess is the internal check reused wherever the caller
+// already has the *Agent in hand (avoids a redundant lookup) —
+// authorizeConversationAccess and the chat-session methods below both go
+// through this rather than the public HasAgentUsageAccess.
+//
+// memberID == uuid.Nil means there is no human actor to check a grant
+// against — treated as access-not-applicable rather than access-denied.
+// Two distinct kinds of caller reach here with a nil memberID:
+// authorizeAgentConversationRead's system-triggered branch
+// (current.ChatSessionID == nil, read via GetConversationForAgent — the
+// backend path behind the MCP server's read_conversation tool), passing it
+// through to authorizeConversationAccess as a sentinel for "no specific
+// member, shared audience only" — a rule that predates access grants and
+// still needs to hold; and authorizeConversationTrigger, when called from
+// TriggerTaskAssigned's automation-workflow branch or TriggerDirectMessage
+// ("there's no human actor behind an automation firing" — see those
+// functions' own doc comments) — the automation's own author already
+// needed permission to configure a rule against this agent, so a
+// restricted agent shouldn't block every unattended run against it. Every
+// human-facing caller (GetConversation via ConversationHandler.
+// resolveMemberID, StartChatSession, ListChatSessions, SendChatMessage,
+// and the always-resolved-actor triggers TriggerCommentMention/
+// TriggerDescriptionWrite) resolves memberID from a real project_members
+// row first and errors out before calling this far, so this can never be
+// used to bypass a grant on a human's behalf.
+func (s *Service) hasAgentUsageAccess(ctx context.Context, agent *agentdom.Agent, memberID uuid.UUID) (bool, error) {
+	if agent.AccessMode != agentdom.AccessModeRestricted || memberID == uuid.Nil {
+		return true, nil
+	}
+	return s.repo.HasAgentAccessGrant(ctx, agent.ID, memberID)
+}
+
+// ListAgentAccessGrants returns every member explicitly granted access to a
+// restricted agent (regardless of its current access_mode — see the
+// repository method's doc comment).
+func (s *Service) ListAgentAccessGrants(ctx context.Context, projectID, agentID uuid.UUID) ([]*agentdom.AgentAccessGrant, error) {
+	agent, err := s.repo.FindVisibleAgentInProject(ctx, projectID, agentID)
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.ListAgentAccessGrants(ctx, agent.ID)
+}
+
+// AddAgentAccessGrant grants memberID access to a restricted agent.
+func (s *Service) AddAgentAccessGrant(ctx context.Context, projectID, agentID, memberID uuid.UUID, grantedBy *uuid.UUID) (*agentdom.AgentAccessGrant, error) {
+	agent, err := s.repo.FindVisibleAgentInProject(ctx, projectID, agentID)
+	if err != nil {
+		return nil, err
+	}
+	g := &agentdom.AgentAccessGrant{
+		ID:        uuid.New(),
+		AgentID:   agent.ID,
+		MemberID:  memberID,
+		GrantedBy: grantedBy,
+		CreatedAt: time.Now(),
+	}
+	if err := s.repo.AddAgentAccessGrant(ctx, g); err != nil {
+		return nil, err
+	}
+	return g, nil
+}
+
+// RemoveAgentAccessGrant revokes memberID's access to a restricted agent. A
+// no-op if memberID had no grant.
+func (s *Service) RemoveAgentAccessGrant(ctx context.Context, projectID, agentID, memberID uuid.UUID) error {
+	agent, err := s.repo.FindVisibleAgentInProject(ctx, projectID, agentID)
+	if err != nil {
+		return err
+	}
+	return s.repo.RemoveAgentAccessGrant(ctx, agent.ID, memberID)
+}
+
+// ListGrantedAgentIDsForMember returns every restricted agent memberID
+// currently holds a grant for.
+func (s *Service) ListGrantedAgentIDsForMember(ctx context.Context, memberID uuid.UUID) ([]uuid.UUID, error) {
+	return s.repo.ListGrantedAgentIDsForMember(ctx, memberID)
 }
 
 // -------------------------------------------------------------------------
@@ -276,6 +1380,9 @@ func (s *Service) ListMCPServers(ctx context.Context, agentID uuid.UUID) ([]*age
 func (s *Service) AddMCPServer(ctx context.Context, agentID uuid.UUID, in agentdom.AddMCPServerInput) (*agentdom.AgentMCPServer, error) {
 	if in.Transport == "stdio" && (in.Command == nil || *in.Command == "") {
 		return nil, agentdom.ErrMCPServerCommandRequired
+	}
+	if err := s.requireGooseManagedAgent(ctx, agentID); err != nil {
+		return nil, err
 	}
 
 	now := time.Now()
@@ -313,6 +1420,9 @@ func (s *Service) UpdateMCPServer(ctx context.Context, agentID, serverID uuid.UU
 	if srv.AgentID != agentID {
 		return nil, agentdom.ErrMCPServerNotFound
 	}
+	if err := s.requireGooseManagedAgent(ctx, agentID); err != nil {
+		return nil, err
+	}
 	if in.Command != nil {
 		srv.Command = in.Command
 	}
@@ -344,12 +1454,32 @@ func (s *Service) DeleteMCPServer(ctx context.Context, agentID, serverID uuid.UU
 	if srv.AgentID != agentID {
 		return agentdom.ErrMCPServerNotFound
 	}
+	if err := s.requireGooseManagedAgent(ctx, agentID); err != nil {
+		return err
+	}
 	return s.repo.DeleteMCPServer(ctx, serverID)
 }
 
 // -------------------------------------------------------------------------
 // Skills
 // -------------------------------------------------------------------------
+
+// validateSkillName rejects a skill name that would let the on-disk
+// SKILL.md path built from it — executor/skills.go's buildSkillsTar
+// (skillsRelDir + "/" + name + "/SKILL.md") on the agent-runner side, and
+// providercli's claude_code.go SyncFiles (.claude/skills/<name>/SKILL.md)
+// for a provider_cli agent — escape the skills directory it's meant to
+// land in. Neither writer sanitizes or validates name itself (see their
+// own doc comments), so this is the one place in the stack that does.
+func validateSkillName(name string) error {
+	if agentdom.IsReservedSkillName(name) {
+		return agentdom.ErrSkillNameReserved
+	}
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\") {
+		return agentdom.ErrSkillNameInvalid
+	}
+	return nil
+}
 
 // ListSkills returns all skills for the given agent.
 func (s *Service) ListSkills(ctx context.Context, agentID uuid.UUID) ([]*agentdom.AgentSkill, error) {
@@ -358,11 +1488,18 @@ func (s *Service) ListSkills(ctx context.Context, agentID uuid.UUID) ([]*agentdo
 
 // AddSkill creates a new skill for the given agent.
 func (s *Service) AddSkill(ctx context.Context, agentID uuid.UUID, in agentdom.AddSkillInput) (*agentdom.AgentSkill, error) {
+	name := strings.TrimSpace(in.SkillName)
+	if err := validateSkillName(name); err != nil {
+		return nil, err
+	}
+	if err := s.requireGooseManagedAgent(ctx, agentID); err != nil {
+		return nil, err
+	}
 	now := time.Now()
 	skill := &agentdom.AgentSkill{
 		ID:           uuid.New(),
 		AgentID:      agentID,
-		SkillName:    strings.TrimSpace(in.SkillName),
+		SkillName:    name,
 		SkillSource:  in.SkillSource,
 		SkillContent: in.SkillContent,
 		SourceURL:    in.SourceURL,
@@ -389,6 +1526,9 @@ func (s *Service) UpdateSkill(ctx context.Context, agentID, skillID uuid.UUID, i
 	if skill.AgentID != agentID {
 		return nil, agentdom.ErrSkillNotFound
 	}
+	if err := s.requireGooseManagedAgent(ctx, agentID); err != nil {
+		return nil, err
+	}
 	if in.SkillContent != nil {
 		skill.SkillContent = *in.SkillContent
 	}
@@ -413,6 +1553,9 @@ func (s *Service) DeleteSkill(ctx context.Context, agentID, skillID uuid.UUID) e
 	}
 	if skill.AgentID != agentID {
 		return agentdom.ErrSkillNotFound
+	}
+	if err := s.requireGooseManagedAgent(ctx, agentID); err != nil {
+		return err
 	}
 	return s.repo.DeleteSkill(ctx, skillID)
 }
@@ -465,6 +1608,9 @@ func (s *Service) AddEnvVar(ctx context.Context, agentID uuid.UUID, in agentdom.
 	if err := validateEnvVarKey(key); err != nil {
 		return nil, err
 	}
+	if err := s.requireGooseManagedAgent(ctx, agentID); err != nil {
+		return nil, err
+	}
 	if existing, err := s.repo.FindEnvVarByKey(ctx, agentID, key); err == nil && existing != nil {
 		return nil, agentdom.ErrEnvVarKeyTaken
 	}
@@ -496,6 +1642,9 @@ func (s *Service) UpdateEnvVar(ctx context.Context, agentID, envVarID uuid.UUID,
 	if v.AgentID != agentID {
 		return nil, agentdom.ErrEnvVarNotFound
 	}
+	if err := s.requireGooseManagedAgent(ctx, agentID); err != nil {
+		return nil, err
+	}
 	encryptedValue, err := s.encryptKey(in.Value)
 	if err != nil {
 		return nil, fmt.Errorf("encrypt environment variable value: %w", err)
@@ -517,6 +1666,9 @@ func (s *Service) DeleteEnvVar(ctx context.Context, agentID, envVarID uuid.UUID)
 	if v.AgentID != agentID {
 		return agentdom.ErrEnvVarNotFound
 	}
+	if err := s.requireGooseManagedAgent(ctx, agentID); err != nil {
+		return err
+	}
 	return s.repo.DeleteEnvVar(ctx, envVarID)
 }
 
@@ -524,61 +1676,709 @@ func (s *Service) DeleteEnvVar(ctx context.Context, agentID, envVarID uuid.UUID)
 // Conversations
 // -------------------------------------------------------------------------
 
-// ListConversations returns a paginated list of conversations matching the filter.
-func (s *Service) ListConversations(ctx context.Context, in agentdom.ListConversationsFilter) ([]*agentdom.AgentConversation, int64, error) {
-	return s.repo.ListConversations(ctx, in)
+// ListConversations returns a page of conversations matching the filter.
+func (s *Service) ListConversations(ctx context.Context, in agentdom.ListConversationsFilter, limit int) ([]*agentdom.AgentConversation, bool, error) {
+	return s.repo.ListConversations(ctx, in, limit)
 }
 
-// GetConversation returns a single conversation after verifying project ownership.
-func (s *Service) GetConversation(ctx context.Context, projectID, conversationID uuid.UUID) (*agentdom.AgentConversation, error) {
+// GetConversation returns a single conversation after verifying project
+// ownership and, for owner-private conversations, chat-session ownership.
+func (s *Service) GetConversation(ctx context.Context, projectID, conversationID, memberID uuid.UUID) (*agentdom.AgentConversation, error) {
 	c, err := s.repo.FindConversationByID(ctx, conversationID)
 	if err != nil {
 		return nil, err
 	}
+	// A soft-deleted conversation is gone as far as any user-facing read is
+	// concerned — see SoftDeleteConversation's doc comment for why the
+	// underlying row is kept instead of hard-deleted. Deliberately checked
+	// here (not by filtering FindConversationByID's own SQL), since
+	// worker.AgentQueueConsumer's internal lookup on that same method must
+	// keep resolving a just-deleted row.
+	if c.DeletedAt != nil {
+		return nil, agentdom.ErrConversationNotFound
+	}
 	if c.ProjectID != projectID {
 		return nil, agentdom.ErrConversationNotFound
+	}
+	if err := s.authorizeConversationAccess(ctx, c, memberID); err != nil {
+		return nil, err
 	}
 	return c, nil
 }
 
-// ListConversationEvents returns a paginated list of events for a conversation.
-func (s *Service) ListConversationEvents(ctx context.Context, conversationID uuid.UUID, offset, limit int) ([]*agentdom.AgentConversationEvent, int64, error) {
-	return s.repo.ListConversationEvents(ctx, conversationID, offset, limit)
+// GetConversationForAgent implements agentdom.Service.GetConversationForAgent
+// — see its doc comment for the full authorization rule and why bare agent-
+// identity matching isn't sufficient on its own. Also requires the calling
+// agent to hold conversations.read (see
+// authorizeConversationsReadForConversation) to read any conversation other
+// than the one it's currently running as part of — see the same-conversation
+// shortcut below for why that one case is exempt.
+func (s *Service) GetConversationForAgent(ctx context.Context, conversationID, callerAgentID, currentConversationID uuid.UUID) (*agentdom.AgentConversation, error) {
+	target, err := s.repo.FindConversationByID(ctx, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	if target.AgentID != callerAgentID {
+		return nil, agentdom.ErrConversationNotFound
+	}
+	// Always allowed, regardless of conversations.read: an agent may read
+	// the conversation it's currently running as part of — it already has
+	// this data as that conversation's own active participant, so gating it
+	// on a permission grant adds no protection while breaking the common
+	// case of a global-scope agent with no global role (conversations.read
+	// is backfilled onto project_roles, not global_roles — see
+	// 000051_add_conversation_permissions.sql — and a global agent's own
+	// global role is optional, commonly left unset). Also short-circuits
+	// the common case (no other conversation was attached) without a
+	// second lookup.
+	if target.ID == currentConversationID {
+		// DeletedAt deliberately NOT checked here: a user can delete the
+		// conversation this very agent is mid-turn on (auto-stop-then-delete
+		// soft-deletes immediately; agent-runner's own teardown is
+		// asynchronous), and the agent must still be able to read its own
+		// live execution context for the remainder of that turn rather than
+		// erroring out from under itself the instant the delete lands.
+		return target, nil
+	}
+	// A deleted conversation is not-found for any *other* conversation this
+	// agent asks to read — same treatment GetConversation/GetGlobalConversation
+	// give a human caller. Checked only in this cross-conversation branch,
+	// not the same-conversation shortcut above.
+	if target.DeletedAt != nil {
+		return nil, agentdom.ErrConversationNotFound
+	}
+	if err := s.authorizeConversationsReadForConversation(ctx, callerAgentID, target); err != nil {
+		return nil, err
+	}
+
+	// Anything else must be authorized against whichever human is driving
+	// currentConversationID, not against callerAgentID alone — see
+	// authorizeAgentConversationRead.
+	current, err := s.repo.FindConversationByID(ctx, currentConversationID)
+	if err != nil || current.AgentID != callerAgentID {
+		// currentConversationID is missing, unverifiable, or (if ever
+		// spoofed) doesn't even belong to this agent — there is no trusted
+		// context to check the target against, so fail closed rather than
+		// falling back to bare agent-identity matching.
+		return nil, agentdom.ErrConversationNotFound
+	}
+	if err := s.authorizeAgentConversationRead(ctx, current, target); err != nil {
+		return nil, err
+	}
+	return target, nil
 }
 
-// StopConversation stops a conversation that is not already finished.
-func (s *Service) StopConversation(ctx context.Context, projectID, conversationID uuid.UUID) error {
-	c, err := s.GetConversation(ctx, projectID, conversationID)
+// authorizeConversationsReadForConversation reports whether callerAgentID
+// holds conversations.read for the scope conv belongs to: its own global
+// role, or (for a project-scoped conversation) its role in that specific
+// project — an OR. This is the sole enforcement point for read_conversation;
+// the MCP server lists that tool unconditionally and lets a disallowed call
+// come back from here as a 403 rather than pre-filtering the tool list by a
+// separately-fetched permission snapshot. Skipped (always allowed) when
+// s.authorizer is nil — see that field's doc comment.
+func (s *Service) authorizeConversationsReadForConversation(ctx context.Context, callerAgentID uuid.UUID, conv *agentdom.AgentConversation) error {
+	if s.authorizer == nil {
+		return nil
+	}
+	globalOK, err := s.authorizer.HasGlobalPermissionsForAgent(ctx, callerAgentID, authz.PermissionConversationsRead)
+	if err != nil {
+		return fmt.Errorf("authz: check agent global conversations.read: %w", err)
+	}
+	if globalOK {
+		return nil
+	}
+	if conv.ProjectID != uuid.Nil {
+		projectOK, err := s.authorizer.HasPermissionsForAgent(ctx, callerAgentID, conv.ProjectID, authz.PermissionConversationsRead)
+		if err != nil {
+			return fmt.Errorf("authz: check agent project conversations.read: %w", err)
+		}
+		if projectOK {
+			return nil
+		}
+	}
+	return agentdom.ErrConversationNotFound
+}
+
+// authorizeAgentConversationRead lets an agent read `target` on behalf of
+// `current` — the conversation actually driving this MCP call — only when
+// the human associated with `current` could already reach `target` by
+// asking for it directly, mirroring authorizeConversationAccess (project-
+// scoped) and GetGlobalConversation (global) exactly rather than
+// re-deriving a separate, easier-to-get-wrong rule:
+//   - global (current.ProjectID is nil): target must also be global and
+//     share the same actor_user_id — GetGlobalConversation's own rule.
+//   - project-scoped: target must be in the same project, and either
+//     project_shared (visible to any project member already) or
+//     owner-private to the same chat-session member current belongs to —
+//     authorizeConversationAccess's rule, reused via current's own chat
+//     session so a human never needs to be threaded through explicitly.
+func (s *Service) authorizeAgentConversationRead(ctx context.Context, current, target *agentdom.AgentConversation) error {
+	if current.ProjectID == uuid.Nil {
+		if target.ProjectID != uuid.Nil ||
+			current.ActorUserID == nil || target.ActorUserID == nil ||
+			*target.ActorUserID != *current.ActorUserID {
+			return agentdom.ErrConversationNotFound
+		}
+		return nil
+	}
+
+	if target.ProjectID != current.ProjectID {
+		return agentdom.ErrConversationNotFound
+	}
+	if current.ChatSessionID == nil {
+		// current isn't chat-session-backed (e.g. a task-assigned or
+		// automation-triggered run) — there is no "human currently
+		// chatting" to authorize target's owner-private audience against,
+		// so only its already-project-wide-visible audience is reachable.
+		return s.authorizeConversationAccess(ctx, target, uuid.Nil)
+	}
+	session, err := s.repo.FindChatSessionByID(ctx, *current.ChatSessionID)
+	if err != nil {
+		return agentdom.ErrConversationNotFound
+	}
+	return s.authorizeConversationAccess(ctx, target, session.MemberID)
+}
+
+// authorizeConversationAccess fails closed (ErrConversationNotFound) when a
+// project-scoped owner-private conversation is not owned by memberID.
+// project-shared conversations are readable by any project member, whose
+// membership is already enforced by the router's project-scope middleware.
+//
+// Also fails closed when c's agent is restricted and memberID holds no
+// grant for it — checked unconditionally, before the audience check below,
+// since a project-shared conversation (task_assigned, automation) is
+// exactly the kind of conversation a restricted agent's non-owner audience
+// needs covering too. Without this, the per-conversation gate
+// StartChatSession/ListChatSessions apply when *starting* a conversation
+// with a restricted agent would be trivially bypassed by reading an
+// already-existing one through GetConversation instead (or, transitively,
+// StopConversation/PauseConversation/Heartbeat/SendConversationMessage,
+// which all resolve their conversation through GetConversation or this
+// method directly). Deliberately reuses ErrConversationNotFound rather than
+// the more specific ErrAgentAccessRestricted, matching this function's own
+// existing fail-closed style for the owner-private case below — this path
+// is reached for an *existing* conversation a caller is trying to read
+// indirectly, not a direct "can I use this agent" query, so it shouldn't
+// reveal anything StartChatSession's own ErrAgentAccessRestricted doesn't
+// already say more directly. A memberID of uuid.Nil (the no-chat-session
+// branch in authorizeAgentConversationRead, where there's no human context
+// to check a grant against) passes the hasAgentUsageAccess call above
+// unconditionally — nil is an intentional bypass there, by design, not a
+// failure (see that function's own doc comment). What actually protects an
+// owner-private conversation from a nil caller is the session-ownership
+// comparison below: session.MemberID is always a real project_members.id,
+// which uuid.Nil can never equal, so it still fails closed there if such a
+// caller ever reached one.
+func (s *Service) authorizeConversationAccess(ctx context.Context, c *agentdom.AgentConversation, memberID uuid.UUID) error {
+	agent, err := s.repo.FindAgentByID(ctx, c.AgentID)
 	if err != nil {
 		return err
 	}
-	if c.Status == "finished" || c.Status == "stopped" || c.Status == "failed" {
-		return agentdom.ErrConversationAlreadyStopped
+	if ok, err := s.hasAgentUsageAccess(ctx, agent, memberID); err != nil {
+		return err
+	} else if !ok {
+		return agentdom.ErrConversationNotFound
 	}
-	if err := s.repo.UpdateConversationStatus(ctx, conversationID, "stopped"); err != nil {
+
+	if c.Audience != agentdom.AudienceOwnerPrivate {
+		return nil
+	}
+	// A project-scoped owner-private conversation is always session-backed
+	// (global chat has project_id IS NULL and never reaches this path), so the
+	// owner is the chat session's member, not triggered_by_member_id (which a
+	// pre-fix cross-member send could have pointed at a different member).
+	if c.ChatSessionID == nil {
+		return agentdom.ErrConversationNotFound
+	}
+	session, err := s.repo.FindChatSessionByID(ctx, *c.ChatSessionID)
+	if err != nil || session.MemberID != memberID {
+		return agentdom.ErrConversationNotFound
+	}
+	return nil
+}
+
+// ListConversationEvents returns one keyset-paginated window of events for a
+// conversation (see agentdom.ConversationEventWindow), plus its total count.
+func (s *Service) ListConversationEvents(ctx context.Context, conversationID uuid.UUID, window agentdom.ConversationEventWindow) ([]*agentdom.AgentConversationEvent, int64, error) {
+	return s.repo.ListConversationEvents(ctx, conversationID, window)
+}
+
+// StopConversation stops a conversation that is not already finished.
+//
+// Unlike every other terminal-status transition (finished/failed, and a
+// paused-chat "stopped"), this one is decided and written here rather than
+// by ai-agent's own turn-end logic — ai-agent's _post_turn_status
+// deliberately no-ops on a full-teardown stop since this call already owns
+// the write. That means this is also the only place that can durably notify
+// worker.AutomationConsumer (via StreamAgentConversationStatus) that a
+// trigger_ai_agent-started conversation it might be waiting on just reached
+// a terminal status — ai-agent has no turn-end hook to do it from here,
+// since the stop can land while no turn is even in flight.
+func (s *Service) StopConversation(ctx context.Context, projectID, conversationID, memberID uuid.UUID) error {
+	c, err := s.GetConversation(ctx, projectID, conversationID, memberID)
+	if err != nil {
 		return err
 	}
-	return s.publishTrigger(ctx, events.TopicAgentStop, map[string]any{
+	return s.stopConversation(ctx, c, projectID)
+}
+
+// stopConversation is StopConversation/StopGlobalConversation's shared
+// body, factored out so DeleteConversation/DeleteGlobalConversation's
+// auto-stop-then-delete step (a still-active conversation is stopped first,
+// then deleted, as one user-facing action) can reuse it against an
+// already-fetched/authorized c instead of re-running GetConversation.
+// projectID is uuid.Nil for a global conversation — StopGlobalConversation's
+// stop-trigger payload never carried a project_id key, unlike
+// StopConversation's, which always did.
+func (s *Service) stopConversation(ctx context.Context, c *agentdom.AgentConversation, projectID uuid.UUID) error {
+	if agentdom.ConversationStatus(c.Status).IsTerminal() {
+		return agentdom.ErrConversationAlreadyStopped
+	}
+	if err := s.repo.UpdateConversationStatus(ctx, c.ID, string(agentdom.ConversationStatusStopped)); err != nil {
+		return err
+	}
+	// If this conversation was still sitting in the parallelism backlog
+	// (agent_pending_triggers — see PendingTrigger's doc comment), remove
+	// its row so AdvanceQueue can never dequeue and dispatch it after it's
+	// already been marked stopped. wasQueued is false when it had already
+	// been dispatched (no pending-trigger row to begin with) — agent-runner
+	// was never told about a conversation this never reached, so there's
+	// nothing there to interrupt.
+	wasQueued, _ := s.repo.DeletePendingTriggerByConversationID(ctx, c.ID)
+	// Best-effort: a failure here shouldn't fail the stop itself (the
+	// conversation is already marked stopped and agent-runner is about to
+	// be told to tear it down) — same posture as
+	// sprintsvc.publishSprintActivity. A graph walk genuinely left waiting
+	// on this conversation stays paused until the automation is
+	// edited/deactivated; there's no separate timeout/reaper for a pending
+	// wait today.
+	_ = s.publisher.AppendFlat(ctx, events.StreamAgentConversationStatus, map[string]any{
+		"conversation_id": c.ID.String(),
+		"status":          string(agentdom.ConversationStatusStopped),
+	})
+	if wasQueued {
+		return nil
+	}
+	payload := map[string]any{"conversation_id": c.ID.String()}
+	if projectID != uuid.Nil {
+		payload["project_id"] = projectID.String()
+	}
+	return s.publishTrigger(ctx, events.TopicAgentStop, payload)
+}
+
+// UpdateConversationTitle implements agentdom.Service.UpdateConversationTitle.
+func (s *Service) UpdateConversationTitle(ctx context.Context, projectID, conversationID, memberID uuid.UUID, title string) (*agentdom.AgentConversation, error) {
+	if _, err := s.GetConversation(ctx, projectID, conversationID, memberID); err != nil {
+		return nil, err
+	}
+	if err := s.repo.UpdateConversationTitle(ctx, conversationID, title); err != nil {
+		return nil, err
+	}
+	return s.repo.FindConversationByID(ctx, conversationID)
+}
+
+// DeleteConversation implements agentdom.Service.DeleteConversation.
+func (s *Service) DeleteConversation(ctx context.Context, projectID, conversationID, memberID uuid.UUID) error {
+	c, err := s.GetConversation(ctx, projectID, conversationID, memberID)
+	if err != nil {
+		return err
+	}
+	if !agentdom.ConversationStatus(c.Status).IsTerminal() {
+		if err := s.stopConversation(ctx, c, projectID); err != nil {
+			return err
+		}
+	}
+	return s.repo.SoftDeleteConversation(ctx, conversationID)
+}
+
+// PauseConversation interrupts a conversation's in-flight turn without
+// touching its sandbox — it goes back to "paused" once ai-agent processes
+// the interrupt. No DB write here: ai-agent's run_conversation writes the
+// resulting status itself once the turn actually pauses.
+func (s *Service) PauseConversation(ctx context.Context, projectID, conversationID, memberID uuid.UUID) error {
+	c, err := s.GetConversation(ctx, projectID, conversationID, memberID)
+	if err != nil {
+		return err
+	}
+	if agentdom.ConversationStatus(c.Status) != agentdom.ConversationStatusRunning {
+		return agentdom.ErrConversationNotRunning
+	}
+	return s.publishTrigger(ctx, events.TopicAgentPause, map[string]any{
+		"conversation_id": conversationID.String(),
+		"project_id":      projectID.String(),
+	})
+}
+
+// Heartbeat refreshes a chat conversation's idle timer. Fires on a ~30s
+// interval per open browser tab (see apps/web) — deliberately does not touch
+// Postgres; ai-agent cross-checks project_id in-memory before honoring it
+// (see worker._handle_control in services/ai-agent). GetConversation is
+// still called here so the API layer itself enforces project ownership,
+// rather than resting the whole authorization boundary on ai-agent's
+// in-memory check.
+func (s *Service) Heartbeat(ctx context.Context, projectID, conversationID, memberID uuid.UUID) error {
+	if _, err := s.GetConversation(ctx, projectID, conversationID, memberID); err != nil {
+		return err
+	}
+	return s.publishTrigger(ctx, events.TopicAgentHeartbeat, map[string]any{
 		"conversation_id": conversationID.String(),
 		"project_id":      projectID.String(),
 	})
 }
 
 // SendConversationMessage publishes a chat message to an active conversation.
-func (s *Service) SendConversationMessage(ctx context.Context, projectID, conversationID uuid.UUID, message string, memberID uuid.UUID) error {
-	c, err := s.GetConversation(ctx, projectID, conversationID)
+//
+// ACP-type agents, and any conversation attached to a static environment,
+// route through resumeConversationMessage instead: unlike an ordinary LLM
+// agent's ephemeral sandbox (where a follow-up message only ever makes
+// sense while a turn is actually running — its sandbox is gone for good
+// once the turn ends), an ACP agent's local bridge daemon keeps a
+// conversation alive by conversation_id regardless of which trigger type
+// started it (task_assigned, comment_mention, description_write,
+// automation_message — not just chat_message), and a static environment's
+// container/Pod likewise outlives any one conversation's status (see
+// docker.Manager.StopEnvironment's doc comment) — so either can always be
+// resumed here too, from any status, not just chat_message ones —
+// mirroring SendChatMessage's own terminal-status resume carve-out for
+// chat sessions.
+//
+// onBusy ("" | agentdom.OnBusyQueue | agentdom.OnBusyForce) only matters on
+// that resume path — see resumeConversationMessage's doc comment — since
+// the plain running-conversation branch below never has a capacity
+// decision to make (it requires the conversation to already be running).
+func (s *Service) SendConversationMessage(ctx context.Context, projectID, conversationID uuid.UUID, message string, memberID uuid.UUID, contextItems []agentdom.ContextItemRef, onBusy string) error {
+	if err := validateOnBusy(onBusy); err != nil {
+		return err
+	}
+	c, err := s.GetConversation(ctx, projectID, conversationID, memberID)
 	if err != nil {
 		return err
 	}
-	if c.Status != "running" {
+
+	agent, err := s.repo.FindAgentByID(ctx, c.AgentID)
+	if err != nil {
+		return err
+	}
+	if agent.AgentType == agentdom.AgentTypeACP || c.EnvironmentID != nil {
+		return s.resumeConversationMessage(ctx, projectID, c, message, memberID, contextItems, onBusy)
+	}
+
+	if agentdom.ConversationStatus(c.Status) != agentdom.ConversationStatusRunning {
 		return agentdom.ErrConversationNotRunning
 	}
-	return s.publishTrigger(ctx, events.TopicAgentChatMessage, map[string]any{
+	payload := map[string]any{
 		"conversation_id": conversationID.String(),
 		"project_id":      projectID.String(),
 		"message":         message,
 		"member_id":       memberID.String(),
+	}
+	if len(contextItems) > 0 {
+		b, _ := json.Marshal(contextItems)
+		payload["context_items"] = string(b)
+	}
+	return s.publishTrigger(ctx, events.TopicAgentChatMessage, payload)
+}
+
+// resumeConversationMessage resumes a conversation of any trigger type from
+// any status other than running/queued (busy), so it can be continued from
+// the chat box instead of being stuck once its first turn ends — used for
+// ACP-type agents (see SendConversationMessage's own doc comment) and for
+// any conversation attached to a static environment.
+//
+// This is "starting a turn" exactly as much as any other dispatch in this
+// file — an env-attached conversation resumed here shares its working
+// directory with every other conversation in the same folder just like a
+// freshly created one does — so it runs the same checkDispatchCapacity
+// decision SendChatMessage's own paused/terminal resume branches do, and
+// for the same reason: without it, ACP/environment-backed agents (forced
+// to ParallelismLimit=1 by requiresSerialDispatch) could have a reply-in-
+// place resume race a second concurrent turn straight past that limit. See
+// onBusy's own doc comment (agentdom.OnBusyQueue) for "" | queue | force.
+func (s *Service) resumeConversationMessage(ctx context.Context, projectID uuid.UUID, c *agentdom.AgentConversation, message string, memberID uuid.UUID, contextItems []agentdom.ContextItemRef, onBusy string) error {
+	status := agentdom.ConversationStatus(c.Status)
+	if status == agentdom.ConversationStatusRunning || status == agentdom.ConversationStatusQueued {
+		// Still mid-turn (or not yet picked up by the worker) — reject
+		// instead of dispatching a second start_turn/attach on top of one
+		// that hasn't finished: for ACP, ConversationRunner.start_turn's
+		// own "still running" guard would report the *in-flight* turn as
+		// failed, not queue this message behind it; for an
+		// environment-backed conversation, a concurrent turn is already
+		// attached to the same goose serve session.
+		return agentdom.ErrConversationBusy
+	}
+
+	// Validate the environment/folder still resolves *before* the capacity
+	// check/claim below moves status off of its current terminal/paused
+	// value — a claim that then failed validation would otherwise be stuck
+	// there with no rollback (mirrors SendChatMessage's own early-validate-
+	// before-claim comment; the later resolveWorkdirForConversation call
+	// below, which builds the actual trigger payload, is a cheap, harmless
+	// duplicate read on this now-validated path).
+	if c.EnvironmentID != nil {
+		if _, _, err := s.resolveWorkdirForConversation(ctx, projectID, c); err != nil {
+			return err
+		}
+	}
+
+	// Decide dispatchNow *before* claiming, same ordering SendChatMessage's
+	// resume branches use — an "ask" rejection must leave c untouched at
+	// its current status rather than stuck mid-claim. c's own
+	// EnvironmentID/EnvironmentFolderID feed the folder half: resuming in
+	// place still occupies that folder as far as another conversation
+	// sharing it is concerned.
+	dispatchNow, err := s.checkDispatchCapacity(ctx, c.AgentID, c.EnvironmentID, c.EnvironmentFolderID, onBusy)
+	if err != nil {
+		return err
+	}
+	targetStatus := string(agentdom.ConversationStatusRunning)
+	if !dispatchNow {
+		targetStatus = string(agentdom.ConversationStatusQueued)
+	}
+
+	// Claim atomically so two concurrent replies can't both win and
+	// double-publish a resume trigger for the same conversation_id — same
+	// race guard as SendChatMessage's resume paths.
+	claimed, err := s.repo.ClaimConversationStatus(ctx, c.ID, string(status), targetStatus)
+	if err != nil {
+		return err
+	}
+	if !claimed {
+		return agentdom.ErrConversationBusy
+	}
+
+	// Re-resolve into a live (environmentID, workdir) pair for the trigger
+	// payload — needed on every resume, not just the first (see
+	// resolveWorkdirForConversation's doc comment). nil for an ACP
+	// conversation (c.EnvironmentID is always nil there — ACP sandboxing is
+	// owned by the user's own local client, not agent-runner).
+	envID, workdir, err := s.resolveWorkdirForConversation(ctx, projectID, c)
+	if err != nil {
+		return err
+	}
+
+	payload := map[string]any{
+		"conversation_id": c.ID.String(),
+		"project_id":      c.ProjectID.String(),
+		"agent_id":        c.AgentID.String(),
+		"trigger_type":    c.TriggerType,
+		"actor_member_id": memberID.String(),
+		"message":         message,
+		"repo_plugin_ids": strings.Join(s.gatherRepoPluginIDs(ctx), ","),
+	}
+	if envID != nil {
+		payload["environment_id"] = envID.String()
+		payload["workdir"] = workdir
+	}
+	if len(contextItems) > 0 {
+		b, _ := json.Marshal(contextItems)
+		payload["context_items"] = string(b)
+	}
+	// needsClaim=false: already claimed atomically above, straight to
+	// targetStatus — never left at "queued" without a pending-trigger row
+	// the way a freshly-created conversation would be.
+	return s.deliverTrigger(ctx, c.AgentID, c.ID, dispatchNow, false, events.TopicAgentChatMessage, payload, c.EnvironmentID, c.EnvironmentFolderID)
+}
+
+// -------------------------------------------------------------------------
+// Global Conversations (ProjectID == uuid.Nil) — siblings of the
+// Conversations methods above, scoped to "no project" instead of a given
+// projectID, with the actor identified by ActorUserID instead of a
+// project_members.id. Global-chat conversations never gather repo/PR tools
+// (repo_plugin_ids is omitted from their trigger payloads) — repository
+// access is inherently project-shaped and out of scope for a conversation
+// with no project context.
+// -------------------------------------------------------------------------
+
+// ListGlobalConversations returns a page of the caller's own global-chat
+// conversations matching the filter. GlobalOnly and ActorUserID are forced
+// server-side — a caller can never list another user's global conversations
+// by passing a different actor, unlike the project-scoped listing which is
+// visible to the whole project team.
+func (s *Service) ListGlobalConversations(ctx context.Context, actorUserID uuid.UUID, in agentdom.ListConversationsFilter, limit int) ([]*agentdom.AgentConversation, bool, error) {
+	in.GlobalOnly = true
+	in.ProjectID = nil
+	in.ActorUserID = &actorUserID
+	return s.repo.ListConversations(ctx, in, limit)
+}
+
+// GetGlobalConversation returns a single conversation after verifying it is
+// both a global-chat conversation (ProjectID == uuid.Nil) AND owned by
+// actorUserID — the global-chat equivalent of GetConversation's projectID
+// ownership check. Without the actor check, any authenticated user could
+// read, control, or inject messages into another user's global-chat
+// conversation simply by knowing its ID, since global conversations have no
+// project-team membership to gate access the way project conversations do.
+func (s *Service) GetGlobalConversation(ctx context.Context, conversationID, actorUserID uuid.UUID) (*agentdom.AgentConversation, error) {
+	c, err := s.repo.FindConversationByID(ctx, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	// See GetConversation's identical check for why this is enforced here
+	// rather than in FindConversationByID's own SQL.
+	if c.DeletedAt != nil {
+		return nil, agentdom.ErrConversationNotFound
+	}
+	if c.ProjectID != uuid.Nil || c.ActorUserID == nil || *c.ActorUserID != actorUserID {
+		return nil, agentdom.ErrConversationNotFound
+	}
+	return c, nil
+}
+
+// StopGlobalConversation stops a global conversation that is not already finished.
+func (s *Service) StopGlobalConversation(ctx context.Context, conversationID, actorUserID uuid.UUID) error {
+	c, err := s.GetGlobalConversation(ctx, conversationID, actorUserID)
+	if err != nil {
+		return err
+	}
+	// See stopConversation's doc comment — a global-chat conversation can be
+	// queued behind a busy global agent too, and AdvanceQueue needs the
+	// StreamAgentConversationStatus publish there to ever learn this
+	// agent's slot just freed. uuid.Nil omits project_id from the
+	// stop-trigger payload, matching this method's behavior before it was
+	// factored out.
+	return s.stopConversation(ctx, c, uuid.Nil)
+}
+
+// UpdateGlobalConversationTitle implements
+// agentdom.Service.UpdateGlobalConversationTitle.
+func (s *Service) UpdateGlobalConversationTitle(ctx context.Context, conversationID, actorUserID uuid.UUID, title string) (*agentdom.AgentConversation, error) {
+	if _, err := s.GetGlobalConversation(ctx, conversationID, actorUserID); err != nil {
+		return nil, err
+	}
+	if err := s.repo.UpdateConversationTitle(ctx, conversationID, title); err != nil {
+		return nil, err
+	}
+	return s.repo.FindConversationByID(ctx, conversationID)
+}
+
+// DeleteGlobalConversation implements agentdom.Service.DeleteGlobalConversation.
+func (s *Service) DeleteGlobalConversation(ctx context.Context, conversationID, actorUserID uuid.UUID) error {
+	c, err := s.GetGlobalConversation(ctx, conversationID, actorUserID)
+	if err != nil {
+		return err
+	}
+	if !agentdom.ConversationStatus(c.Status).IsTerminal() {
+		if err := s.stopConversation(ctx, c, uuid.Nil); err != nil {
+			return err
+		}
+	}
+	return s.repo.SoftDeleteConversation(ctx, conversationID)
+}
+
+// PauseGlobalConversation interrupts a global conversation's in-flight turn.
+func (s *Service) PauseGlobalConversation(ctx context.Context, conversationID, actorUserID uuid.UUID) error {
+	c, err := s.GetGlobalConversation(ctx, conversationID, actorUserID)
+	if err != nil {
+		return err
+	}
+	if agentdom.ConversationStatus(c.Status) != agentdom.ConversationStatusRunning {
+		return agentdom.ErrConversationNotRunning
+	}
+	return s.publishTrigger(ctx, events.TopicAgentPause, map[string]any{
+		"conversation_id": conversationID.String(),
 	})
+}
+
+// GlobalHeartbeat refreshes a global conversation's idle timer.
+func (s *Service) GlobalHeartbeat(ctx context.Context, conversationID, actorUserID uuid.UUID) error {
+	if _, err := s.GetGlobalConversation(ctx, conversationID, actorUserID); err != nil {
+		return err
+	}
+	return s.publishTrigger(ctx, events.TopicAgentHeartbeat, map[string]any{
+		"conversation_id": conversationID.String(),
+	})
+}
+
+// SendGlobalConversationMessage publishes a chat message to an active global conversation.
+func (s *Service) SendGlobalConversationMessage(ctx context.Context, conversationID uuid.UUID, message string, actorUserID uuid.UUID, contextItems []agentdom.ContextItemRef, onBusy string) error {
+	if err := validateOnBusy(onBusy); err != nil {
+		return err
+	}
+	c, err := s.GetGlobalConversation(ctx, conversationID, actorUserID)
+	if err != nil {
+		return err
+	}
+
+	agent, err := s.repo.FindAgentByID(ctx, c.AgentID)
+	if err != nil {
+		return err
+	}
+	// Closes a gap requireGlobalAgentOpen's placement on
+	// Start/List/SendGlobalChatMessage alone left open: without this, a
+	// conversation created before the agent was restricted could keep being
+	// sent into indefinitely, contradicting requireGlobalAgentOpen's own
+	// "fails every global-chat caller closed, full stop" contract above.
+	// Covers both dispatch branches below with one check since agent is
+	// already fetched for the AgentType decision either way.
+	if err := requireAgentOpen(agent); err != nil {
+		return err
+	}
+	if agent.AgentType == agentdom.AgentTypeACP {
+		return s.sendACPGlobalConversationMessage(ctx, c, message, actorUserID, contextItems, onBusy)
+	}
+
+	if agentdom.ConversationStatus(c.Status) != agentdom.ConversationStatusRunning {
+		return agentdom.ErrConversationNotRunning
+	}
+	payload := map[string]any{
+		"conversation_id": conversationID.String(),
+		"agent_id":        c.AgentID.String(),
+		"message":         message,
+		"actor_user_id":   actorUserID.String(),
+	}
+	if len(contextItems) > 0 {
+		b, _ := json.Marshal(contextItems)
+		payload["context_items"] = string(b)
+	}
+	return s.publishTrigger(ctx, events.TopicAgentChatMessage, payload)
+}
+
+// sendACPGlobalConversationMessage is resumeConversationMessage's
+// global-chat, ACP-only sibling — see that function's doc comment for why
+// ACP conversations can always be resumed regardless of trigger type or
+// terminal status, and for why this resume path needs its own capacity
+// check the same way. No environment carve-out here, unlike
+// resumeConversationMessage: a global-scope agent can never have a default
+// environment (see agentdom.Agent.DefaultEnvironmentID's doc comment), so
+// a global conversation's EnvironmentID is always nil and only the
+// agent-level check (checkParallelismCapacity, not checkDispatchCapacity)
+// applies.
+func (s *Service) sendACPGlobalConversationMessage(ctx context.Context, c *agentdom.AgentConversation, message string, actorUserID uuid.UUID, contextItems []agentdom.ContextItemRef, onBusy string) error {
+	status := agentdom.ConversationStatus(c.Status)
+	if status == agentdom.ConversationStatusRunning || status == agentdom.ConversationStatusQueued {
+		return agentdom.ErrConversationBusy
+	}
+
+	dispatchNow, err := s.checkParallelismCapacity(ctx, c.AgentID, onBusy)
+	if err != nil {
+		return err
+	}
+	targetStatus := string(agentdom.ConversationStatusRunning)
+	if !dispatchNow {
+		targetStatus = string(agentdom.ConversationStatusQueued)
+	}
+
+	claimed, err := s.repo.ClaimConversationStatus(ctx, c.ID, string(status), targetStatus)
+	if err != nil {
+		return err
+	}
+	if !claimed {
+		return agentdom.ErrConversationBusy
+	}
+	payload := map[string]any{
+		"conversation_id": c.ID.String(),
+		"agent_id":        c.AgentID.String(),
+		"trigger_type":    c.TriggerType,
+		"actor_user_id":   actorUserID.String(),
+		"message":         message,
+	}
+	if len(contextItems) > 0 {
+		b, _ := json.Marshal(contextItems)
+		payload["context_items"] = string(b)
+	}
+	// needsClaim=false: already claimed atomically above. envID/folderID
+	// nil: see this function's own doc comment.
+	return s.deliverTrigger(ctx, c.AgentID, c.ID, dispatchNow, false, events.TopicAgentChatMessage, payload, nil, nil)
 }
 
 // -------------------------------------------------------------------------
@@ -586,12 +2386,77 @@ func (s *Service) SendConversationMessage(ctx context.Context, projectID, conver
 // -------------------------------------------------------------------------
 
 // ListChatSessions returns all chat sessions for the given agent and member.
-func (s *Service) ListChatSessions(ctx context.Context, _, agentID, memberID uuid.UUID) ([]*agentdom.AgentChatSession, error) {
+func (s *Service) ListChatSessions(ctx context.Context, projectID, agentID, memberID uuid.UUID) ([]*agentdom.AgentChatSession, error) {
+	agent, err := s.GetAgent(ctx, projectID, agentID)
+	if err != nil {
+		return nil, err
+	}
+	if ok, err := s.hasAgentUsageAccess(ctx, agent, memberID); err != nil {
+		return nil, err
+	} else if !ok {
+		return nil, agentdom.ErrAgentAccessRestricted
+	}
 	return s.repo.ListChatSessions(ctx, agentID, memberID)
 }
 
 // StartChatSession creates a new chat session and publishes the initial message trigger.
-func (s *Service) StartChatSession(ctx context.Context, projectID, agentID, memberID uuid.UUID, message string) (*agentdom.AgentChatSession, *agentdom.AgentConversation, error) {
+// environmentID/folderID come from the request and are optional:
+// environmentID nil falls back to the agent's own DefaultEnvironmentID (see
+// resolveChatEnvironment); folderID nil auto-selects the environment's sole
+// folder, or fails with ErrFolderNotFound if that's ambiguous — the caller
+// must ask the user to pick.
+func (s *Service) StartChatSession(ctx context.Context, projectID, agentID, memberID uuid.UUID, message string, environmentID, folderID *uuid.UUID, contextItems []agentdom.ContextItemRef, onBusy string) (*agentdom.AgentChatSession, *agentdom.AgentConversation, error) {
+	if err := validateOnBusy(onBusy); err != nil {
+		return nil, nil, err
+	}
+	agent, err := s.GetAgent(ctx, projectID, agentID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if ok, err := s.hasAgentUsageAccess(ctx, agent, memberID); err != nil {
+		return nil, nil, err
+	} else if !ok {
+		return nil, nil, agentdom.ErrAgentAccessRestricted
+	}
+
+	// Resolved before the capacity check below (which needs it to also
+	// enforce checkFolderCapacity), not just before createConversation —
+	// resolveConversationEnvironment has no side effects, so reordering it
+	// earlier is free, and keeps "an ask rejection leaves nothing behind"
+	// true for the folder constraint too, not just the agent one.
+	envID, resolvedFolderID, workdir, err := s.resolveConversationEnvironment(ctx, projectID, agentID, environmentID, folderID)
+	if err != nil {
+		return nil, nil, err
+	}
+	// A conversation attached to a static environment gives the agent live
+	// shell-equivalent access inside it — an alternate access path into a
+	// restricted environment just as real as the browser terminal, SSH, or
+	// a port forward (see environmentdom.Environment.AccessMode's doc
+	// comment). resolveConversationEnvironment's other four call sites
+	// (task-assigned/description-write/automation/comment-mention
+	// triggers) enforce the same pair of checks via the shared
+	// authorizeConversationTrigger helper instead of this inline copy —
+	// kept separate here rather than refactored onto that helper too, to
+	// avoid reordering this already-tested path's agent-access check
+	// (above, before resolution) relative to this environment-access
+	// check (after resolution).
+	if envID != nil && s.environmentSvc != nil {
+		if ok, err := s.environmentSvc.HasEnvironmentUsageAccess(ctx, projectID, *envID, memberID); err != nil {
+			return nil, nil, err
+		} else if !ok {
+			return nil, nil, environmentdom.ErrEnvironmentAccessRestricted
+		}
+	}
+
+	// Starting a session always creates a brand new conversation (there is
+	// no existing one yet to be "busy"), so the capacity check applies
+	// unconditionally here — decided once, before anything is persisted, so
+	// an "ask" rejection leaves no chat session or conversation behind.
+	dispatchNow, err := s.checkDispatchCapacity(ctx, agentID, envID, resolvedFolderID, onBusy)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	now := time.Now()
 
 	session := &agentdom.AgentChatSession{
@@ -607,23 +2472,152 @@ func (s *Service) StartChatSession(ctx context.Context, projectID, agentID, memb
 		return nil, nil, err
 	}
 
-	conv, err := s.createConversation(ctx, projectID, agentID, memberID, agentdom.AgentConversation{
-		TriggerType:   "chat_message",
-		ChatSessionID: &session.ID,
+	conv, err := s.createConversation(ctx, projectID, agentID, &memberID, agentdom.AgentConversation{
+		TriggerType:         "chat_message",
+		ChatSessionID:       &session.ID,
+		EnvironmentID:       envID,
+		EnvironmentFolderID: resolvedFolderID,
 	})
 	if err != nil {
 		return nil, nil, err
 	}
 
-	if err := s.publishChatTrigger(ctx, agentID, conv.ID, session.ID, projectID, memberID, message, s.gatherRepoPluginIDs(ctx)); err != nil {
+	// needsClaim=true: this conversation was just created fresh above, still
+	// "queued", never claimed by anything else.
+	if err := s.publishChatTrigger(ctx, agentID, conv.ID, session.ID, projectID, memberID, message, s.gatherRepoPluginIDs(ctx), envID, resolvedFolderID, workdir, contextItems, dispatchNow, true); err != nil {
 		return nil, nil, err
 	}
 
 	return session, conv, nil
 }
 
+// resolveConversationEnvironment resolves which static environment+folder
+// (if any) a new conversation should attach to, regardless of what
+// triggered it — chat message, task assignment, comment mention,
+// description write, or automation message all share this one resolution
+// path. environmentID, when nil, falls back to the agent's own
+// DefaultEnvironmentID (agentdom.Agent.DefaultEnvironmentID) — the only
+// trigger that ever passes a non-nil environmentID/folderID of its own
+// (an explicit per-conversation override) is StartChatSession; every other
+// caller (TriggerTaskAssigned et al.) passes nil for both, deferring
+// entirely to the agent's default. Returns (nil, nil, "", nil) when
+// neither the caller nor the agent names an environment and the agent is
+// NOT provider_cli — the conversation then gets an ephemeral
+// per-conversation sandbox as it always has, unchanged.
+//
+// For a provider_cli agent deferring to its own default (environmentID ==
+// nil on entry — the common case, per the doc above), a still-unresolved
+// environment returns ErrDefaultEnvironmentRequiredForCLIProvider instead
+// of the usual silent (nil, nil, "", nil): that type's CLI login state must
+// persist across conversations, which only a static environment's volume
+// provides, so it must never silently fall through to an ephemeral
+// sandbox. The agent is only fetched when environmentID == nil, same
+// condition as before this check existed — a provider_cli agent can never
+// exist at all when s.environmentSvc == nil (CreateAgent's
+// validateDefaultEnvironment already requires environmentSvc to resolve a
+// default_environment_id, and provider_cli agents require one), so no
+// fetch is needed on that branch either. The narrow gap this leaves — a
+// caller-supplied explicit environmentID/folderID (StartChatSession only)
+// that fails to resolve for a provider_cli agent — falls through to the
+// ordinary silent-ephemeral path rather than erroring; ResolveConversationWorkdir
+// already returns a real error for an explicit environmentID it can't
+// resolve (see its own doc comment: only environmentID == nil resolves to
+// (nil, nil, nil)), so this gap should be unreachable in practice.
+func (s *Service) resolveConversationEnvironment(ctx context.Context, projectID, agentID uuid.UUID, environmentID, folderID *uuid.UUID) (envID, resolvedFolderID *uuid.UUID, workdir string, err error) {
+	if s.environmentSvc == nil {
+		return nil, nil, "", nil
+	}
+	var agent *agentdom.Agent
+	if environmentID == nil {
+		agent, err = s.repo.FindAgentByID(ctx, agentID)
+		if err != nil {
+			return nil, nil, "", err
+		}
+		environmentID = agent.DefaultEnvironmentID
+		// agent.DefaultFolderID only ever belongs to agent.DefaultEnvironmentID
+		// — only consulted here, in the branch that just defaulted
+		// environmentID itself from that same environment, and only when
+		// the caller didn't already pick a folder of its own. A caller
+		// that passed an explicit environmentID (possibly a different one)
+		// must never inherit this agent's default folder, since it could
+		// belong to the wrong environment entirely.
+		if environmentID != nil && folderID == nil {
+			folderID = agent.DefaultFolderID
+		}
+	}
+	if environmentID == nil {
+		if agent != nil && agent.AgentType == agentdom.AgentTypeProviderCLI {
+			return nil, nil, "", agentdom.ErrDefaultEnvironmentRequiredForCLIProvider
+		}
+		return nil, nil, "", nil
+	}
+	env, folder, err := s.environmentSvc.ResolveConversationWorkdir(ctx, projectID, environmentID, folderID)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	if env == nil || folder == nil {
+		// e.g. the agent's default environment/folder was since deleted.
+		if agent != nil && agent.AgentType == agentdom.AgentTypeProviderCLI {
+			return nil, nil, "", agentdom.ErrDefaultEnvironmentRequiredForCLIProvider
+		}
+		return nil, nil, "", nil
+	}
+	return &env.ID, &folder.ID, folder.Path, nil
+}
+
+// resolveWorkdirForConversation re-resolves an already-created
+// conversation's environment_id/environment_folder_id back into a live
+// (environmentID, workdir) pair for a trigger payload. Needed on every
+// trigger a conversation publishes, not just its first — agent-runner's
+// goose serve process runs continuously per environment (see
+// docs/ai-agent/environment-management.md's "no new in-memory registry"
+// design), so a resumed conversation's later turns need to keep telling
+// agent-runner which environment+folder to run NewSession against just as
+// much as the very first turn did.
+func (s *Service) resolveWorkdirForConversation(ctx context.Context, projectID uuid.UUID, c *agentdom.AgentConversation) (envID *uuid.UUID, workdir string, err error) {
+	if s.environmentSvc == nil || c.EnvironmentID == nil {
+		return nil, "", nil
+	}
+	_, folder, err := s.environmentSvc.ResolveConversationWorkdir(ctx, projectID, c.EnvironmentID, c.EnvironmentFolderID)
+	if err != nil {
+		return nil, "", err
+	}
+	if folder == nil {
+		return nil, "", nil
+	}
+	return c.EnvironmentID, folder.Path, nil
+}
+
 // SendChatMessage sends a message to an existing chat session and publishes the trigger.
-func (s *Service) SendChatMessage(ctx context.Context, projectID, sessionID, memberID uuid.UUID, message string) (*agentdom.AgentConversation, error) {
+//
+// The ai-agent service keeps a chat session's sandbox alive between replies
+// instead of tearing it down after every turn (see docs/ai-agent's
+// pause/resume design) — a conversation that reaches a natural per-turn
+// finish is left with status "paused" rather than "finished". A reply while
+// paused resumes that same conversation (same conversation_id, so the agent
+// keeps the sandbox/history) instead of cold-starting a new one.
+//
+// ACP-type agents get the same treatment even once a conversation goes
+// terminal (finished/failed/stopped): unlike an LLM agent's cloud sandbox,
+// which is gone for good once its chat conversation ends, an ACP agent's
+// local bridge daemon (apps/acp-bridge) keeps the underlying Conversation
+// object alive in memory for as long as the daemon keeps running. So a reply
+// can always continue the *same* conversation_id, no matter how long ago it
+// went terminal — see runner.ConversationRunner.start_turn's resume branch.
+//
+// An LLM-type conversation attached to a static environment
+// (environmentdom.Environment) gets the same terminal-status resume too, for
+// the analogous reason: the environment's container outlives the
+// conversation's own status (it isn't torn down when a conversation ends —
+// see docker.Manager.StopEnvironment's doc comment on the server), so
+// "stopped"/"failed" here means "no turn is currently in flight," not "there
+// is nothing left to attach to." Only an ordinary (non-environment) LLM
+// conversation going terminal still falls through to a brand-new
+// conversation_id below — its ephemeral sandbox really is gone for good.
+func (s *Service) SendChatMessage(ctx context.Context, projectID, sessionID, memberID uuid.UUID, message string, contextItems []agentdom.ContextItemRef, onBusy string) (*agentdom.AgentConversation, error) {
+	if err := validateOnBusy(onBusy); err != nil {
+		return nil, err
+	}
 	session, err := s.repo.FindChatSessionByID(ctx, sessionID)
 	if err != nil {
 		return nil, err
@@ -631,16 +2625,160 @@ func (s *Service) SendChatMessage(ctx context.Context, projectID, sessionID, mem
 	if session.ProjectID != projectID {
 		return nil, agentdom.ErrChatSessionNotFound
 	}
+	// A chat session is owner-private: only its owning member may post to it
+	// (previously any project member could, which let a non-owner both read
+	// and inject into someone else's session).
+	if session.MemberID != memberID {
+		return nil, agentdom.ErrChatSessionNotFound
+	}
+	sessionAgent, err := s.repo.FindAgentByID(ctx, session.AgentID)
+	if err != nil {
+		return nil, err
+	}
+	if ok, err := s.hasAgentUsageAccess(ctx, sessionAgent, memberID); err != nil {
+		return nil, err
+	} else if !ok {
+		return nil, agentdom.ErrAgentAccessRestricted
+	}
 
-	conv, err := s.createConversation(ctx, projectID, session.AgentID, memberID, agentdom.AgentConversation{
-		TriggerType:   "chat_message",
-		ChatSessionID: &sessionID,
-	})
+	latest, err := s.repo.FindLatestConversationByChatSession(ctx, sessionID)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := s.publishChatTrigger(ctx, session.AgentID, conv.ID, sessionID, projectID, memberID, message, s.gatherRepoPluginIDs(ctx)); err != nil {
+	// dispatchNow is decided by whichever branch below actually goes on to
+	// resume/create a conversation — see checkParallelismCapacity's doc
+	// comment. It stays false only if that never happens (the function
+	// returns early as busy first). freshConversation is true only for the
+	// conv==nil branch below (a brand-new "queued" row, never claimed by
+	// anything else yet) — see publishChatTrigger's needsClaim doc comment.
+	var dispatchNow, freshConversation bool
+	conv := latest
+	if latest != nil {
+		// Validate a resumed conversation's environment/folder still
+		// resolves *before* any ClaimConversationStatus call below moves
+		// it to "running" — a claim that then failed validation would
+		// otherwise be stuck there with no rollback (see
+		// resolveWorkdirForConversation's own doc comment; the later call
+		// at the bottom of this function, which builds the actual trigger
+		// payload, is a cheap, harmless duplicate read on this now-
+		// validated path).
+		if latest.EnvironmentID != nil {
+			if _, _, err := s.resolveWorkdirForConversation(ctx, projectID, latest); err != nil {
+				return nil, err
+			}
+		}
+		switch agentdom.ConversationStatus(latest.Status) {
+		case agentdom.ConversationStatusRunning, agentdom.ConversationStatusQueued:
+			// Still mid-turn (or not yet picked up by the worker) — reject
+			// instead of racing a second conversation/sandbox into existence
+			// for the same chat session.
+			return nil, agentdom.ErrConversationBusy
+		case agentdom.ConversationStatusPaused:
+			// This session's own conversation is idle (not itself occupying
+			// a running slot), so the capacity check runs fresh here —
+			// before the claim below, so an "ask" rejection leaves the
+			// conversation untouched at "paused" rather than stuck
+			// mid-claim. latest.EnvironmentID/EnvironmentFolderID (already
+			// validated above) feed checkDispatchCapacity's folder check —
+			// resuming in place is still "starting a turn in this folder"
+			// as far as another conversation sharing it is concerned.
+			dispatchNow, err = s.checkDispatchCapacity(ctx, session.AgentID, latest.EnvironmentID, latest.EnvironmentFolderID, onBusy)
+			if err != nil {
+				return nil, err
+			}
+			targetStatus := string(agentdom.ConversationStatusRunning)
+			if !dispatchNow {
+				targetStatus = string(agentdom.ConversationStatusQueued)
+			}
+			// Resume — claim the conversation atomically so two concurrent
+			// replies can't both win and double-publish a resume trigger for
+			// the same conversation_id. The loser is told to retry as busy
+			// rather than silently racing ai-agent's sandbox reattachment.
+			claimed, err := s.repo.ClaimConversationStatus(ctx, latest.ID,
+				string(agentdom.ConversationStatusPaused), targetStatus)
+			if err != nil {
+				return nil, err
+			}
+			if !claimed {
+				return nil, agentdom.ErrConversationBusy
+			}
+		case agentdom.ConversationStatusFinished, agentdom.ConversationStatusFailed, agentdom.ConversationStatusStopped:
+			agent, err := s.repo.FindAgentByID(ctx, session.AgentID)
+			if err != nil {
+				return nil, err
+			}
+			if agent.AgentType == agentdom.AgentTypeACP || latest.EnvironmentID != nil {
+				// See the paused case's identical checkDispatchCapacity call
+				// above for why latest's own environment/folder feed in here
+				// too (nil/nil for the ACP branch, which never has one).
+				dispatchNow, err = s.checkDispatchCapacity(ctx, session.AgentID, latest.EnvironmentID, latest.EnvironmentFolderID, onBusy)
+				if err != nil {
+					return nil, err
+				}
+				targetStatus := string(agentdom.ConversationStatusRunning)
+				if !dispatchNow {
+					targetStatus = string(agentdom.ConversationStatusQueued)
+				}
+				// Resume — same atomic-claim treatment as the paused case
+				// above, just starting from a terminal status instead of
+				// "paused". Two different reasons land on the same
+				// behavior: an ACP conversation never reaches "paused" at
+				// all (see the doc comment above), while an
+				// environment-backed LLM conversation can reach "paused"
+				// but still go terminal from there (an explicit Stop, or a
+				// genuine turn failure) — either way there's a live
+				// container to reattach to, not an ephemeral sandbox
+				// that's already gone.
+				claimed, err := s.repo.ClaimConversationStatus(ctx, latest.ID,
+					latest.Status, targetStatus)
+				if err != nil {
+					return nil, err
+				}
+				if !claimed {
+					return nil, agentdom.ErrConversationBusy
+				}
+			} else {
+				// Terminal status, no persistent backing (an ordinary
+				// ephemeral sandbox, already torn down) — fall through to
+				// create a new conversation.
+				conv = nil
+			}
+		}
+	}
+
+	if conv == nil {
+		// A fresh conversation row: either this chat session's very first
+		// message, or a non-environment LLM conversation whose ephemeral
+		// sandbox is gone for good now that it's terminal — see the switch
+		// above. No environment/folder to carry over in either case: an
+		// environment-backed LLM conversation resumes in place instead (same
+		// switch), so whenever this runs with latest non-nil,
+		// latest.EnvironmentID is already guaranteed nil.
+		dispatchNow, err = s.checkParallelismCapacity(ctx, session.AgentID, onBusy)
+		if err != nil {
+			return nil, err
+		}
+		freshConversation = true
+		conv, err = s.createConversation(ctx, projectID, session.AgentID, &memberID, agentdom.AgentConversation{
+			TriggerType:   "chat_message",
+			ChatSessionID: &sessionID,
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	// else: resume — reuse the same conversation_id so ai-agent reattaches
+	// to the sandbox it kept alive rather than cold-starting a new one.
+
+	// Re-resolve conv's environment/folder into a live (environmentID,
+	// workdir) pair for the trigger payload — needed on every turn, not
+	// just the first (see resolveWorkdirForConversation's doc comment).
+	envID, workdir, err := s.resolveWorkdirForConversation(ctx, projectID, conv)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.publishChatTrigger(ctx, session.AgentID, conv.ID, sessionID, projectID, memberID, message, s.gatherRepoPluginIDs(ctx), envID, conv.EnvironmentFolderID, workdir, contextItems, dispatchNow, freshConversation); err != nil {
 		return nil, err
 	}
 
@@ -652,30 +2790,240 @@ func (s *Service) SendChatMessage(ctx context.Context, projectID, sessionID, mem
 	return conv, nil
 }
 
-// ListChatMessages returns conversation events for a chat session.
-func (s *Service) ListChatMessages(ctx context.Context, sessionID uuid.UUID, offset, limit int) ([]*agentdom.AgentConversationEvent, int64, error) {
-	// TODO: We'd need to aggregate events from all conversations in this session.
-	// For now, return events from the most recent conversation with this session_id.
-	filter := agentdom.ListConversationsFilter{
-		Limit:  1,
-		Offset: 0,
+// -------------------------------------------------------------------------
+// Global Chat Sessions — siblings of the Chat Sessions methods above,
+// keyed by actor_user_id instead of a project's memberID.
+// -------------------------------------------------------------------------
+
+// requireGlobalAgentOpen fails closed with ErrAgentAccessRestricted when
+// agentID is currently restricted. Global chat has no project context, so
+// there is no project_members.id to resolve and check an AgentAccessGrant
+// against the way the project-scoped hasAgentUsageAccess check can —
+// restricted therefore fails every global-chat caller closed, full stop,
+// rather than inventing new cross-project grant semantics. If a project
+// member granted access to a restricted global agent should still be able
+// to reach it via global (non-project) chat specifically, that needs a
+// real design decision and probably its own grant surface — not assumed
+// here.
+func (s *Service) requireGlobalAgentOpen(ctx context.Context, agentID uuid.UUID) error {
+	agent, err := s.repo.FindAgentByID(ctx, agentID)
+	if err != nil {
+		return err
 	}
-	_ = sessionID
-	convs, _, err := s.repo.ListConversations(ctx, filter)
+	return requireAgentOpen(agent)
+}
+
+// requireAgentOpen is requireGlobalAgentOpen's agent-in-hand sibling, for
+// callers that already fetched the Agent for another reason (e.g.
+// SendGlobalConversationMessage, which needs it for the AgentType dispatch
+// decision regardless) and shouldn't pay for a second FindAgentByID call.
+func requireAgentOpen(agent *agentdom.Agent) error {
+	if agent.AccessMode == agentdom.AccessModeRestricted {
+		return agentdom.ErrAgentAccessRestricted
+	}
+	return nil
+}
+
+// ListGlobalChatSessions returns all global chat sessions for the given
+// agent and human actor.
+func (s *Service) ListGlobalChatSessions(ctx context.Context, agentID, actorUserID uuid.UUID) ([]*agentdom.AgentChatSession, error) {
+	if err := s.requireGlobalAgentOpen(ctx, agentID); err != nil {
+		return nil, err
+	}
+	return s.repo.ListGlobalChatSessions(ctx, agentID, actorUserID)
+}
+
+// StartGlobalChatSession creates a new global chat session and publishes
+// the initial message trigger.
+func (s *Service) StartGlobalChatSession(ctx context.Context, agentID, actorUserID uuid.UUID, message string, contextItems []agentdom.ContextItemRef, onBusy string) (*agentdom.AgentChatSession, *agentdom.AgentConversation, error) {
+	// validateOnBusy runs before requireGlobalAgentOpen: a malformed onBusy
+	// value is a client-input error that shouldn't depend on (or reveal
+	// anything about) the target agent's access_mode — see
+	// TestStartGlobalChatSession_RejectsInvalidOnBusy, which asserts this
+	// rejects before the agent is ever looked up.
+	if err := validateOnBusy(onBusy); err != nil {
+		return nil, nil, err
+	}
+	if err := s.requireGlobalAgentOpen(ctx, agentID); err != nil {
+		return nil, nil, err
+	}
+	// See StartChatSession's identical check for why this runs unconditionally
+	// and before anything is persisted.
+	dispatchNow, err := s.checkParallelismCapacity(ctx, agentID, onBusy)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	now := time.Now()
+
+	session := &agentdom.AgentChatSession{
+		ID:            uuid.New(),
+		AgentID:       agentID,
+		ActorUserID:   &actorUserID,
+		LastMessageAt: &now,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := s.repo.CreateChatSession(ctx, session); err != nil {
+		return nil, nil, err
+	}
+
+	conv, err := s.createGlobalConversation(ctx, agentID, actorUserID, agentdom.AgentConversation{
+		TriggerType:   "chat_message",
+		ChatSessionID: &session.ID,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// needsClaim=true: this conversation was just created fresh above, still
+	// "queued", never claimed by anything else.
+	if err := s.publishGlobalChatTrigger(ctx, agentID, conv.ID, session.ID, actorUserID, message, contextItems, dispatchNow, true); err != nil {
+		return nil, nil, err
+	}
+
+	return session, conv, nil
+}
+
+// SendGlobalChatMessage sends a message to an existing global chat session
+// and publishes the trigger. Mirrors SendChatMessage's resume/terminal
+// handling — see its doc comment for the pause/resume rationale.
+func (s *Service) SendGlobalChatMessage(ctx context.Context, sessionID, actorUserID uuid.UUID, message string, contextItems []agentdom.ContextItemRef, onBusy string) (*agentdom.AgentConversation, error) {
+	if err := validateOnBusy(onBusy); err != nil {
+		return nil, err
+	}
+	session, err := s.repo.FindChatSessionByID(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if session.ProjectID != uuid.Nil || session.ActorUserID == nil || *session.ActorUserID != actorUserID {
+		return nil, agentdom.ErrChatSessionNotFound
+	}
+	if err := s.requireGlobalAgentOpen(ctx, session.AgentID); err != nil {
+		return nil, err
+	}
+
+	latest, err := s.repo.FindLatestConversationByChatSession(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	// freshConversation: see SendChatMessage's identical variable doc comment.
+	var dispatchNow, freshConversation bool
+	conv := latest
+	if latest != nil {
+		switch agentdom.ConversationStatus(latest.Status) {
+		case agentdom.ConversationStatusRunning, agentdom.ConversationStatusQueued:
+			return nil, agentdom.ErrConversationBusy
+		case agentdom.ConversationStatusPaused:
+			dispatchNow, err = s.checkParallelismCapacity(ctx, session.AgentID, onBusy)
+			if err != nil {
+				return nil, err
+			}
+			targetStatus := string(agentdom.ConversationStatusRunning)
+			if !dispatchNow {
+				targetStatus = string(agentdom.ConversationStatusQueued)
+			}
+			claimed, err := s.repo.ClaimConversationStatus(ctx, latest.ID,
+				string(agentdom.ConversationStatusPaused), targetStatus)
+			if err != nil {
+				return nil, err
+			}
+			if !claimed {
+				return nil, agentdom.ErrConversationBusy
+			}
+		case agentdom.ConversationStatusFinished, agentdom.ConversationStatusFailed, agentdom.ConversationStatusStopped:
+			agent, err := s.repo.FindAgentByID(ctx, session.AgentID)
+			if err != nil {
+				return nil, err
+			}
+			if agent.AgentType == agentdom.AgentTypeACP {
+				dispatchNow, err = s.checkParallelismCapacity(ctx, session.AgentID, onBusy)
+				if err != nil {
+					return nil, err
+				}
+				targetStatus := string(agentdom.ConversationStatusRunning)
+				if !dispatchNow {
+					targetStatus = string(agentdom.ConversationStatusQueued)
+				}
+				claimed, err := s.repo.ClaimConversationStatus(ctx, latest.ID,
+					latest.Status, targetStatus)
+				if err != nil {
+					return nil, err
+				}
+				if !claimed {
+					return nil, agentdom.ErrConversationBusy
+				}
+			} else {
+				conv = nil
+			}
+		}
+	}
+
+	if conv == nil {
+		dispatchNow, err = s.checkParallelismCapacity(ctx, session.AgentID, onBusy)
+		if err != nil {
+			return nil, err
+		}
+		freshConversation = true
+		conv, err = s.createGlobalConversation(ctx, session.AgentID, actorUserID, agentdom.AgentConversation{
+			TriggerType:   "chat_message",
+			ChatSessionID: &sessionID,
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	// else: resume — reuse the same conversation_id so ai-agent reattaches
+	// to the sandbox it kept alive rather than cold-starting a new one.
+
+	if err := s.publishGlobalChatTrigger(ctx, session.AgentID, conv.ID, sessionID, actorUserID, message, contextItems, dispatchNow, freshConversation); err != nil {
+		return nil, err
+	}
+
+	now := time.Now()
+	session.LastMessageAt = &now
+	_ = s.repo.UpdateChatSession(ctx, session)
+
+	return conv, nil
+}
+
+// ListChatMessages returns conversation events for a chat session. Unreached
+// by any route (see agentdom.ChatSessionService) — kept only to satisfy the
+// interface until it grows a real caller. memberID is the caller's
+// project_members.id and gates ownership so the eventual caller cannot read
+// another member's private session.
+func (s *Service) ListChatMessages(ctx context.Context, sessionID, memberID uuid.UUID, offset, limit int) ([]*agentdom.AgentConversationEvent, int64, error) {
+	session, err := s.repo.FindChatSessionByID(ctx, sessionID)
 	if err != nil {
 		return nil, 0, err
 	}
-	if len(convs) == 0 {
+	if session.MemberID != memberID {
+		return nil, 0, agentdom.ErrChatSessionNotFound
+	}
+	// TODO: We'd need to aggregate events from all conversations in this session.
+	// For now, return events from the most recent conversation with this session_id.
+	latest, err := s.repo.FindLatestConversationByChatSession(ctx, sessionID)
+	if err != nil {
+		return nil, 0, err
+	}
+	if latest == nil {
 		return []*agentdom.AgentConversationEvent{}, 0, nil
 	}
-	return s.repo.ListConversationEvents(ctx, convs[0].ID, offset, limit)
+	// offset has no cursor equivalent (see agentdom.ConversationEventWindow):
+	// fail loudly rather than silently ignoring it, in case this method ever
+	// grows a real caller that expects offset-based paging to work.
+	if offset != 0 {
+		return nil, 0, fmt.Errorf("ListChatMessages: non-zero offset %d is not supported by cursor-based ListConversationEvents", offset)
+	}
+	return s.repo.ListConversationEvents(ctx, latest.ID, agentdom.ConversationEventWindow{Limit: limit})
 }
 
 // -------------------------------------------------------------------------
 // Internal helpers
 // -------------------------------------------------------------------------
 
-func (s *Service) createConversation(ctx context.Context, projectID, agentID, memberID uuid.UUID, template agentdom.AgentConversation) (*agentdom.AgentConversation, error) {
+func (s *Service) createConversation(ctx context.Context, projectID, agentID uuid.UUID, memberID *uuid.UUID, template agentdom.AgentConversation) (*agentdom.AgentConversation, error) {
 	now := time.Now()
 	conv := &agentdom.AgentConversation{
 		ID:                  uuid.New(),
@@ -686,7 +3034,17 @@ func (s *Service) createConversation(ctx context.Context, projectID, agentID, me
 		CommentID:           template.CommentID,
 		ChatSessionID:       template.ChatSessionID,
 		TriggeredByMemberID: memberID,
-		Status:              "queued",
+		// EnvironmentID/EnvironmentFolderID: resolved by every trigger
+		// constructor via resolveConversationEnvironment before calling
+		// this — see that method's own doc comment for how each one
+		// resolves to the agent's DefaultEnvironmentID/DefaultFolderID
+		// when it has no per-conversation override of its own. nil on the
+		// template here just means resolution turned up nothing (no
+		// default set, or no environmentSvc wired up), not that this
+		// trigger type opted out.
+		EnvironmentID:       template.EnvironmentID,
+		EnvironmentFolderID: template.EnvironmentFolderID,
+		Status:              string(agentdom.ConversationStatusQueued),
 		CreatedAt:           now,
 		UpdatedAt:           now,
 	}
@@ -694,6 +3052,59 @@ func (s *Service) createConversation(ctx context.Context, projectID, agentID, me
 		return nil, err
 	}
 	return conv, nil
+}
+
+// createGlobalConversation is createConversation's global-chat sibling:
+// there is no project_id and the actor is a user directly rather than a
+// resolved project_members.id.
+func (s *Service) createGlobalConversation(ctx context.Context, agentID, actorUserID uuid.UUID, template agentdom.AgentConversation) (*agentdom.AgentConversation, error) {
+	now := time.Now()
+	conv := &agentdom.AgentConversation{
+		ID:            uuid.New(),
+		AgentID:       agentID,
+		TriggerType:   template.TriggerType,
+		ChatSessionID: template.ChatSessionID,
+		ActorUserID:   &actorUserID,
+		Status:        string(agentdom.ConversationStatusQueued),
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := s.repo.CreateConversation(ctx, conv); err != nil {
+		return nil, err
+	}
+	return conv, nil
+}
+
+// authorizeConversationTrigger checks that memberID may use both agent and
+// (when resolved) the environment a new conversation is about to attach
+// to — the same pair of checks StartChatSession performs inline, extracted
+// here so every other trigger path (task assignment, direct automation
+// message, comment mention, description write) enforces both restricted-
+// access grants too, not just the human-initiated chat path.
+//
+// memberID == uuid.Nil means there is no human actor behind this trigger
+// (an unattended automation firing with no resolved actor) — both checks
+// already treat that as "not applicable, assume allowed" rather than
+// denied: hasAgentUsageAccess has always done this (see its own doc
+// comment), and the environment check mirrors it here for the same
+// reason — the automation's own author already needed permission to
+// configure a rule against this agent/environment in the first place, so
+// a restricted default environment shouldn't silently break every
+// unattended run against it.
+func (s *Service) authorizeConversationTrigger(ctx context.Context, projectID uuid.UUID, agent *agentdom.Agent, envID *uuid.UUID, memberID uuid.UUID) error {
+	if ok, err := s.hasAgentUsageAccess(ctx, agent, memberID); err != nil {
+		return err
+	} else if !ok {
+		return agentdom.ErrAgentAccessRestricted
+	}
+	if envID != nil && s.environmentSvc != nil && memberID != uuid.Nil {
+		if ok, err := s.environmentSvc.HasEnvironmentUsageAccess(ctx, projectID, *envID, memberID); err != nil {
+			return err
+		} else if !ok {
+			return environmentdom.ErrEnvironmentAccessRestricted
+		}
+	}
+	return nil
 }
 
 // gatherRepoPlugins returns all installed plugins with the "repository" capability.
@@ -720,8 +3131,23 @@ func (s *Service) gatherRepoPluginIDs(ctx context.Context) []string {
 }
 
 // TriggerTaskAssigned creates a conversation and publishes the trigger event
-// when a task is assigned to an agent member.
-func (s *Service) TriggerTaskAssigned(ctx context.Context, projectID, agentID, taskID, triggeredByMemberID uuid.UUID) (*agentdom.AgentConversation, error) {
+// when a task is assigned to an agent member. note, when non-empty, is
+// prepended to the agent's initial prompt as trigger.message — used by the
+// automation-workflow engine to tell the agent which status closes out its
+// step (e.g. "set the status to 'Done' when you finish"). triggeredByMemberID
+// is nil when the assignment came from the automation-workflow engine rather
+// than a human member.
+func (s *Service) TriggerTaskAssigned(ctx context.Context, projectID, agentID, taskID uuid.UUID, triggeredByMemberID *uuid.UUID, note string) (*agentdom.AgentConversation, error) {
+	// FindAgentByID, not GetAgent/FindVisibleAgentInProject: this trigger's
+	// callers (notification_consumer.go, automation_consumer.go) already
+	// resolved agentID from a project-scoped member row before calling
+	// here, same trust boundary resolveConversationEnvironment below
+	// already relies on for this same agentID.
+	agent, err := s.repo.FindAgentByID(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+
 	repoPlugins := s.gatherRepoPlugins(ctx)
 	repoPluginIDs := make([]string, 0, len(repoPlugins))
 	for _, p := range repoPlugins {
@@ -734,10 +3160,24 @@ func (s *Service) TriggerTaskAssigned(ctx context.Context, projectID, agentID, t
 		repoPluginID = &id
 	}
 
+	envID, resolvedFolderID, workdir, err := s.resolveConversationEnvironment(ctx, projectID, agentID, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	memberID := uuid.Nil
+	if triggeredByMemberID != nil {
+		memberID = *triggeredByMemberID
+	}
+	if err := s.authorizeConversationTrigger(ctx, projectID, agent, envID, memberID); err != nil {
+		return nil, err
+	}
+
 	conv, err := s.createConversation(ctx, projectID, agentID, triggeredByMemberID, agentdom.AgentConversation{
-		TriggerType:  "task_assigned",
-		TaskID:       &taskID,
-		RepoPluginID: repoPluginID,
+		TriggerType:         "task_assigned",
+		TaskID:              &taskID,
+		RepoPluginID:        repoPluginID,
+		EnvironmentID:       envID,
+		EnvironmentFolderID: resolvedFolderID,
 	})
 	if err != nil {
 		return nil, err
@@ -747,18 +3187,36 @@ func (s *Service) TriggerTaskAssigned(ctx context.Context, projectID, agentID, t
 		"project_id":      projectID.String(),
 		"agent_id":        agentID.String(),
 		"task_id":         taskID.String(),
-		"actor_member_id": triggeredByMemberID.String(),
 		"trigger_type":    "task_assigned",
+		"message":         note,
 		"repo_plugin_ids": strings.Join(repoPluginIDs, ","),
 	}
-	_ = s.publishTrigger(ctx, events.TopicAgentTaskAssigned, payload)
+	if triggeredByMemberID != nil {
+		payload["actor_member_id"] = triggeredByMemberID.String()
+	}
+	if envID != nil {
+		payload["environment_id"] = envID.String()
+		payload["workdir"] = workdir
+	}
+	_ = s.dispatchOrEnqueue(ctx, agentID, conv.ID, events.TopicAgentTaskAssigned, payload, envID, resolvedFolderID)
 	return conv, nil
 }
 
-// TriggerCommentMention creates a conversation and publishes a comment-mention trigger.
-// message is the plain-text content of the comment so the agent's initial prompt
-// is populated without requiring a separate MCP call.
-func (s *Service) TriggerCommentMention(ctx context.Context, projectID, agentID, taskID, commentID, triggeredByMemberID uuid.UUID, message string) (*agentdom.AgentConversation, error) {
+// TriggerDirectMessage fires message straight at agentID, with no task
+// involved at all — used by the automation engine's trigger_ai_agent action
+// when its trigger has no target task (cron/api_trigger/predecessor_done
+// with no target_task_id configured, so there's nothing to assign, unlike
+// TriggerTaskAssigned). triggeredByMemberID is nil, same as
+// TriggerTaskAssigned's automation-triggered case — there's no human actor
+// behind an automation firing.
+func (s *Service) TriggerDirectMessage(ctx context.Context, projectID, agentID uuid.UUID, triggeredByMemberID *uuid.UUID, message string) (*agentdom.AgentConversation, error) {
+	// FindAgentByID, not GetAgent/FindVisibleAgentInProject — see the same
+	// note on TriggerTaskAssigned above.
+	agent, err := s.repo.FindAgentByID(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+
 	repoPlugins := s.gatherRepoPlugins(ctx)
 	repoPluginIDs := make([]string, 0, len(repoPlugins))
 	for _, p := range repoPlugins {
@@ -771,11 +3229,84 @@ func (s *Service) TriggerCommentMention(ctx context.Context, projectID, agentID,
 		repoPluginID = &id
 	}
 
+	envID, resolvedFolderID, workdir, err := s.resolveConversationEnvironment(ctx, projectID, agentID, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	memberID := uuid.Nil
+	if triggeredByMemberID != nil {
+		memberID = *triggeredByMemberID
+	}
+	if err := s.authorizeConversationTrigger(ctx, projectID, agent, envID, memberID); err != nil {
+		return nil, err
+	}
+
 	conv, err := s.createConversation(ctx, projectID, agentID, triggeredByMemberID, agentdom.AgentConversation{
-		TriggerType:  "comment_mention",
-		TaskID:       &taskID,
-		CommentID:    &commentID,
-		RepoPluginID: repoPluginID,
+		TriggerType:         "automation_message",
+		RepoPluginID:        repoPluginID,
+		EnvironmentID:       envID,
+		EnvironmentFolderID: resolvedFolderID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	payload := map[string]any{
+		"conversation_id": conv.ID.String(),
+		"project_id":      projectID.String(),
+		"agent_id":        agentID.String(),
+		"trigger_type":    "automation_message",
+		"message":         message,
+		"repo_plugin_ids": strings.Join(repoPluginIDs, ","),
+	}
+	if triggeredByMemberID != nil {
+		payload["actor_member_id"] = triggeredByMemberID.String()
+	}
+	if envID != nil {
+		payload["environment_id"] = envID.String()
+		payload["workdir"] = workdir
+	}
+	_ = s.dispatchOrEnqueue(ctx, agentID, conv.ID, events.TopicAgentAutomationMessage, payload, envID, resolvedFolderID)
+	return conv, nil
+}
+
+// TriggerCommentMention creates a conversation and publishes a comment-mention trigger.
+// message is the plain-text content of the comment so the agent's initial prompt
+// is populated without requiring a separate MCP call.
+func (s *Service) TriggerCommentMention(ctx context.Context, projectID, agentID, taskID, commentID, triggeredByMemberID uuid.UUID, message string) (*agentdom.AgentConversation, error) {
+	// FindAgentByID, not GetAgent/FindVisibleAgentInProject — see the same
+	// note on TriggerTaskAssigned above.
+	agent, err := s.repo.FindAgentByID(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+
+	repoPlugins := s.gatherRepoPlugins(ctx)
+	repoPluginIDs := make([]string, 0, len(repoPlugins))
+	for _, p := range repoPlugins {
+		repoPluginIDs = append(repoPluginIDs, p.Name)
+	}
+
+	var repoPluginID *uuid.UUID
+	if len(repoPlugins) > 0 {
+		id := repoPlugins[0].ID
+		repoPluginID = &id
+	}
+
+	envID, resolvedFolderID, workdir, err := s.resolveConversationEnvironment(ctx, projectID, agentID, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.authorizeConversationTrigger(ctx, projectID, agent, envID, triggeredByMemberID); err != nil {
+		return nil, err
+	}
+
+	conv, err := s.createConversation(ctx, projectID, agentID, &triggeredByMemberID, agentdom.AgentConversation{
+		TriggerType:         "comment_mention",
+		TaskID:              &taskID,
+		CommentID:           &commentID,
+		RepoPluginID:        repoPluginID,
+		EnvironmentID:       envID,
+		EnvironmentFolderID: resolvedFolderID,
 	})
 	if err != nil {
 		return nil, err
@@ -791,13 +3322,24 @@ func (s *Service) TriggerCommentMention(ctx context.Context, projectID, agentID,
 		"message":         message,
 		"repo_plugin_ids": strings.Join(repoPluginIDs, ","),
 	}
-	_ = s.publishTrigger(ctx, events.TopicAgentCommentMention, payload)
+	if envID != nil {
+		payload["environment_id"] = envID.String()
+		payload["workdir"] = workdir
+	}
+	_ = s.dispatchOrEnqueue(ctx, agentID, conv.ID, events.TopicAgentCommentMention, payload, envID, resolvedFolderID)
 	return conv, nil
 }
 
 // TriggerDescriptionWrite creates a conversation and publishes a trigger for
-// the agent to write a description for the given task.
+// the agent to write a description for the given task. Verifies agentID
+// belongs to projectID; the caller is responsible for verifying taskID
+// belongs to projectID (this service has no task-repository dependency).
 func (s *Service) TriggerDescriptionWrite(ctx context.Context, projectID, agentID, taskID, triggeredByMemberID uuid.UUID) (*agentdom.AgentConversation, error) {
+	agent, err := s.GetAgent(ctx, projectID, agentID)
+	if err != nil {
+		return nil, err
+	}
+
 	repoPlugins := s.gatherRepoPlugins(ctx)
 	repoPluginIDs := make([]string, 0, len(repoPlugins))
 	for _, p := range repoPlugins {
@@ -810,10 +3352,20 @@ func (s *Service) TriggerDescriptionWrite(ctx context.Context, projectID, agentI
 		repoPluginID = &id
 	}
 
-	conv, err := s.createConversation(ctx, projectID, agentID, triggeredByMemberID, agentdom.AgentConversation{
-		TriggerType:  "description_write",
-		TaskID:       &taskID,
-		RepoPluginID: repoPluginID,
+	envID, resolvedFolderID, workdir, err := s.resolveConversationEnvironment(ctx, projectID, agentID, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.authorizeConversationTrigger(ctx, projectID, agent, envID, triggeredByMemberID); err != nil {
+		return nil, err
+	}
+
+	conv, err := s.createConversation(ctx, projectID, agentID, &triggeredByMemberID, agentdom.AgentConversation{
+		TriggerType:         "description_write",
+		TaskID:              &taskID,
+		RepoPluginID:        repoPluginID,
+		EnvironmentID:       envID,
+		EnvironmentFolderID: resolvedFolderID,
 	})
 	if err != nil {
 		return nil, err
@@ -828,7 +3380,11 @@ func (s *Service) TriggerDescriptionWrite(ctx context.Context, projectID, agentI
 		"message":         "Please write a clear and detailed description for this task.",
 		"repo_plugin_ids": strings.Join(repoPluginIDs, ","),
 	}
-	_ = s.publishTrigger(ctx, events.TopicAgentDescriptionWrite, payload)
+	if envID != nil {
+		payload["environment_id"] = envID.String()
+		payload["workdir"] = workdir
+	}
+	_ = s.dispatchOrEnqueue(ctx, agentID, conv.ID, events.TopicAgentDescriptionWrite, payload, envID, resolvedFolderID)
 	return conv, nil
 }
 
@@ -843,7 +3399,722 @@ func (s *Service) publishTrigger(ctx context.Context, topic string, payload map[
 	return s.publisher.AppendFlat(ctx, events.StreamAgentTriggers, payload)
 }
 
-func (s *Service) publishChatTrigger(ctx context.Context, agentID, convID, sessionID, projectID, memberID uuid.UUID, message string, repoPluginIDs []string) error {
+// requiresSerialDispatch reports whether agent's conversations must never
+// run more than one at a time, regardless of its configured
+// ParallelismLimit, because a second one running concurrently would mean
+// two turns writing into the very same shared working directory:
+//
+//   - ACP-type agents always resolve to the user's own local checkout via
+//     apps/acp-bridge — and independently of that, apps/acp-bridge's own
+//     Runner session model (keyed by task_id or agent_id depending on its
+//     configured scope, never by conversation_id — see runner.go's
+//     sessionKeyFor) rejects a second concurrent turn sharing its session
+//     key rather than queueing it. Even an agent/task pairing that happens
+//     not to collide would just be relying on happenstance the bridge
+//     itself gives no guarantee about, so this applies to every ACP agent
+//     unconditionally.
+//   - Any agent (LLM or provider_cli) attached to a static
+//     DefaultEnvironmentID: unlike the default ephemeral sandbox (a fresh,
+//     isolated checkout per conversation), a static environment's
+//     filesystem is shared across every conversation attached to it, so two
+//     running at once would be exactly the same-directory race this whole
+//     feature exists to prevent (see https://github.com/Paca-AI/paca/issues/462).
+//     provider_cli agents always fall into this case, since they require a
+//     DefaultEnvironmentID unconditionally.
+//
+// Enforced both at write time (see validateParallelismLimit, called from
+// CreateAgent/UpdateAgent/CreateGlobalAgent/UpdateGlobalAgent) and
+// defensively here at dispatch time (effectiveParallelismLimit) — the
+// latter also covers an agent updated to attach a DefaultEnvironmentID
+// after its ParallelismLimit was already set above 1, and any row that
+// predates this validation.
+func requiresSerialDispatch(agent *agentdom.Agent) bool {
+	return agent.AgentType == agentdom.AgentTypeACP || agent.DefaultEnvironmentID != nil
+}
+
+// effectiveParallelismLimit resolves agent's real dispatch limit: its
+// configured ParallelismLimit, defaulted and capped the same way
+// CreateAgent/UpdateAgent already do at write time (defends against a
+// directly-constructed Agent, e.g. an older row predating this column, or a
+// test fixture, whose zero value would otherwise read as "never dispatch"),
+// then forced down to 1 if requiresSerialDispatch — see that function's doc
+// comment for why this override can never be configured away.
+func effectiveParallelismLimit(agent *agentdom.Agent) int {
+	limit := agent.ParallelismLimit
+	if limit <= 0 {
+		limit = defaultParallelismLimit
+	} else if limit > parallelismLimitCap {
+		limit = parallelismLimitCap
+	}
+	if requiresSerialDispatch(agent) && limit > 1 {
+		limit = 1
+	}
+	return limit
+}
+
+// validateParallelismLimit rejects a ParallelismLimit above 1 on an agent
+// that requiresSerialDispatch — called from CreateAgent/UpdateAgent/
+// CreateGlobalAgent/UpdateGlobalAgent after every other field (in
+// particular AgentType and DefaultEnvironmentID) has already been resolved
+// to its final value, so this sees exactly the combination that would be
+// persisted.
+func validateParallelismLimit(a *agentdom.Agent) error {
+	if a.ParallelismLimit > 1 && requiresSerialDispatch(a) {
+		return agentdom.ErrParallelismLimitRequiresIsolatedSandbox
+	}
+	return nil
+}
+
+// validateOnBusy rejects any onBusy value other than "" (ask),
+// agentdom.OnBusyQueue, or agentdom.OnBusyForce. Called at the top of every
+// public entry point that accepts onBusy from the HTTP layer
+// (StartChatSession, SendChatMessage, StartGlobalChatSession,
+// SendGlobalChatMessage, SendConversationMessage,
+// SendGlobalConversationMessage), before anything else runs: without this,
+// an unrecognized value (a client typo, e.g. "Queue") would silently fall
+// through checkParallelismCapacity/checkFolderCapacity's own onBusy
+// switches and be treated the same as "" (ask) instead of being rejected
+// outright.
+func validateOnBusy(onBusy string) error {
+	switch onBusy {
+	case "", agentdom.OnBusyQueue, agentdom.OnBusyForce:
+		return nil
+	default:
+		return agentdom.ErrOnBusyInvalid
+	}
+}
+
+// checkParallelismCapacity decides whether a new turn for agentID may
+// dispatch right now, given onBusy ("" | agentdom.OnBusyQueue |
+// agentdom.OnBusyForce — see those constants' doc comments).
+//
+//   - OnBusyForce always returns (true, nil): skip the check entirely.
+//   - Otherwise, dispatchNow is true when agentID currently has fewer than
+//     its effective ParallelismLimit (see effectiveParallelismLimit)
+//     conversations in status "running".
+//   - When there's no free slot: OnBusyQueue returns (false, nil) — the
+//     caller must hold the trigger in agent_pending_triggers instead of
+//     publishing it. "" (ask, the default) instead returns a non-nil
+//     *apierr.Error (CodeAgentParallelismLimitReached) carrying the
+//     running/limit counts, so an interactive caller can surface it to a
+//     human — with nothing created or mutated yet — instead of silently
+//     picking a side.
+func (s *Service) checkParallelismCapacity(ctx context.Context, agentID uuid.UUID, onBusy string) (dispatchNow bool, err error) {
+	if onBusy == agentdom.OnBusyForce {
+		return true, nil
+	}
+	agent, err := s.repo.FindAgentByID(ctx, agentID)
+	if err != nil {
+		return false, err
+	}
+	limit := effectiveParallelismLimit(agent)
+	running, err := s.repo.CountRunningConversations(ctx, agentID)
+	if err != nil {
+		return false, err
+	}
+	if running < limit {
+		return true, nil
+	}
+	if onBusy == agentdom.OnBusyQueue {
+		return false, nil
+	}
+	return false, apierr.NewWithDetails(apierr.CodeAgentParallelismLimitReached,
+		fmt.Sprintf("agent is already running %d/%d task(s)", running, limit),
+		map[string]string{"running": strconv.Itoa(running), "limit": strconv.Itoa(limit)})
+}
+
+// checkFolderCapacity reports whether environmentID/folderID is free for a
+// new conversation to start working in, independently of which agent it
+// belongs to.
+//
+// This exists as its own constraint, separate from checkParallelismCapacity,
+// because the per-agent limit alone doesn't protect a shared folder from
+// every way it can actually be shared:
+//   - Two different agents can have the same DefaultEnvironmentID (nothing
+//     stops a project from pointing two agents at one persistent checkout).
+//   - StartChatSession accepts an explicit environment_id/folder_id
+//     override, so even one agent's own conversations can be aimed at a
+//     folder that isn't its configured default — one this exact check has
+//     never seen before and has no per-agent counter for.
+//
+// "Free" is not just an exact folderID match: the repository query behind
+// CountRunningConversationsInFolder also counts a conversation running in
+// any ANCESTOR or DESCENDANT of folderID within the same environment.
+// environment_folders.path is an absolute filesystem path inside the
+// environment's shared container — a parent folder and anything nested
+// inside it are the same directory tree on disk, so a conversation running
+// in the parent is already touching whatever a conversation about to start
+// in the child would touch, and vice versa; treating them as unrelated
+// slots would just let the exact-match version of this same problem back
+// in one level up (or down) the tree. A conversation with no specific
+// folder set (environment_folder_id NULL) is treated as spanning the whole
+// environment — see folderOverlapPredicate on the repository side for the
+// exact predicate.
+//
+// Both agent capacity and folder capacity must hold for a dispatch to
+// proceed — see checkDispatchCapacity, which combines them. onBusy mirrors
+// checkParallelismCapacity's contract exactly: OnBusyForce always returns
+// (true, nil); OnBusyQueue returns (false, nil) instead of erroring so the
+// caller holds the trigger in agent_pending_triggers rather than publishing
+// it; "" (ask, the default) returns a non-nil *apierr.Error
+// (CodeAgentEnvironmentFolderBusy) instead, with nothing created or
+// mutated yet.
+func (s *Service) checkFolderCapacity(ctx context.Context, environmentID uuid.UUID, folderID *uuid.UUID, onBusy string) (dispatchNow bool, err error) {
+	if onBusy == agentdom.OnBusyForce {
+		return true, nil
+	}
+	occupied, err := s.repo.CountRunningConversationsInFolder(ctx, environmentID, folderID)
+	if err != nil {
+		return false, err
+	}
+	if occupied == 0 {
+		return true, nil
+	}
+	if onBusy == agentdom.OnBusyQueue {
+		return false, nil
+	}
+	return false, apierr.NewWithDetails(apierr.CodeAgentEnvironmentFolderBusy,
+		"another conversation is already running in this environment folder",
+		map[string]string{"environment_id": environmentID.String()})
+}
+
+// checkDispatchCapacity is checkParallelismCapacity extended with the
+// independent folder constraint checkFolderCapacity enforces — the single
+// entry point every dispatch decision in this file should call instead of
+// checkParallelismCapacity directly, so neither constraint can be
+// accidentally skipped. envID nil (the default ephemeral per-conversation
+// sandbox, or a global-chat conversation, which never has one at all) skips
+// the folder check entirely — there's no shared folder to protect.
+//
+// The agent check runs first and short-circuits: if it already fails (or
+// already produced the "ask" apierr.Error), that's returned as-is without
+// ever touching the folder — same posture as checkFolderCapacity itself,
+// just composed. This does mean a caller blocked by both constraints at
+// once sees only the agent-limit message, never both; that's an acceptable
+// simplification; either message correctly directs the human to the same
+// on_busy=queue|force retry.
+func (s *Service) checkDispatchCapacity(ctx context.Context, agentID uuid.UUID, envID, folderID *uuid.UUID, onBusy string) (dispatchNow bool, err error) {
+	dispatchNow, err = s.checkParallelismCapacity(ctx, agentID, onBusy)
+	if err != nil || !dispatchNow || envID == nil {
+		return dispatchNow, err
+	}
+	return s.checkFolderCapacity(ctx, *envID, folderID, onBusy)
+}
+
+// flattenPayload narrows a publishTrigger-shaped payload to the flat string
+// map agentdom.PendingTrigger.Payload stores — every value ever placed in
+// one of these payloads is already a string (see publishChatTrigger et al.),
+// so this never actually drops anything; the map[string]any typing exists
+// only because AppendFlat's signature predates PendingTrigger.
+func flattenPayload(payload map[string]any) map[string]string {
+	out := make(map[string]string, len(payload))
+	for k, v := range payload {
+		if s, ok := v.(string); ok {
+			out[k] = s
+		}
+	}
+	return out
+}
+
+// claimQueuedForDispatch atomically flips convID from "queued" to "running"
+// immediately before its trigger is actually published to
+// StreamAgentTriggers — the last step before a conversation's trigger is
+// handed to agent-runner, for every path that hasn't already claimed it via
+// some other CAS (SendChatMessage/SendGlobalChatMessage's own
+// ClaimConversationStatus calls in their paused/terminal resume branches
+// already do this, so they pass needsClaim=false to deliverTrigger instead
+// of calling this twice).
+//
+// This exists to close three races, all only possible because a "queued"
+// conversation's status doesn't become "running" until agent-runner itself
+// picks the trigger off the stream — an inherently asynchronous, unbounded
+// delay relative to the moment services/api decides to publish:
+//
+//  1. worker.AgentQueueConsumer reads StreamAgentConversationStatus with
+//     at-least-once delivery (a Valkey Streams consumer group). If it
+//     crashes after AdvanceQueue successfully dispatches a pending trigger
+//     but before acking that message, the same terminal-status event is
+//     redelivered and AdvanceQueue runs again. Without this claim,
+//     CountRunningConversations would still read the just-dispatched
+//     conversation as "queued" (agent-runner hasn't reached it yet) and
+//     the redelivery would dispatch a second one for the same single freed
+//     slot. With it, the first dispatch's claim has already flipped that
+//     conversation to "running" by the time any redelivery re-measures
+//     capacity, so the redelivered call correctly sees no room.
+//  2. StopConversation can run concurrently with AdvanceQueue dequeuing the
+//     very conversation being stopped (DeletePendingTriggerByConversationID
+//     blocks on the same row AdvanceQueue's SELECT ... FOR UPDATE SKIP
+//     LOCKED already holds). Without a conditional claim, AdvanceQueue would
+//     unconditionally publish the trigger regardless of what StopConversation
+//     just did to the row. With it, whichever of the two actually reaches
+//     the conversation's status column first wins: if StopConversation's
+//     write to "stopped" lands first, this claim fails (current status
+//     isn't "queued" anymore) and the trigger is correctly never published.
+//  3. Two concurrent dispatches for the SAME agent — a burst of
+//     task_assigned triggers landing at once, or two API replicas each
+//     independently running AdvanceQueue off two different terminal-status
+//     events for that agent — can both read "running < limit" from
+//     checkParallelismCapacity's plain count before either has actually
+//     claimed a row, and both proceed. See
+//     ClaimQueuedForDispatch's doc comment on the repository side for how
+//     the atomic re-verification below closes this one; a plain
+//     ClaimConversationStatus call here, keyed only on convID, has no way
+//     to know about a sibling conversation racing it for the same agent.
+//
+// A false return means one of those three: something already moved convID
+// out of "queued", or the agent's already back at capacity by the time this
+// runs — either way the caller must not publish. atCapacity distinguishes
+// the two "false" cases (see ClaimQueuedForDispatch's repository-side doc
+// comment): a caller MUST treat atCapacity=true as "still queued, needs to
+// be re-queued for a future retry," never as "gone for good" the way a lost
+// StopConversation race is — conflating them strands the conversation
+// "queued" forever with nothing left anywhere to ever advance it again.
+func (s *Service) claimQueuedForDispatch(ctx context.Context, agentID, convID uuid.UUID) (claimed, atCapacity bool, err error) {
+	agent, err := s.repo.FindAgentByID(ctx, agentID)
+	if err != nil {
+		return false, false, err
+	}
+	return s.repo.ClaimQueuedForDispatch(ctx, convID, agentID, effectiveParallelismLimit(agent))
+}
+
+// deliverTrigger publishes topic/payload immediately if dispatchNow (the
+// verdict a prior checkParallelismCapacity call already reached), otherwise
+// persists it as a PendingTrigger for AdvanceQueue to replay once a running
+// slot frees up — see PendingTrigger's doc comment.
+//
+// needsClaim must be true for a conversation still sitting at its
+// just-created "queued" status (every fresh-create path: StartChatSession,
+// StartGlobalChatSession, dispatchOrEnqueue's non-interactive triggers, and
+// SendChatMessage/SendGlobalChatMessage's own conv==nil branch) — see
+// claimQueuedForDispatch's doc comment for why. false for a conversation
+// that has already been atomically claimed by the caller's own
+// ClaimConversationStatus call (SendChatMessage/SendGlobalChatMessage's
+// paused/terminal resume branches, which claim straight to "running" or
+// "queued" depending on dispatchNow before ever reaching here) — claiming
+// again here would simply fail (current status is already "running", not
+// "queued") and wrongly suppress a publish that was already correctly
+// authorized.
+// envID/folderID are recorded on the PendingTrigger when dispatchNow is
+// false so DequeueOldestPendingTriggerForFolder can later find this trigger
+// by its target folder, not just by agent_id — see checkFolderCapacity's
+// doc comment for why a trigger can be blocked by folder occupancy even
+// when its own agent has room. nil for a trigger with no environment (the
+// default ephemeral sandbox, or global chat).
+func (s *Service) deliverTrigger(ctx context.Context, agentID, convID uuid.UUID, dispatchNow, needsClaim bool, topic string, payload map[string]any, envID, folderID *uuid.UUID) error {
+	if dispatchNow {
+		if needsClaim {
+			claimed, atCapacity, err := s.claimQueuedForDispatch(ctx, agentID, convID)
+			if err != nil {
+				return err
+			}
+			if atCapacity {
+				// Still "queued" — the agent's free-slot count came up
+				// short on the atomic re-check, i.e. this exact conversation
+				// lost the race checkParallelismCapacity's earlier plain
+				// count couldn't see coming. It has no agent_pending_triggers
+				// row yet (this is the fresh-dispatch path — a row only
+				// exists once we ourselves create one), so persisting one
+				// now is the only thing that keeps AdvanceQueue able to find
+				// and retry it later — see ClaimQueuedForDispatch's doc
+				// comment on why silently dropping it here would strand the
+				// conversation "queued" forever.
+				return s.enqueuePendingTrigger(ctx, agentID, convID, topic, payload, envID, folderID)
+			}
+			if !claimed {
+				// Something else (StopConversation, most likely) already
+				// moved this conversation out of "queued" — never publish a
+				// trigger for a conversation that's no longer waiting to
+				// start.
+				return nil
+			}
+		}
+		if err := s.publishTrigger(ctx, topic, payload); err != nil {
+			return s.revertFailedDispatch(ctx, agentID, convID, topic, payload, envID, folderID, err)
+		}
+		return nil
+	}
+	return s.enqueuePendingTrigger(ctx, agentID, convID, topic, payload, envID, folderID)
+}
+
+// enqueuePendingTrigger persists topic/payload as a PendingTrigger for
+// AdvanceQueue/AdvanceFolderQueue to replay later — the shared tail of
+// every place that decides a trigger can't be dispatched right now
+// (deliverTrigger's own !dispatchNow and atCapacity branches, and
+// revertFailedDispatch's best-effort recovery).
+func (s *Service) enqueuePendingTrigger(ctx context.Context, agentID, convID uuid.UUID, topic string, payload map[string]any, envID, folderID *uuid.UUID) error {
+	return s.repo.CreatePendingTrigger(ctx, &agentdom.PendingTrigger{
+		ID:                  uuid.New(),
+		AgentID:             agentID,
+		ConversationID:      convID,
+		Topic:               topic,
+		Payload:             flattenPayload(payload),
+		EnvironmentID:       envID,
+		EnvironmentFolderID: folderID,
+		CreatedAt:           time.Now(),
+	})
+}
+
+// revertFailedDispatch best-effort undoes a claim that already moved convID
+// to "running" when the publishTrigger call immediately following it
+// failed. Without this, convID would be stranded "running" forever with
+// its parallelism slot permanently leaked: nothing else ever revisits a
+// conversation already sitting at "running" (see
+// CountRunningConversations, which would keep counting it against
+// ParallelismLimit indefinitely), and — for the AdvanceQueue/
+// AdvanceFolderQueue callers specifically — its agent_pending_triggers row
+// is already gone by this point (dequeued before the claim even ran), so
+// there is nothing left anywhere durably recording that this trigger still
+// needs to be sent.
+//
+// This can't help a hard process crash landing in this same window —
+// nothing runs compensating code after that — but it does recover the far
+// more likely failure mode in practice: publishTrigger's own Valkey call
+// erroring out (a network blip, Valkey briefly unavailable) without the
+// process itself dying, which a crash-only analysis would otherwise still
+// leave as a silent, permanent slot leak.
+//
+// Reverts to "queued" and persists a fresh PendingTrigger unconditionally,
+// regardless of which status convID was actually claimed FROM
+// (queued/paused/finished/failed/stopped) — "queued" correctly describes
+// "waiting to be dispatched" either way, and AdvanceQueue/AdvanceFolderQueue
+// redeliver a PendingTrigger by re-resolving everything fresh (see
+// dispatchPendingTrigger's own doc comment), so this doesn't need to
+// distinguish where convID came from to retry it correctly.
+func (s *Service) revertFailedDispatch(ctx context.Context, agentID, convID uuid.UUID, topic string, payload map[string]any, envID, folderID *uuid.UUID, publishErr error) error {
+	reverted, revertErr := s.repo.ClaimConversationStatus(ctx, convID,
+		string(agentdom.ConversationStatusRunning), string(agentdom.ConversationStatusQueued))
+	if revertErr != nil {
+		return fmt.Errorf("publishTrigger failed for conversation %s (%w) and reverting it to queued also failed: %v", convID, publishErr, revertErr)
+	}
+	if !reverted {
+		// Something else (StopConversation, most plausibly) already moved
+		// convID out of "running" between the failed publish and this
+		// revert attempt — leave whatever it's now at alone rather than
+		// overwrite it back to "queued".
+		return publishErr
+	}
+	if createErr := s.enqueuePendingTrigger(ctx, agentID, convID, topic, payload, envID, folderID); createErr != nil {
+		return fmt.Errorf("publishTrigger failed for conversation %s (%w) and re-queueing it also failed: %v", convID, publishErr, createErr)
+	}
+	return publishErr
+}
+
+// dispatchPendingTrigger resolves pending's conversation fresh, atomically
+// claims it, and publishes its trigger — the common tail of AdvanceQueue and
+// AdvanceFolderQueue, once each has separately confirmed pending is
+// actually dispatchable (both its agent's ParallelismLimit and its target
+// folder's occupancy, whichever axis that particular caller owns — see
+// checkDispatchCapacity's doc comment on why the two are independent).
+// Returns (true, nil) once genuinely dispatched, (false, nil) if the claim
+// lost a race (see claimQueuedForDispatch) — the caller should treat that
+// as "this item is gone for good, try something else," never as an error
+// and never by putting it back.
+//
+// pending's own agent_pending_triggers row is already gone by the time this
+// runs (DequeueOldestPendingTrigger[ForFolder] deletes it as part of the
+// dequeue itself, before the caller even decides whether pending is
+// dispatchable) — so a publish failure here has nothing left to fall back
+// on except revertFailedDispatch's best-effort claim-and-recreate. See that
+// method's doc comment for exactly what it does and doesn't cover.
+// Returns (dispatched, atCapacity, err). atCapacity means the claim below
+// found pending's own agent back at capacity on its atomic re-check —
+// pending has already been re-persisted to agent_pending_triggers (its
+// original row is gone, deleted at dequeue) with its original
+// ID/CreatedAt/Payload preserved, same as requeueSkipped, so it keeps its
+// FIFO position — but this call itself dispatched nothing. See
+// ClaimQueuedForDispatch's doc comment for why this MUST be re-queued
+// rather than treated the same as a lost StopConversation race: unlike
+// that case, pending is still perfectly valid, just temporarily blocked.
+// AdvanceQueue and AdvanceFolderQueue react to atCapacity differently — see
+// their own call sites — since only AdvanceQueue can assume every other
+// item behind pending in the SAME agent's queue is equally blocked.
+func (s *Service) dispatchPendingTrigger(ctx context.Context, pending *agentdom.PendingTrigger) (dispatched, atCapacity bool, err error) {
+	conv, err := s.repo.FindConversationByID(ctx, pending.ConversationID)
+	if err != nil {
+		return false, false, err
+	}
+	// Re-resolve the conversation's environment/folder fresh rather than
+	// trust the environment_id/workdir snapshot captured in pending.Payload
+	// back when it was first queued — mirrors resolveWorkdirForConversation's
+	// own doc comment ("needed on every trigger a conversation publishes,
+	// not just the first"): the environment or folder it named could have
+	// been deleted, or its workdir path changed, in however long this sat
+	// in the backlog. Done before claiming below, same reasoning
+	// SendChatMessage's own doc comment gives for validating workdir
+	// resolution before its own ClaimConversationStatus call — a claim that
+	// then failed resolution would otherwise be stuck at "running" with
+	// nothing ever published to move it along.
+	envID, workdir, err := s.resolveWorkdirForConversation(ctx, conv.ProjectID, conv)
+	if err != nil {
+		return false, false, err
+	}
+	claimed, atCapacity, err := s.claimQueuedForDispatch(ctx, pending.AgentID, pending.ConversationID)
+	if err != nil {
+		return false, false, err
+	}
+	if atCapacity {
+		return false, true, s.repo.CreatePendingTrigger(ctx, pending)
+	}
+	if !claimed {
+		return false, false, nil
+	}
+	payload := make(map[string]any, len(pending.Payload))
+	for k, v := range pending.Payload {
+		payload[k] = v
+	}
+	if envID != nil {
+		payload["environment_id"] = envID.String()
+		payload["workdir"] = workdir
+	} else {
+		delete(payload, "environment_id")
+		delete(payload, "workdir")
+	}
+	if err := s.publishTrigger(ctx, pending.Topic, payload); err != nil {
+		// See revertFailedDispatch's doc comment. false, not true: the
+		// revert (when it succeeds) puts pending.ConversationID back to
+		// "queued" and recreates its PendingTrigger row, so it was NOT
+		// actually dispatched — the caller (AdvanceQueue/AdvanceFolderQueue)
+		// must not count it, though in practice it stops on the non-nil
+		// error before that distinction would even matter.
+		return false, false, s.revertFailedDispatch(ctx, pending.AgentID, pending.ConversationID, pending.Topic, payload, envID, conv.EnvironmentFolderID, err)
+	}
+	return true, false, nil
+}
+
+// requeueSkipped re-persists every PendingTrigger AdvanceQueue/
+// AdvanceFolderQueue dequeued but decided NOT to dispatch this call (the
+// other axis's constraint — folder occupancy for AdvanceQueue, agent
+// capacity for AdvanceFolderQueue — wasn't satisfied). Each is reinserted
+// with its original ID/CreatedAt/Payload unchanged, so it lands back at
+// exactly its original FIFO position rather than losing its place in line.
+//
+// Why dequeue-then-maybe-reinsert instead of a non-destructive peek: a
+// dequeued-but-not-yet-reinserted item is temporarily invisible to the next
+// DequeueOldestPendingTrigger[ForFolder] call within the SAME loop — which
+// is exactly what lets that next call reach a *different* item behind it
+// instead of re-dequeuing the same stuck one forever (an oldest-first
+// query would otherwise always return the same head-of-queue item again
+// immediately after a plain "skip and continue"). Called from a defer so
+// every return path — including an error return — still puts skipped items
+// back rather than losing them.
+func (s *Service) requeueSkipped(ctx context.Context, skipped []*agentdom.PendingTrigger, errp *error) {
+	for _, p := range skipped {
+		if err := s.repo.CreatePendingTrigger(ctx, p); err != nil && *errp == nil {
+			*errp = err
+		}
+	}
+}
+
+// AdvanceQueue dispatches up to maxDispatch of agentID's queued conversations
+// (agent_pending_triggers, oldest first), never exceeding its free
+// running-slot count, and reports how many it actually dispatched.
+//
+// maxDispatch is the caller's own bound on how many slots just became free,
+// since running (CountRunningConversations) never reflects a conversation
+// this call just dispatched — agent-runner flips it to "running"
+// asynchronously, only once it actually reads the trigger off the stream —
+// so re-deriving free capacity from a fresh count on every loop iteration
+// would understate how many are already spoken for and over-dispatch. Two
+// callers: worker.AgentQueueConsumer passes 1 for every conversation of
+// agentID's that reaches a terminal status (exactly one slot freed per
+// event); UpdateAgent/UpdateGlobalAgent pass the exact size of a
+// ParallelismLimit increase (freeing that many slots at once, with no
+// per-slot event to react to individually). Safe to call speculatively —
+// returns (0, nil) if nothing is queued or there's no free slot at all.
+//
+// This only advances agentID's OWN queue, gated by its own ParallelismLimit
+// — a dequeued item whose target folder is occupied by a conversation
+// belonging to some OTHER agent is set aside (see requeueSkipped) rather
+// than dispatched; AdvanceFolderQueue is what re-tries those once that
+// folder actually frees up, from whichever agent's queue they're sitting in.
+func (s *Service) AdvanceQueue(ctx context.Context, agentID uuid.UUID, maxDispatch int) (dispatched int, err error) {
+	if maxDispatch <= 0 {
+		return 0, nil
+	}
+	agent, err := s.repo.FindAgentByID(ctx, agentID)
+	if err != nil {
+		return 0, err
+	}
+	limit := effectiveParallelismLimit(agent)
+	running, err := s.repo.CountRunningConversations(ctx, agentID)
+	if err != nil {
+		return 0, err
+	}
+
+	var skipped []*agentdom.PendingTrigger
+	// Wrapped in a closure, not `defer s.requeueSkipped(ctx, skipped, &err)`
+	// directly: a bare defer call evaluates its arguments immediately, which
+	// would capture skipped's value right here (still empty) rather than
+	// whatever the loop below eventually appends to it. The closure defers
+	// reading skipped until the function actually returns.
+	defer func() { s.requeueSkipped(ctx, skipped, &err) }()
+
+	for dispatched < maxDispatch && running+dispatched < limit {
+		pending, dequeueErr := s.repo.DequeueOldestPendingTrigger(ctx, agentID)
+		if dequeueErr != nil {
+			return dispatched, dequeueErr
+		}
+		if pending == nil {
+			return dispatched, nil
+		}
+
+		if pending.EnvironmentID != nil {
+			folderFree, capErr := s.checkFolderCapacity(ctx, *pending.EnvironmentID, pending.EnvironmentFolderID, agentdom.OnBusyQueue)
+			if capErr != nil {
+				return dispatched, capErr
+			}
+			if !folderFree {
+				// Occupied by some other agent's conversation right now —
+				// not this agent's queue to solve; AdvanceFolderQueue will
+				// retry this exact item once that folder frees up.
+				skipped = append(skipped, pending)
+				continue
+			}
+		}
+
+		ok, atCapacity, dispatchErr := s.dispatchPendingTrigger(ctx, pending)
+		if dispatchErr != nil {
+			return dispatched, dispatchErr
+		}
+		if atCapacity {
+			// dispatchPendingTrigger already re-queued pending. Unlike the
+			// folder-blocked case above, there's no point trying another
+			// item from this SAME agent's own queue — every one of them
+			// would hit the exact same agent-wide capacity, just re-verified
+			// by a fresh atomic re-check instead of this loop's own
+			// (evidently now stale) running/limit snapshot.
+			return dispatched, nil
+		}
+		if !ok {
+			continue
+		}
+		dispatched++
+	}
+	return dispatched, nil
+}
+
+// AdvanceFolderQueue dispatches at most one conversation waiting on
+// environmentID/folderID once it becomes free — the folder-occupancy
+// counterpart to AdvanceQueue's per-agent counter, called whenever a
+// conversation attached to a static environment reaches a terminal status
+// (alongside that conversation's own AdvanceQueue call — see
+// worker.AgentQueueConsumer.handle), since whichever agent is queued
+// waiting on the now-free folder might not be the same agent whose
+// conversation just vacated it.
+//
+// Unlike AdvanceQueue there's no maxDispatch/limit parameter: a folder can
+// only ever host one running conversation at a time (checkFolderCapacity's
+// whole point), so at most one dispatch out of this call is ever
+// meaningful regardless of how many terminal events arrive. Returns whether
+// it actually dispatched something.
+func (s *Service) AdvanceFolderQueue(ctx context.Context, environmentID uuid.UUID, folderID *uuid.UUID) (dispatchedOne bool, err error) {
+	var skipped []*agentdom.PendingTrigger
+	// Wrapped in a closure, not `defer s.requeueSkipped(ctx, skipped, &err)`
+	// directly: a bare defer call evaluates its arguments immediately, which
+	// would capture skipped's value right here (still empty) rather than
+	// whatever the loop below eventually appends to it. The closure defers
+	// reading skipped until the function actually returns.
+	defer func() { s.requeueSkipped(ctx, skipped, &err) }()
+
+	for {
+		// DequeueOldestPendingTriggerForFolder matches by path overlap (see
+		// folderOverlapPredicate on the repository side), so a candidate it
+		// returns can legitimately name a *different* folder than
+		// folderID — a parent, a child, or the same one. That means its own
+		// occupancy can't be assumed free just because folderID itself is:
+		// two unrelated siblings both nested under folderID neither overlap
+		// each other nor need to wait on one another, so this re-checks
+		// each candidate's own folder fresh instead of gating the whole
+		// call on folderID's — a single upfront check here would wrongly
+		// skip a genuinely dispatchable sibling whenever folderID's parent
+		// scope also happens to overlap some unrelated still-running
+		// conversation.
+		pending, dequeueErr := s.repo.DequeueOldestPendingTriggerForFolder(ctx, environmentID, folderID)
+		if dequeueErr != nil {
+			return dispatchedOne, dequeueErr
+		}
+		if pending == nil {
+			return dispatchedOne, nil
+		}
+
+		folderFree, capErr := s.checkFolderCapacity(ctx, environmentID, pending.EnvironmentFolderID, agentdom.OnBusyQueue)
+		if capErr != nil {
+			return dispatchedOne, capErr
+		}
+		if !folderFree {
+			// Something else still overlaps THIS candidate's own folder
+			// (not necessarily folderID) — leave it queued.
+			skipped = append(skipped, pending)
+			continue
+		}
+
+		agentOK, agentErr := s.checkParallelismCapacity(ctx, pending.AgentID, agentdom.OnBusyQueue)
+		if agentErr != nil {
+			return dispatchedOne, agentErr
+		}
+		if !agentOK {
+			// Its folder is free, but the item's own agent isn't right
+			// now — not this call's constraint to solve; that agent's own
+			// AdvanceQueue call will retry this exact item once ITS slot
+			// frees up.
+			skipped = append(skipped, pending)
+			continue
+		}
+
+		// atCapacity intentionally ignored here (unlike AdvanceQueue's own
+		// call site): dispatchPendingTrigger already re-queued pending
+		// either way, and "its own agent has no room" is exactly the same
+		// "try the next item, could be a different agent" outcome as any
+		// other reason ok came back false.
+		ok, _, dispatchErr := s.dispatchPendingTrigger(ctx, pending)
+		if dispatchErr != nil {
+			return dispatchedOne, dispatchErr
+		}
+		if !ok {
+			continue
+		}
+		return true, nil
+	}
+}
+
+// dispatchOrEnqueue combines checkParallelismCapacity and deliverTrigger for
+// every non-interactive trigger (task_assigned, comment_mention,
+// description_write, automation_message) — there's no human synchronously
+// waiting for a reply on any of these, so it's always fine to silently queue
+// (agentdom.OnBusyQueue) rather than ask.
+// envID/folderID are the conversation's already-resolved environment/folder
+// (nil for the default ephemeral sandbox) — passed through to
+// checkDispatchCapacity so a shared folder blocks dispatch the same way an
+// agent-at-capacity does, and recorded on the PendingTrigger if this ends
+// up queued (see deliverTrigger's doc comment).
+func (s *Service) dispatchOrEnqueue(ctx context.Context, agentID, convID uuid.UUID, topic string, payload map[string]any, envID, folderID *uuid.UUID) error {
+	dispatchNow, err := s.checkDispatchCapacity(ctx, agentID, envID, folderID, agentdom.OnBusyQueue)
+	if err != nil {
+		return err
+	}
+	// needsClaim=true: every caller of dispatchOrEnqueue just created convID
+	// fresh (still "queued"), never claimed by anything else yet.
+	return s.deliverTrigger(ctx, agentID, convID, dispatchNow, true, topic, payload, envID, folderID)
+}
+
+// environmentID/workdir, when non-nil/non-empty, tell agent-runner which
+// static environment (and folder within it) this conversation is attached
+// to — see resolveChatEnvironment/resolveWorkdirForConversation's doc
+// comments for how callers resolve them, and
+// docs/ai-agent/environment-management.md's "Conversation attach path"
+// section for how agent-runner's decode.go/coldStartEnvironment consume
+// them.
+// needsClaim: see deliverTrigger's doc comment — true from StartChatSession
+// and SendChatMessage's own conv==nil branch (a freshly-created, never
+// claimed conversation), false from SendChatMessage's paused/terminal
+// resume branches (already atomically claimed by their own
+// ClaimConversationStatus call before reaching here).
+// folderID is environmentID's resolved folder — nil whenever environmentID
+// is, and otherwise threaded through to deliverTrigger purely so a queued
+// trigger records which folder it's waiting on (see that method's doc
+// comment); it plays no role in the payload itself, which only ever named
+// the resolved workdir path.
+func (s *Service) publishChatTrigger(ctx context.Context, agentID, convID, sessionID, projectID, memberID uuid.UUID, message string, repoPluginIDs []string, environmentID, folderID *uuid.UUID, workdir string, contextItems []agentdom.ContextItemRef, dispatchNow, needsClaim bool) error {
 	payload := map[string]any{
 		"conversation_id": convID.String(),
 		"project_id":      projectID.String(),
@@ -854,5 +4125,38 @@ func (s *Service) publishChatTrigger(ctx context.Context, agentID, convID, sessi
 		"message":         message,
 		"repo_plugin_ids": strings.Join(repoPluginIDs, ","),
 	}
-	return s.publishTrigger(ctx, events.TopicAgentChatMessage, payload)
+	if environmentID != nil {
+		payload["environment_id"] = environmentID.String()
+		payload["workdir"] = workdir
+	}
+	if len(contextItems) > 0 {
+		b, _ := json.Marshal(contextItems)
+		payload["context_items"] = string(b)
+	}
+	return s.deliverTrigger(ctx, agentID, convID, dispatchNow, needsClaim, events.TopicAgentChatMessage, payload, environmentID, folderID)
+}
+
+// publishGlobalChatTrigger is publishChatTrigger's global-chat sibling — no
+// project_id, actor identified by actor_user_id, and repo_plugin_ids
+// omitted entirely (repo/PR tools are excluded from global-chat
+// conversations; see the Global Conversations section's doc comment).
+// needsClaim: see publishChatTrigger's identical doc comment.
+func (s *Service) publishGlobalChatTrigger(ctx context.Context, agentID, convID, sessionID, actorUserID uuid.UUID, message string, contextItems []agentdom.ContextItemRef, dispatchNow, needsClaim bool) error {
+	payload := map[string]any{
+		"conversation_id": convID.String(),
+		"agent_id":        agentID.String(),
+		"chat_session_id": sessionID.String(),
+		"actor_user_id":   actorUserID.String(),
+		"trigger_type":    "chat_message",
+		"message":         message,
+	}
+	if len(contextItems) > 0 {
+		b, _ := json.Marshal(contextItems)
+		payload["context_items"] = string(b)
+	}
+	// envID/folderID both nil: global chat never attaches to a static
+	// environment (a global-scope agent can't have DefaultEnvironmentID —
+	// see Agent.DefaultEnvironmentID's doc comment — and StartGlobalChatSession
+	// has no per-conversation override for it either).
+	return s.deliverTrigger(ctx, agentID, convID, dispatchNow, needsClaim, events.TopicAgentChatMessage, payload, nil, nil)
 }

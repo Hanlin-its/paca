@@ -9,14 +9,16 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	plugindom "github.com/Paca-AI/api/internal/domain/plugin"
 	pluginrt "github.com/Paca-AI/api/internal/platform/plugin"
 	"github.com/Paca-AI/api/internal/transport/http/handler"
-	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
 )
 
 // ---------------------------------------------------------------------------
@@ -25,8 +27,10 @@ import (
 
 type mockPluginSvc struct {
 	install                func(ctx context.Context, in plugindom.InstallInput) (*plugindom.Plugin, error)
+	update                 func(ctx context.Context, id uuid.UUID, in plugindom.UpdateInput) (*plugindom.Plugin, error)
 	updateExtensionSetting func(ctx context.Context, in plugindom.UpdateExtensionSettingInput) (*plugindom.PluginExtensionSetting, error)
 	listPlugins            func(ctx context.Context) ([]*plugindom.Plugin, error)
+	checkHostCompatibility func(manifest plugindom.PluginManifest) error
 }
 
 func (m *mockPluginSvc) ListPlugins(ctx context.Context) ([]*plugindom.Plugin, error) {
@@ -41,10 +45,19 @@ func (m *mockPluginSvc) InstallPlugin(ctx context.Context, in plugindom.InstallI
 	}
 	return nil, errors.New("mock: install not configured")
 }
-func (m *mockPluginSvc) UpdatePlugin(_ context.Context, _ uuid.UUID, _ plugindom.UpdateInput) (*plugindom.Plugin, error) {
+func (m *mockPluginSvc) UpdatePlugin(ctx context.Context, id uuid.UUID, in plugindom.UpdateInput) (*plugindom.Plugin, error) {
+	if m.update != nil {
+		return m.update(ctx, id, in)
+	}
 	return nil, errors.New("not found")
 }
 func (m *mockPluginSvc) DeletePlugin(_ context.Context, _ uuid.UUID) error { return nil }
+func (m *mockPluginSvc) CheckHostCompatibility(manifest plugindom.PluginManifest) error {
+	if m.checkHostCompatibility != nil {
+		return m.checkHostCompatibility(manifest)
+	}
+	return nil
+}
 func (m *mockPluginSvc) UpdateExtensionSetting(ctx context.Context, in plugindom.UpdateExtensionSettingInput) (*plugindom.PluginExtensionSetting, error) {
 	if m.updateExtensionSetting != nil {
 		return m.updateExtensionSetting(ctx, in)
@@ -170,8 +183,11 @@ func TestProxyRequest_OversizedBody_Returns413(t *testing.T) {
 		},
 	}
 	rt := pluginrt.NewRuntime(nil, pluginrt.HostServices{}, pluginrt.ResourceLimits{
-		MaxCallDuration:     time.Second,
-		MaxRequestBodyBytes: 16,
+		MaxCallDuration: time.Second,
+		// Comfortably above the ~130-byte envelope overhead this request
+		// carries (empty headers/query/ids), so this pins the body itself
+		// tripping the cap rather than the envelope alone exhausting it.
+		MaxRequestBodyBytes: 512,
 	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	r := newPluginProxyRouter(svc, rt)
 
@@ -182,6 +198,50 @@ func TestProxyRequest_OversizedBody_Returns413(t *testing.T) {
 
 	if w.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("expected 413, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestProxyRequest_LargeHeaders_Returns413EvenWithTinyBody pins the fix for
+// a class of bug where a fixed, guessed reservation for the JSON envelope's
+// non-body fields (headers/query/path) let an oversized envelope slip past
+// the HTTP-layer size check because the *body* alone looked small enough --
+// only to fail downstream, or worse, not fail at all if the reservation
+// happened to be generous enough for that particular request. The cap must
+// account for this specific request's actual header size, not a guess, so
+// a request with tiny body but huge headers is rejected here at the
+// boundary -- before ever calling into the plugin runtime (none is loaded
+// in this test, so any call that reached HandleRequest would fail with a
+// 500 "plugin not loaded", not a 413).
+func TestProxyRequest_LargeHeaders_Returns413EvenWithTinyBody(t *testing.T) {
+	svc := &mockPluginSvc{
+		listPlugins: func(_ context.Context) ([]*plugindom.Plugin, error) {
+			return []*plugindom.Plugin{{
+				Name:    "test.plugin",
+				Enabled: true,
+				Manifest: plugindom.PluginManifest{
+					Backend: &plugindom.BackendManifest{
+						Routes: []plugindom.PluginRoute{
+							{Method: http.MethodPost, Path: "/echo", Middlewares: []plugindom.PluginRouteMiddleware{}},
+						},
+					},
+				},
+			}}, nil
+		},
+	}
+	rt := pluginrt.NewRuntime(nil, pluginrt.HostServices{}, pluginrt.ResourceLimits{
+		MaxCallDuration:     time.Second,
+		MaxRequestBodyBytes: 1024,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	r := newPluginProxyRouter(svc, rt)
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost,
+		"/plugins/test.plugin/echo", bytes.NewReader(make([]byte, 4)))
+	req.Header.Set("X-Huge-Header", strings.Repeat("a", 2000))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 from oversized headers alone, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -202,8 +262,10 @@ func TestProxyRequest_BodyWithinLimit_PassesSizeCheck(t *testing.T) {
 		},
 	}
 	rt := pluginrt.NewRuntime(nil, pluginrt.HostServices{}, pluginrt.ResourceLimits{
-		MaxCallDuration:     time.Second,
-		MaxRequestBodyBytes: 16,
+		MaxCallDuration: time.Second,
+		// Large enough that a tiny body plus this request's small envelope
+		// overhead (~130 bytes for empty headers/query/ids) both fit.
+		MaxRequestBodyBytes: 4096,
 	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	r := newPluginProxyRouter(svc, rt)
 

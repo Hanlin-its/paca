@@ -4,9 +4,11 @@ import (
 	"context"
 	"testing"
 
-	projectdom "github.com/Paca-AI/api/internal/domain/project"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+
+	agentdom "github.com/Paca-AI/api/internal/domain/agent"
+	projectdom "github.com/Paca-AI/api/internal/domain/project"
 )
 
 type memberServiceRepoMock struct {
@@ -15,6 +17,7 @@ type memberServiceRepoMock struct {
 	findMemberByAgent func(ctx context.Context, projectID, agentID uuid.UUID) (*projectdom.ProjectMember, error)
 	findRoleByID      func(ctx context.Context, id uuid.UUID) (*projectdom.ProjectRole, error)
 	updateMemberRole  func(ctx context.Context, projectID, userID, roleID uuid.UUID) error
+	addMember         func(ctx context.Context, m *projectdom.ProjectMember) error
 }
 
 func (m *memberServiceRepoMock) List(context.Context, int, int) ([]*projectdom.Project, int64, error) {
@@ -40,12 +43,20 @@ func (m *memberServiceRepoMock) Update(context.Context, *projectdom.Project) err
 	return nil
 }
 
+func (m *memberServiceRepoMock) UpdateJevConfig(context.Context, uuid.UUID, string, string, string) error {
+	return nil
+}
+
 func (m *memberServiceRepoMock) Delete(context.Context, uuid.UUID) error {
 	return nil
 }
 
 func (m *memberServiceRepoMock) ListMembers(context.Context, uuid.UUID) ([]*projectdom.ProjectMember, error) {
 	return nil, nil
+}
+
+func (m *memberServiceRepoMock) CountDistinctAgentsByProjects(context.Context, []uuid.UUID) (int64, error) {
+	return 0, nil
 }
 
 func (m *memberServiceRepoMock) FindMember(ctx context.Context, projectID, userID uuid.UUID) (*projectdom.ProjectMember, error) {
@@ -79,7 +90,10 @@ func (m *memberServiceRepoMock) FindMemberByUserProject(_ context.Context, _, _ 
 	return nil, projectdom.ErrMemberNotFound
 }
 
-func (m *memberServiceRepoMock) AddMember(context.Context, *projectdom.ProjectMember) error {
+func (m *memberServiceRepoMock) AddMember(ctx context.Context, member *projectdom.ProjectMember) error {
+	if m.addMember != nil {
+		return m.addMember(ctx, member)
+	}
 	return nil
 }
 
@@ -141,11 +155,214 @@ func (m *memberServiceRepoMock) UpdateMemberRoleByMemberID(_ context.Context, _,
 	return nil
 }
 
+func (m *memberServiceRepoMock) UpdateMemberDescription(_ context.Context, _ uuid.UUID, _ string) error {
+	return nil
+}
+
 func (m *memberServiceRepoMock) RemoveMemberByMemberID(_ context.Context, _ uuid.UUID) error {
 	return nil
 }
 
 var _ projectdom.Repository = (*memberServiceRepoMock)(nil)
+
+// memberServiceAgentLookupMock implements the agentLookup interface AddMember
+// uses to validate and resolve a global agent being invited.
+type memberServiceAgentLookupMock struct {
+	findAgentByID     func(ctx context.Context, id uuid.UUID) (*agentdom.Agent, error)
+	findAgentByHandle func(ctx context.Context, projectID uuid.UUID, handle string) (*agentdom.Agent, error)
+}
+
+func (m *memberServiceAgentLookupMock) FindAgentByID(ctx context.Context, id uuid.UUID) (*agentdom.Agent, error) {
+	if m.findAgentByID != nil {
+		return m.findAgentByID(ctx, id)
+	}
+	return nil, agentdom.ErrAgentNotFound
+}
+
+func (m *memberServiceAgentLookupMock) FindAgentByHandle(ctx context.Context, projectID uuid.UUID, handle string) (*agentdom.Agent, error) {
+	if m.findAgentByHandle != nil {
+		return m.findAgentByHandle(ctx, projectID, handle)
+	}
+	return nil, agentdom.ErrAgentNotFound
+}
+
+func TestAddMember_HumanStoresTrimmedDescription(t *testing.T) {
+	projectID, userID, roleID := uuid.New(), uuid.New(), uuid.New()
+	var stored *projectdom.ProjectMember
+	repo := &memberServiceRepoMock{
+		findByID: func(_ context.Context, id uuid.UUID) (*projectdom.Project, error) {
+			return &projectdom.Project{ID: id}, nil
+		},
+		findRoleByID: func(_ context.Context, id uuid.UUID) (*projectdom.ProjectRole, error) {
+			return &projectdom.ProjectRole{ID: id, ProjectID: &projectID}, nil
+		},
+		findMember: func(_ context.Context, _, _ uuid.UUID) (*projectdom.ProjectMember, error) {
+			if stored == nil {
+				return nil, projectdom.ErrMemberNotFound // not yet a member
+			}
+			return stored, nil // re-fetch after AddMember
+		},
+		addMember: func(_ context.Context, m *projectdom.ProjectMember) error {
+			stored = m
+			return nil
+		},
+	}
+	svc := New(repo, nil, nil)
+
+	got, err := svc.AddMember(context.Background(), projectID, projectdom.AddMemberInput{
+		UserID:        userID,
+		ProjectRoleID: roleID,
+		Description:   "  Frontend lead on this project  ",
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, "Frontend lead on this project", got.Description)
+}
+
+// TestAddMember_InvitesGlobalAgent covers the "invite" flow: AddMember with
+// AgentID set instead of UserID, the same endpoint/action used to add a
+// human, just for an already-existing global agent.
+func TestAddMember_InvitesGlobalAgent(t *testing.T) {
+	projectID := uuid.New()
+	agentID := uuid.New()
+	roleID := uuid.New()
+	agent := &agentdom.Agent{ID: agentID, AgentScope: agentdom.AgentScopeGlobal, Handle: "global-bot"}
+	addedMember := &projectdom.ProjectMember{ID: uuid.New(), ProjectID: projectID, AgentID: &agentID, ProjectRoleID: roleID, MemberType: "agent"}
+
+	findMemberByAgentCalls := 0
+	repo := &memberServiceRepoMock{
+		findByID: func(_ context.Context, id uuid.UUID) (*projectdom.Project, error) {
+			return &projectdom.Project{ID: id}, nil
+		},
+		findRoleByID: func(_ context.Context, id uuid.UUID) (*projectdom.ProjectRole, error) {
+			return &projectdom.ProjectRole{ID: id, ProjectID: &projectID}, nil
+		},
+		findMemberByAgent: func(_ context.Context, _, _ uuid.UUID) (*projectdom.ProjectMember, error) {
+			findMemberByAgentCalls++
+			if findMemberByAgentCalls == 1 {
+				return nil, projectdom.ErrMemberNotFound // not yet a member
+			}
+			return addedMember, nil // re-fetch after AddAgentMember
+		},
+	}
+	agents := &memberServiceAgentLookupMock{
+		findAgentByID: func(_ context.Context, id uuid.UUID) (*agentdom.Agent, error) {
+			assert.Equal(t, agentID, id)
+			return agent, nil
+		},
+		findAgentByHandle: func(_ context.Context, _ uuid.UUID, _ string) (*agentdom.Agent, error) {
+			return nil, agentdom.ErrAgentNotFound // no handle collision in this project
+		},
+	}
+	svc := New(repo, nil, agents)
+
+	got, err := svc.AddMember(context.Background(), projectID, projectdom.AddMemberInput{
+		AgentID:       &agentID,
+		ProjectRoleID: roleID,
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, addedMember, got)
+}
+
+func TestAddMember_RejectsProjectScopedAgentInvite(t *testing.T) {
+	projectID := uuid.New()
+	agentID := uuid.New()
+	roleID := uuid.New()
+
+	repo := &memberServiceRepoMock{
+		findByID: func(_ context.Context, id uuid.UUID) (*projectdom.Project, error) {
+			return &projectdom.Project{ID: id}, nil
+		},
+		findRoleByID: func(_ context.Context, id uuid.UUID) (*projectdom.ProjectRole, error) {
+			return &projectdom.ProjectRole{ID: id, ProjectID: &projectID}, nil
+		},
+	}
+	agents := &memberServiceAgentLookupMock{
+		findAgentByID: func(_ context.Context, id uuid.UUID) (*agentdom.Agent, error) {
+			// A project-scoped agent already belongs to exactly one project —
+			// only global-scope agents can be invited into another one.
+			return &agentdom.Agent{ID: id, AgentScope: agentdom.AgentScopeProject, ProjectID: uuid.New()}, nil
+		},
+	}
+	svc := New(repo, nil, agents)
+
+	_, err := svc.AddMember(context.Background(), projectID, projectdom.AddMemberInput{
+		AgentID:       &agentID,
+		ProjectRoleID: roleID,
+	})
+
+	assert.ErrorIs(t, err, projectdom.ErrAgentNotInvitable)
+}
+
+func TestAddMember_RejectsAlreadyInvitedAgent(t *testing.T) {
+	projectID := uuid.New()
+	agentID := uuid.New()
+	roleID := uuid.New()
+	agent := &agentdom.Agent{ID: agentID, AgentScope: agentdom.AgentScopeGlobal, Handle: "global-bot"}
+
+	repo := &memberServiceRepoMock{
+		findByID: func(_ context.Context, id uuid.UUID) (*projectdom.Project, error) {
+			return &projectdom.Project{ID: id}, nil
+		},
+		findRoleByID: func(_ context.Context, id uuid.UUID) (*projectdom.ProjectRole, error) {
+			return &projectdom.ProjectRole{ID: id, ProjectID: &projectID}, nil
+		},
+		findMemberByAgent: func(_ context.Context, _, _ uuid.UUID) (*projectdom.ProjectMember, error) {
+			return &projectdom.ProjectMember{ID: uuid.New()}, nil // already a member
+		},
+	}
+	agents := &memberServiceAgentLookupMock{
+		findAgentByID: func(_ context.Context, _ uuid.UUID) (*agentdom.Agent, error) { return agent, nil },
+	}
+	svc := New(repo, nil, agents)
+
+	_, err := svc.AddMember(context.Background(), projectID, projectdom.AddMemberInput{
+		AgentID:       &agentID,
+		ProjectRoleID: roleID,
+	})
+
+	assert.ErrorIs(t, err, projectdom.ErrMemberAlreadyAdded)
+}
+
+// TestAddMember_RejectsAgentHandleConflict verifies that inviting a global
+// agent is rejected outright when its handle collides with a different
+// agent already visible in the target project — @mention resolution is
+// handle-based within a project, so an ambiguous handle is never allowed.
+func TestAddMember_RejectsAgentHandleConflict(t *testing.T) {
+	projectID := uuid.New()
+	agentID := uuid.New()
+	conflictingAgentID := uuid.New()
+	roleID := uuid.New()
+	agent := &agentdom.Agent{ID: agentID, AgentScope: agentdom.AgentScopeGlobal, Handle: "dev-bot"}
+
+	repo := &memberServiceRepoMock{
+		findByID: func(_ context.Context, id uuid.UUID) (*projectdom.Project, error) {
+			return &projectdom.Project{ID: id}, nil
+		},
+		findRoleByID: func(_ context.Context, id uuid.UUID) (*projectdom.ProjectRole, error) {
+			return &projectdom.ProjectRole{ID: id, ProjectID: &projectID}, nil
+		},
+		findMemberByAgent: func(_ context.Context, _, _ uuid.UUID) (*projectdom.ProjectMember, error) {
+			return nil, projectdom.ErrMemberNotFound
+		},
+	}
+	agents := &memberServiceAgentLookupMock{
+		findAgentByID: func(_ context.Context, _ uuid.UUID) (*agentdom.Agent, error) { return agent, nil },
+		findAgentByHandle: func(_ context.Context, _ uuid.UUID, handle string) (*agentdom.Agent, error) {
+			assert.Equal(t, "dev-bot", handle)
+			return &agentdom.Agent{ID: conflictingAgentID, Handle: handle}, nil
+		},
+	}
+	svc := New(repo, nil, agents)
+
+	_, err := svc.AddMember(context.Background(), projectID, projectdom.AddMemberInput{
+		AgentID:       &agentID,
+		ProjectRoleID: roleID,
+	})
+
+	assert.ErrorIs(t, err, projectdom.ErrAgentHandleConflict)
+}
 
 func TestGetMyProjectPermissions_Success(t *testing.T) {
 	projectID := uuid.New()
@@ -172,12 +389,14 @@ func TestGetMyProjectPermissions_Success(t *testing.T) {
 			return role, nil
 		},
 	}
-	svc := New(repo, nil)
+	svc := New(repo, nil, nil)
 
 	got, err := svc.GetMyProjectPermissions(context.Background(), projectID, userID, nil)
 
 	assert.NoError(t, err)
-	assert.Equal(t, role.Permissions, got)
+	// projects.read is membership-implied (see GetMyProjectPermissions'
+	// doc comment) on top of the role's own permissions.
+	assert.Equal(t, map[string]any{"tasks.read": true, "tasks.write": true, "projects.read": true}, got)
 }
 
 func TestUpdateMemberRole_Success(t *testing.T) {
@@ -214,7 +433,7 @@ func TestUpdateMemberRole_Success(t *testing.T) {
 			return nil
 		},
 	}
-	svc := New(repo, nil)
+	svc := New(repo, nil, nil)
 
 	member, err := svc.UpdateMemberRole(context.Background(), projectID, userID, projectdom.UpdateMemberRoleInput{
 		ProjectRoleID: newRoleID,
@@ -236,7 +455,7 @@ func TestGetMyProjectPermissions_MemberNotFound(t *testing.T) {
 			return nil, projectdom.ErrMemberNotFound
 		},
 	}
-	svc := New(repo, nil)
+	svc := New(repo, nil, nil)
 
 	_, err := svc.GetMyProjectPermissions(context.Background(), uuid.New(), uuid.New(), nil)
 	assert.Error(t, err)
@@ -261,7 +480,7 @@ func TestGetMyProjectPermissions_RoleNotFound(t *testing.T) {
 			return nil, projectdom.ErrRoleNotFound
 		},
 	}
-	svc := New(repo, nil)
+	svc := New(repo, nil, nil)
 
 	_, err := svc.GetMyProjectPermissions(context.Background(), projectID, userID, nil)
 	assert.Error(t, err)
@@ -293,13 +512,14 @@ func TestGetMyProjectPermissions_NilPermissions(t *testing.T) {
 			return role, nil
 		},
 	}
-	svc := New(repo, nil)
+	svc := New(repo, nil, nil)
 
 	got, err := svc.GetMyProjectPermissions(context.Background(), projectID, userID, nil)
 
 	assert.NoError(t, err)
-	assert.NotNil(t, got)
-	assert.Empty(t, got)
+	// Not empty: projects.read is membership-implied even when the role
+	// itself carries no permissions at all.
+	assert.Equal(t, map[string]any{"projects.read": true}, got)
 }
 
 func TestGetMyProjectPermissions_Agent_Success(t *testing.T) {
@@ -327,12 +547,12 @@ func TestGetMyProjectPermissions_Agent_Success(t *testing.T) {
 			return role, nil
 		},
 	}
-	svc := New(repo, nil)
+	svc := New(repo, nil, nil)
 
 	got, err := svc.GetMyProjectPermissions(context.Background(), projectID, uuid.Nil, &agentID)
 
 	assert.NoError(t, err)
-	assert.Equal(t, role.Permissions, got)
+	assert.Equal(t, map[string]any{"tasks.read": true, "tasks.write": true, "prs.create": true, "projects.read": true}, got)
 }
 
 func TestGetMyProjectPermissions_Agent_MemberNotFound(t *testing.T) {
@@ -341,7 +561,7 @@ func TestGetMyProjectPermissions_Agent_MemberNotFound(t *testing.T) {
 			return nil, projectdom.ErrMemberNotFound
 		},
 	}
-	svc := New(repo, nil)
+	svc := New(repo, nil, nil)
 
 	agentID := uuid.New()
 	_, err := svc.GetMyProjectPermissions(context.Background(), uuid.New(), uuid.Nil, &agentID)
@@ -367,7 +587,7 @@ func TestGetMyProjectPermissions_Agent_RoleNotFound(t *testing.T) {
 			return nil, projectdom.ErrRoleNotFound
 		},
 	}
-	svc := New(repo, nil)
+	svc := New(repo, nil, nil)
 
 	_, err := svc.GetMyProjectPermissions(context.Background(), projectID, uuid.Nil, &agentID)
 	assert.Error(t, err)
@@ -399,11 +619,10 @@ func TestGetMyProjectPermissions_Agent_NilPermissions(t *testing.T) {
 			return role, nil
 		},
 	}
-	svc := New(repo, nil)
+	svc := New(repo, nil, nil)
 
 	got, err := svc.GetMyProjectPermissions(context.Background(), projectID, uuid.Nil, &agentID)
 
 	assert.NoError(t, err)
-	assert.NotNil(t, got)
-	assert.Empty(t, got)
+	assert.Equal(t, map[string]any{"projects.read": true}, got)
 }

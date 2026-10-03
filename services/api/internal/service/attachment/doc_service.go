@@ -6,15 +6,20 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	attachmentdom "github.com/Paca-AI/api/internal/domain/attachment"
 	"github.com/Paca-AI/api/internal/platform/storage"
-	"github.com/google/uuid"
 )
 
 // InitiateDocUpload creates a pending File record for a document and returns a
 // presigned upload session.  The storage key is organised under docs/{docId}/
-// to keep document files separate from task files.
-func (s *Service) InitiateDocUpload(ctx context.Context, in attachmentdom.DocUploadInput) (*attachmentdom.UploadSession, error) {
+// to keep document files separate from task files. Verifies in.DocID belongs
+// to projectID before proceeding.
+func (s *Service) InitiateDocUpload(ctx context.Context, projectID uuid.UUID, in attachmentdom.DocUploadInput) (*attachmentdom.UploadSession, error) {
+	if err := s.docChecker.DocBelongsToProject(ctx, projectID, in.DocID); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(in.FileName) == "" {
 		return nil, attachmentdom.ErrFileNameEmpty
 	}
@@ -70,8 +75,13 @@ func (s *Service) InitiateDocUpload(ctx context.Context, in attachmentdom.DocUpl
 	return session, nil
 }
 
-// CompleteDocUpload marks the file as uploaded and returns the updated file record.
-func (s *Service) CompleteDocUpload(ctx context.Context, in attachmentdom.DocCompleteUploadInput) (*attachmentdom.File, error) {
+// CompleteDocUpload marks the file as uploaded and returns the updated file
+// record. Verifies in.DocID belongs to projectID before proceeding.
+func (s *Service) CompleteDocUpload(ctx context.Context, projectID uuid.UUID, in attachmentdom.DocCompleteUploadInput) (*attachmentdom.File, error) {
+	if err := s.docChecker.DocBelongsToProject(ctx, projectID, in.DocID); err != nil {
+		return nil, err
+	}
+
 	f, err := s.repo.FindFileByID(ctx, in.FileID)
 	if err != nil {
 		return nil, err
@@ -114,8 +124,13 @@ func (s *Service) CompleteDocUpload(ctx context.Context, in attachmentdom.DocCom
 
 // GetDocFileDownloadURL returns a presigned GET URL for the given doc file.
 // docID is used to verify the file belongs to the document by checking the
-// storage key prefix (docs/{docId}/).
-func (s *Service) GetDocFileDownloadURL(ctx context.Context, docID uuid.UUID, fileID uuid.UUID, ttl time.Duration) (string, error) {
+// storage key prefix (docs/{docId}/), and projectID is used to verify docID
+// itself belongs to the caller's authorized project.
+func (s *Service) GetDocFileDownloadURL(ctx context.Context, projectID, docID, fileID uuid.UUID, ttl time.Duration) (string, error) {
+	if err := s.docChecker.DocBelongsToProject(ctx, projectID, docID); err != nil {
+		return "", err
+	}
+
 	f, err := s.repo.FindFileByID(ctx, fileID)
 	if err != nil {
 		return "", err
@@ -139,8 +154,14 @@ func (s *Service) GetDocFileDownloadURL(ctx context.Context, docID uuid.UUID, fi
 
 // DeleteDocFile removes the file record from the database and deletes the
 // object from the object store. docID is used to verify the file belongs to
-// the document by checking the storage key prefix (docs/{docId}/).
-func (s *Service) DeleteDocFile(ctx context.Context, docID uuid.UUID, fileID uuid.UUID) error {
+// the document by checking the storage key prefix (docs/{docId}/), and
+// projectID is used to verify docID itself belongs to the caller's
+// authorized project.
+func (s *Service) DeleteDocFile(ctx context.Context, projectID, docID, fileID uuid.UUID) error {
+	if err := s.docChecker.DocBelongsToProject(ctx, projectID, docID); err != nil {
+		return err
+	}
+
 	f, err := s.repo.FindFileByID(ctx, fileID)
 	if err != nil {
 		return err

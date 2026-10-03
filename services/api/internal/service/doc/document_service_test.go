@@ -5,13 +5,16 @@ package docsvc_test
 import (
 	"context"
 	"encoding/json"
+	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	docdom "github.com/Paca-AI/api/internal/domain/doc"
 	docsvc "github.com/Paca-AI/api/internal/service/doc"
-	"github.com/google/uuid"
 )
 
 // ---------------------------------------------------------------------------
@@ -89,7 +92,7 @@ func (r *fakeDocRepo) DeleteFolder(_ context.Context, id uuid.UUID) error {
 
 // -- DocumentRepository --
 
-func (r *fakeDocRepo) ListDocuments(_ context.Context, projectID uuid.UUID, folderID *uuid.UUID) ([]*docdom.Document, error) {
+func (r *fakeDocRepo) ListDocuments(_ context.Context, projectID uuid.UUID, folderID *uuid.UUID, search *string, cursor *string, limit *int) ([]*docdom.Document, bool, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	var out []*docdom.Document
@@ -102,8 +105,60 @@ func (r *fakeDocRepo) ListDocuments(_ context.Context, projectID uuid.UUID, fold
 				continue
 			}
 		}
+		if search != nil && *search != "" {
+			if !strings.Contains(strings.ToLower(d.Title), strings.ToLower(*search)) {
+				continue
+			}
+		}
 		cp := *d
 		out = append(out, &cp)
+	}
+	// Mirrors the real repository's pagination-mode ordering (title ASC, id
+	// ASC) — the map above has no inherent order, so this is required for
+	// the cursor test below to be meaningful, not just cosmetic.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Title != out[j].Title {
+			return out[i].Title < out[j].Title
+		}
+		return out[i].ID.String() < out[j].ID.String()
+	})
+	if limit == nil {
+		return out, false, nil
+	}
+	if cursor != nil {
+		if cur, ok := docdom.DecodeDocumentCursor(*cursor); ok {
+			i := 0
+			for i < len(out) && (out[i].Title < cur.Title || (out[i].Title == cur.Title && out[i].ID.String() <= cur.ID)) {
+				i++
+			}
+			out = out[i:]
+		}
+	}
+	hasMore := len(out) > *limit
+	if hasMore {
+		out = out[:*limit]
+	}
+	return out, hasMore, nil
+}
+
+func (r *fakeDocRepo) SearchDocuments(_ context.Context, projectID uuid.UUID, query string, limit int) ([]*docdom.Document, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	q := strings.ToLower(query)
+	var out []*docdom.Document
+	for _, d := range r.docs {
+		if d.ProjectID != projectID || d.DeletedAt != nil {
+			continue
+		}
+		if strings.Contains(strings.ToLower(d.Title), q) ||
+			strings.Contains(strings.ToLower(docdom.ExtractPlainText(d.Content)), q) {
+			cp := *d
+			out = append(out, &cp)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Title < out[j].Title })
+	if len(out) > limit {
+		out = out[:limit]
 	}
 	return out, nil
 }
@@ -320,6 +375,20 @@ func TestCreateFolder_EmptyName(t *testing.T) {
 	}
 }
 
+func TestCreateFolder_NameWithSlash(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeDocRepo()
+	svc := docsvc.New(repo, nil)
+
+	_, err := svc.CreateFolder(ctx, docdom.CreateFolderInput{
+		ProjectID: uuid.New(),
+		Name:      "Design/Docs",
+	})
+	if err != docdom.ErrFolderNameInvalid {
+		t.Errorf("expected ErrFolderNameInvalid, got %v", err)
+	}
+}
+
 func TestCreateFolder_WithParent_OK(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeDocRepo()
@@ -390,6 +459,51 @@ func TestUpdateFolder_OK(t *testing.T) {
 	}
 	if updated.Position != 5 {
 		t.Errorf("expected Position=5, got %d", updated.Position)
+	}
+}
+
+func TestUpdateFolder_NameWithSlash(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeDocRepo()
+	svc := docsvc.New(repo, nil)
+	projectID := uuid.New()
+
+	f, _ := svc.CreateFolder(ctx, docdom.CreateFolderInput{ProjectID: projectID, Name: "Old Name"})
+
+	_, err := svc.UpdateFolder(ctx, f.ID, docdom.UpdateFolderInput{
+		ProjectID: projectID,
+		Name:      "New/Name",
+	})
+	if err != docdom.ErrFolderNameInvalid {
+		t.Errorf("expected ErrFolderNameInvalid, got %v", err)
+	}
+}
+
+func TestUpdateFolder_UnchangedNameWithSlash_OK(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeDocRepo()
+	svc := docsvc.New(repo, nil)
+	projectID := uuid.New()
+
+	// Simulate a legacy row created before the "/" restriction existed —
+	// bypass CreateFolder's validation by seeding the repo directly.
+	f := &docdom.DocFolder{ID: uuid.New(), ProjectID: projectID, Name: "Legacy/Name"}
+	_ = repo.CreateFolder(ctx, f)
+
+	pos := 3
+	updated, err := svc.UpdateFolder(ctx, f.ID, docdom.UpdateFolderInput{
+		ProjectID: projectID,
+		Name:      "Legacy/Name",
+		Position:  &pos,
+	})
+	if err != nil {
+		t.Fatalf("resubmitting an unchanged legacy name should not error, got: %v", err)
+	}
+	if updated.Name != "Legacy/Name" {
+		t.Errorf("expected Name to remain Legacy/Name, got %q", updated.Name)
+	}
+	if updated.Position != 3 {
+		t.Errorf("expected Position=3, got %d", updated.Position)
 	}
 }
 
@@ -562,6 +676,21 @@ func TestCreateDocument_EmptyTitleDefaultsToUntitled(t *testing.T) {
 	}
 }
 
+func TestCreateDocument_TitleWithSlash(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeDocRepo()
+	svc := docsvc.New(repo, nil)
+	projectID := uuid.New()
+
+	_, err := svc.CreateDocument(ctx, docdom.CreateDocumentInput{
+		ProjectID: projectID,
+		Title:     "Q1/Q2 Plan",
+	})
+	if err != docdom.ErrDocTitleInvalid {
+		t.Errorf("expected ErrDocTitleInvalid, got %v", err)
+	}
+}
+
 func TestCreateDocument_FolderNotInProject(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeDocRepo()
@@ -625,7 +754,7 @@ func TestUpdateDocument_TitleChange_CreatesSnapshot(t *testing.T) {
 	})
 
 	newTitle := "New Title"
-	updated, err := svc.UpdateDocument(ctx, d.ID, docdom.UpdateDocumentInput{
+	updated, err := svc.UpdateDocument(ctx, projectID, d.ID, docdom.UpdateDocumentInput{
 		Title:     &newTitle,
 		UpdatedBy: &actor,
 	})
@@ -665,7 +794,7 @@ func TestUpdateDocument_ContentChange_CreatesSnapshot(t *testing.T) {
 
 	// First update — changes content.
 	newContent := json.RawMessage(`{"type":"doc","content":[{"type":"heading"}]}`)
-	_, err := svc.UpdateDocument(ctx, d.ID, docdom.UpdateDocumentInput{
+	_, err := svc.UpdateDocument(ctx, projectID, d.ID, docdom.UpdateDocumentInput{
 		Content:   &newContent,
 		UpdatedBy: &actor,
 	})
@@ -683,7 +812,7 @@ func TestUpdateDocument_ContentChange_CreatesSnapshot(t *testing.T) {
 	}
 
 	// Second update with identical content — no new snapshot.
-	_, err = svc.UpdateDocument(ctx, d.ID, docdom.UpdateDocumentInput{
+	_, err = svc.UpdateDocument(ctx, projectID, d.ID, docdom.UpdateDocumentInput{
 		Content:   &newContent,
 		UpdatedBy: &actor,
 	})
@@ -705,9 +834,47 @@ func TestUpdateDocument_EmptyTitle_Error(t *testing.T) {
 	d, _ := svc.CreateDocument(ctx, docdom.CreateDocumentInput{ProjectID: projectID, Title: "Doc"})
 
 	empty := "  "
-	_, err := svc.UpdateDocument(ctx, d.ID, docdom.UpdateDocumentInput{Title: &empty})
+	_, err := svc.UpdateDocument(ctx, projectID, d.ID, docdom.UpdateDocumentInput{Title: &empty})
 	if err != docdom.ErrDocTitleInvalid {
 		t.Errorf("expected ErrDocTitleInvalid, got %v", err)
+	}
+}
+
+func TestUpdateDocument_TitleWithSlash_Error(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeDocRepo()
+	svc := docsvc.New(repo, nil)
+	projectID := uuid.New()
+
+	d, _ := svc.CreateDocument(ctx, docdom.CreateDocumentInput{ProjectID: projectID, Title: "Doc"})
+
+	slashed := "Before/After"
+	_, err := svc.UpdateDocument(ctx, projectID, d.ID, docdom.UpdateDocumentInput{Title: &slashed})
+	if err != docdom.ErrDocTitleInvalid {
+		t.Errorf("expected ErrDocTitleInvalid, got %v", err)
+	}
+}
+
+func TestUpdateDocument_UnchangedTitleWithSlash_OK(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeDocRepo()
+	svc := docsvc.New(repo, nil)
+	projectID := uuid.New()
+
+	// Simulate a legacy row created before the "/" restriction existed —
+	// bypass CreateDocument's validation by seeding the repo directly.
+	d := &docdom.Document{ID: uuid.New(), ProjectID: projectID, Title: "Legacy/Title"}
+	_ = repo.CreateDocument(ctx, d)
+
+	unchanged := "Legacy/Title"
+	updated, err := svc.UpdateDocument(ctx, projectID, d.ID, docdom.UpdateDocumentInput{
+		Title: &unchanged,
+	})
+	if err != nil {
+		t.Fatalf("resubmitting an unchanged legacy title should not error, got: %v", err)
+	}
+	if updated.Title != "Legacy/Title" {
+		t.Errorf("expected Title to remain Legacy/Title, got %q", updated.Title)
 	}
 }
 
@@ -717,7 +884,7 @@ func TestUpdateDocument_NotFound(t *testing.T) {
 	svc := docsvc.New(repo, nil)
 
 	newTitle := "X"
-	_, err := svc.UpdateDocument(ctx, uuid.New(), docdom.UpdateDocumentInput{Title: &newTitle})
+	_, err := svc.UpdateDocument(ctx, uuid.New(), uuid.New(), docdom.UpdateDocumentInput{Title: &newTitle})
 	if err != docdom.ErrDocNotFound {
 		t.Errorf("expected ErrDocNotFound, got %v", err)
 	}
@@ -731,7 +898,7 @@ func TestDeleteDocument_OK(t *testing.T) {
 
 	d, _ := svc.CreateDocument(ctx, docdom.CreateDocumentInput{ProjectID: projectID, Title: "To Delete"})
 
-	if err := svc.DeleteDocument(ctx, d.ID); err != nil {
+	if err := svc.DeleteDocument(ctx, projectID, d.ID); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -746,9 +913,91 @@ func TestDeleteDocument_NotFound(t *testing.T) {
 	repo := newFakeDocRepo()
 	svc := docsvc.New(repo, nil)
 
-	err := svc.DeleteDocument(ctx, uuid.New())
+	err := svc.DeleteDocument(ctx, uuid.New(), uuid.New())
 	if err != docdom.ErrDocNotFound {
 		t.Errorf("expected ErrDocNotFound, got %v", err)
+	}
+}
+
+func TestListDocuments_Search(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeDocRepo()
+	svc := docsvc.New(repo, nil)
+	projectID := uuid.New()
+	content := json.RawMessage(`{"type":"doc","content":[]}`)
+
+	if _, err := svc.CreateDocument(ctx, docdom.CreateDocumentInput{ProjectID: projectID, Title: "Onboarding Flow", Content: content}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := svc.CreateDocument(ctx, docdom.CreateDocumentInput{ProjectID: projectID, Title: "Architecture Overview", Content: content}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	search := "onboard"
+	docs, _, err := svc.ListDocuments(ctx, projectID, nil, &search, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(docs) != 1 {
+		t.Fatalf("expected 1 matching document, got %d", len(docs))
+	}
+	if docs[0].Title != "Onboarding Flow" {
+		t.Errorf("expected Title=Onboarding Flow, got %q", docs[0].Title)
+	}
+
+	all, _, err := svc.ListDocuments(ctx, projectID, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(all) != 2 {
+		t.Errorf("expected 2 documents with no search filter, got %d", len(all))
+	}
+}
+
+func TestListDocuments_CursorPagination(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeDocRepo()
+	svc := docsvc.New(repo, nil)
+	projectID := uuid.New()
+	content := json.RawMessage(`{"type":"doc","content":[]}`)
+
+	titles := []string{"Alpha", "Bravo", "Charlie", "Delta", "Echo"}
+	for _, title := range titles {
+		if _, err := svc.CreateDocument(ctx, docdom.CreateDocumentInput{ProjectID: projectID, Title: title, Content: content}); err != nil {
+			t.Fatalf("unexpected error creating %q: %v", title, err)
+		}
+	}
+
+	pageSize := 2
+	var seen []string
+	var cursor *string
+	for {
+		page, hasMore, err := svc.ListDocuments(ctx, projectID, nil, nil, cursor, &pageSize)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(page) > pageSize {
+			t.Fatalf("page returned %d documents, want at most %d", len(page), pageSize)
+		}
+		for _, d := range page {
+			seen = append(seen, d.Title)
+		}
+		if !hasMore {
+			break
+		}
+		s := docdom.EncodeDocumentCursor(page[len(page)-1])
+		cursor = &s
+	}
+
+	if len(seen) != len(titles) {
+		t.Fatalf("expected to page through all %d documents exactly once, got %d: %v", len(titles), len(seen), seen)
+	}
+	want := append([]string(nil), titles...)
+	sort.Strings(want)
+	for i, title := range want {
+		if seen[i] != title {
+			t.Errorf("page %d: expected %q, got %q (full sequence: %v)", i, title, seen[i], seen)
+		}
 	}
 }
 
@@ -761,7 +1010,7 @@ func TestListSnapshots_DocNotFound(t *testing.T) {
 	repo := newFakeDocRepo()
 	svc := docsvc.New(repo, nil)
 
-	_, err := svc.ListSnapshots(ctx, uuid.New())
+	_, err := svc.ListSnapshots(ctx, uuid.New(), uuid.New())
 	if err != docdom.ErrDocNotFound {
 		t.Errorf("expected ErrDocNotFound, got %v", err)
 	}
@@ -782,9 +1031,9 @@ func TestListSnapshots_OK(t *testing.T) {
 
 	// Update to trigger snapshot.
 	v2 := json.RawMessage(`{"v":2}`)
-	_, _ = svc.UpdateDocument(ctx, d.ID, docdom.UpdateDocumentInput{Content: &v2, UpdatedBy: &actor})
+	_, _ = svc.UpdateDocument(ctx, projectID, d.ID, docdom.UpdateDocumentInput{Content: &v2, UpdatedBy: &actor})
 
-	snaps, err := svc.ListSnapshots(ctx, d.ID)
+	snaps, err := svc.ListSnapshots(ctx, projectID, d.ID)
 	if err != nil {
 		t.Fatalf("ListSnapshots error: %v", err)
 	}
@@ -798,7 +1047,7 @@ func TestGetSnapshot_NotFound(t *testing.T) {
 	repo := newFakeDocRepo()
 	svc := docsvc.New(repo, nil)
 
-	_, err := svc.GetSnapshot(ctx, uuid.New())
+	_, err := svc.GetSnapshot(ctx, uuid.New(), uuid.New())
 	if err != docdom.ErrSnapshotNotFound {
 		t.Errorf("expected ErrSnapshotNotFound, got %v", err)
 	}
@@ -818,18 +1067,150 @@ func TestGetSnapshot_OK(t *testing.T) {
 	})
 
 	v2 := json.RawMessage(`{"v":2}`)
-	_, _ = svc.UpdateDocument(ctx, d.ID, docdom.UpdateDocumentInput{Content: &v2, UpdatedBy: &actor})
+	_, _ = svc.UpdateDocument(ctx, projectID, d.ID, docdom.UpdateDocumentInput{Content: &v2, UpdatedBy: &actor})
 
-	snaps, _ := svc.ListSnapshots(ctx, d.ID)
+	snaps, _ := svc.ListSnapshots(ctx, projectID, d.ID)
 	if len(snaps) == 0 {
 		t.Fatal("no snapshots created")
 	}
 
-	snap, err := svc.GetSnapshot(ctx, snaps[0].ID)
+	snap, err := svc.GetSnapshot(ctx, projectID, snaps[0].ID)
 	if err != nil {
 		t.Fatalf("GetSnapshot error: %v", err)
 	}
 	if snap.ID != snaps[0].ID {
 		t.Errorf("snapshot ID mismatch")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Cross-project isolation tests (GHSA-xwmv-9c7h-g947 / PACA-001, PACA-002)
+//
+// A document's routes authorize against the URL project, but callers can
+// still supply an arbitrary document/snapshot UUID from a different
+// project. Every method below must reject that combination as if the
+// document/snapshot did not exist, rather than acting on the foreign
+// project's data.
+// ---------------------------------------------------------------------------
+
+func TestUpdateDocument_WrongProject_ReturnsNotFound(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeDocRepo()
+	svc := docsvc.New(repo, nil)
+	ownerProjectID := uuid.New()
+	attackerProjectID := uuid.New()
+
+	d, _ := svc.CreateDocument(ctx, docdom.CreateDocumentInput{ProjectID: ownerProjectID, Title: "Victim Doc"})
+
+	newTitle := "Pwned"
+	_, err := svc.UpdateDocument(ctx, attackerProjectID, d.ID, docdom.UpdateDocumentInput{Title: &newTitle})
+	if err != docdom.ErrDocNotFound {
+		t.Fatalf("expected ErrDocNotFound for cross-project update, got %v", err)
+	}
+
+	got, _ := svc.GetDocument(ctx, d.ID)
+	if got.Title != "Victim Doc" {
+		t.Errorf("document must be unchanged after rejected cross-project update, got title %q", got.Title)
+	}
+}
+
+func TestDeleteDocument_WrongProject_ReturnsNotFound(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeDocRepo()
+	svc := docsvc.New(repo, nil)
+	ownerProjectID := uuid.New()
+	attackerProjectID := uuid.New()
+
+	d, _ := svc.CreateDocument(ctx, docdom.CreateDocumentInput{ProjectID: ownerProjectID, Title: "Victim Doc"})
+
+	err := svc.DeleteDocument(ctx, attackerProjectID, d.ID)
+	if err != docdom.ErrDocNotFound {
+		t.Fatalf("expected ErrDocNotFound for cross-project delete, got %v", err)
+	}
+
+	if _, err := svc.GetDocument(ctx, d.ID); err != nil {
+		t.Errorf("document must still exist after rejected cross-project delete, got %v", err)
+	}
+}
+
+func TestListSnapshots_WrongProject_ReturnsNotFound(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeDocRepo()
+	svc := docsvc.New(repo, nil)
+	ownerProjectID := uuid.New()
+	attackerProjectID := uuid.New()
+	actor := uuid.New()
+
+	d, _ := svc.CreateDocument(ctx, docdom.CreateDocumentInput{
+		ProjectID: ownerProjectID,
+		Title:     "Doc",
+		Content:   json.RawMessage(`{"v":1}`),
+	})
+	v2 := json.RawMessage(`{"v":2}`)
+	_, _ = svc.UpdateDocument(ctx, ownerProjectID, d.ID, docdom.UpdateDocumentInput{Content: &v2, UpdatedBy: &actor})
+
+	if _, err := svc.ListSnapshots(ctx, attackerProjectID, d.ID); err != docdom.ErrDocNotFound {
+		t.Fatalf("expected ErrDocNotFound for cross-project ListSnapshots, got %v", err)
+	}
+}
+
+func TestGetSnapshot_WrongProject_ReturnsNotFound(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeDocRepo()
+	svc := docsvc.New(repo, nil)
+	ownerProjectID := uuid.New()
+	attackerProjectID := uuid.New()
+	actor := uuid.New()
+
+	d, _ := svc.CreateDocument(ctx, docdom.CreateDocumentInput{
+		ProjectID: ownerProjectID,
+		Title:     "Doc",
+		Content:   json.RawMessage(`{"v":1}`),
+	})
+	v2 := json.RawMessage(`{"v":2}`)
+	_, _ = svc.UpdateDocument(ctx, ownerProjectID, d.ID, docdom.UpdateDocumentInput{Content: &v2, UpdatedBy: &actor})
+	snaps, _ := svc.ListSnapshots(ctx, ownerProjectID, d.ID)
+	if len(snaps) == 0 {
+		t.Fatal("no snapshots created")
+	}
+
+	if _, err := svc.GetSnapshot(ctx, attackerProjectID, snaps[0].ID); err != docdom.ErrSnapshotNotFound {
+		t.Fatalf("expected ErrSnapshotNotFound for cross-project GetSnapshot, got %v", err)
+	}
+}
+
+func TestSearchDocuments_TitleAndBody(t *testing.T) {
+	ctx := context.Background()
+	svc := docsvc.New(newFakeDocRepo(), nil)
+	projectID := uuid.New()
+	mk := func(title, text string) {
+		content := json.RawMessage(`[{"id":"b","type":"paragraph","content":[{"type":"text","text":"` + text + `"}],"children":[]}]`)
+		if _, err := svc.CreateDocument(ctx, docdom.CreateDocumentInput{ProjectID: projectID, Title: title, Content: content}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("Runbook", "restart the worker after the migration")
+	mk("Migration plan", "steps")
+	mk("Unrelated", "nothing here")
+
+	hits, err := svc.SearchDocuments(ctx, projectID, "  migration ", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 2 {
+		t.Fatalf("want 2 hits, got %d", len(hits))
+	}
+	byTitle := map[string]docdom.SearchHit{}
+	for _, h := range hits {
+		byTitle[h.Document.Title] = h
+	}
+	if byTitle["Migration plan"].MatchedIn != docdom.SearchMatchTitle {
+		t.Errorf("title hit = %+v", byTitle["Migration plan"])
+	}
+	if h := byTitle["Runbook"]; h.MatchedIn != docdom.SearchMatchContent || h.Snippet == "" {
+		t.Errorf("content hit = %+v", h)
+	}
+	if hits, _ := svc.SearchDocuments(ctx, projectID, "   ", 5); len(hits) != 0 {
+		t.Error("blank query should return nothing")
 	}
 }

@@ -25,6 +25,14 @@ async function main() {
 	const gatewayURL = process.env.PACA_GATEWAY_URL || undefined;
 	const agentId = process.env.PACA_AGENT_ID || undefined;
 	const projectId = process.env.PACA_PROJECT_ID || undefined;
+	const actorUserId = process.env.PACA_ACTOR_USER_ID || undefined;
+	const conversationId = process.env.PACA_CONVERSATION_ID || undefined;
+	// Comma-separated plugin names — see agent-runner's executor.go
+	// buildMCPServers, which sets this from trigger.RepoPluginIDs (itself
+	// decoded from the paca:agent:triggers stream's repo_plugin_ids field).
+	const repoPluginIds = process.env.PACA_REPO_PLUGIN_IDS
+		? process.env.PACA_REPO_PLUGIN_IDS.split(",").filter(Boolean)
+		: undefined;
 
 	// Validate required configuration
 	if (!apiKey) {
@@ -37,21 +45,29 @@ async function main() {
 		process.exit(1);
 	}
 
-	// If agent ID is provided, project ID is required
-	if (agentId && !projectId) {
-		console.error(
-			"PACA_PROJECT_ID environment variable is required when using PACA_AGENT_ID.",
-		);
-		console.error("\nExample:");
-		console.error("  export PACA_AGENT_ID='your-agent-id-here'");
-		console.error("  export PACA_PROJECT_ID='your-project-id-here'");
-		console.error("  export PACA_API_KEY='your-api-key-here'");
-		console.error("  export PACA_API_URL='http://localhost:8080'");
-		process.exit(1);
-	}
+	// PACA_PROJECT_ID pins every tool call to a single project ("single-project
+	// agent mode" — see server.ts). It's optional when PACA_AGENT_ID is set:
+	// a global-scope agent (services/agent-runner's buildMCPServers omits
+	// PACA_PROJECT_ID entirely for a global-chat conversation) runs "unpinned"
+	// instead, the same mode a personal API key with no project already uses —
+	// each tool call may target any project the caller has permission in
+	// (e.g. list/create/update a project, or work within one it's been
+	// invited into), passed explicitly per call rather than pinned once at
+	// startup. The API itself enforces permissions on each call (a
+	// disallowed call comes back as 403); the MCP server no longer
+	// pre-filters the tool list by permission.
 
 	// Create configuration object
-	const config: PacaConfig = { apiKey, baseURL, gatewayURL, agentId, projectId };
+	const config: PacaConfig = {
+		apiKey,
+		baseURL,
+		gatewayURL,
+		agentId,
+		projectId,
+		actorUserId,
+		conversationId,
+		repoPluginIds,
+	};
 
 	// Create and configure MCP server (loads plugin modules asynchronously)
 	const server = await createServer(config);

@@ -1,8 +1,26 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import type { ReactNode } from "react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useIsMobile } from "@/hooks/use-mobile";
 import type { Task } from "@/lib/interaction-api";
-import type { TaskStatus, TaskType } from "@/lib/project-api";
+import type { ProjectMember, TaskStatus, TaskType } from "@/lib/project-api";
 import { TaskCard } from "./task-card";
+
+// Real by default (see test/setup.ts's window.matchMedia stub, which always
+// resolves to desktop) — mocked directly here so the move-button tests below
+// don't depend on jsdom viewport dimensions.
+vi.mock("@/hooks/use-mobile", () => ({ useIsMobile: vi.fn(() => false) }));
+
+// TaskCard's epic-picker field now calls useEpicSearch (useInfiniteQuery)
+// unconditionally, so it needs a QueryClientProvider ancestor even though the
+// query stays disabled (epicOpen is never toggled true) in these tests.
+function wrapper({ children }: { children: ReactNode }) {
+	const qc = new QueryClient({
+		defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+	});
+	return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
+}
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -17,13 +35,14 @@ const makeTask = (overrides: Partial<Task> = {}): Task => ({
 	parent_task_id: null,
 	description: null,
 	importance: 0,
-	assignee_id: null,
+	assignee_ids: [],
 	reporter_id: null,
 	custom_fields: {},
 	view_position: null,
 	view_group_key: null,
 	created_at: "2026-01-01T00:00:00Z",
 	updated_at: "2026-01-01T00:00:00Z",
+	assignment_mode: "manual",
 	...overrides,
 });
 
@@ -44,6 +63,10 @@ const bugType: TaskType = {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe("TaskCard", () => {
+	beforeEach(() => {
+		vi.mocked(useIsMobile).mockReturnValue(false);
+	});
+
 	it("renders the task title", () => {
 		render(
 			<TaskCard
@@ -51,8 +74,41 @@ describe("TaskCard", () => {
 				statuses={NO_STATUSES}
 				taskTypes={NO_TYPES}
 			/>,
+			{ wrapper },
 		);
 		expect(screen.getByText("Fix the login bug")).toBeInTheDocument();
+	});
+
+	// Regression: after Auto (Jev) assigns someone the task keeps
+	// assignment_mode "auto", and the card used to keep showing the Auto
+	// sparkle instead of the person it picked.
+	it("shows the assignee Auto picked, not the Auto placeholder", () => {
+		const member = {
+			id: "member-2",
+			full_name: "Test 2",
+			username: "test2",
+		} as ProjectMember;
+		const renderCard = (assigneeIds: string[]) =>
+			render(
+				<TaskCard
+					task={makeTask({
+						assignment_mode: "auto",
+						assignee_ids: assigneeIds,
+					})}
+					statuses={NO_STATUSES}
+					taskTypes={NO_TYPES}
+					members={[member]}
+					visibleFields={["assignee"]}
+				/>,
+				{ wrapper },
+			);
+
+		const { unmount } = renderCard([]);
+		expect(screen.queryByText("T")).not.toBeInTheDocument();
+		unmount();
+
+		renderCard(["member-2"]);
+		expect(screen.getByText("T")).toBeInTheDocument();
 	});
 
 	it("does not render a type badge when task has no task_type_id", () => {
@@ -62,6 +118,7 @@ describe("TaskCard", () => {
 				statuses={NO_STATUSES}
 				taskTypes={[bugType]}
 			/>,
+			{ wrapper },
 		);
 		expect(screen.queryByText("Bug")).not.toBeInTheDocument();
 	});
@@ -73,6 +130,7 @@ describe("TaskCard", () => {
 				statuses={NO_STATUSES}
 				taskTypes={[bugType]}
 			/>,
+			{ wrapper },
 		);
 		expect(screen.getByText("Bug")).toBeInTheDocument();
 	});
@@ -86,6 +144,7 @@ describe("TaskCard", () => {
 				taskTypes={NO_TYPES}
 				onClick={onClick}
 			/>,
+			{ wrapper },
 		);
 		fireEvent.click(screen.getByText("Fix the login bug"));
 		expect(onClick).toHaveBeenCalledOnce();
@@ -99,6 +158,7 @@ describe("TaskCard", () => {
 				taskTypes={NO_TYPES}
 				canEdit={true}
 			/>,
+			{ wrapper },
 		);
 		const card = container.querySelector("[data-task-id='task-1']");
 		expect(card).toHaveAttribute("draggable", "true");
@@ -112,6 +172,7 @@ describe("TaskCard", () => {
 				taskTypes={NO_TYPES}
 				canEdit={false}
 			/>,
+			{ wrapper },
 		);
 		const card = container.querySelector("[data-task-id='task-1']");
 		expect(card).toHaveAttribute("draggable", "false");
@@ -127,6 +188,7 @@ describe("TaskCard", () => {
 				canEdit={true}
 				onDragStart={onDragStart}
 			/>,
+			{ wrapper },
 		);
 		const card = container.querySelector("[data-task-id='task-1']") as Element;
 		fireEvent.dragStart(card);
@@ -143,6 +205,7 @@ describe("TaskCard", () => {
 				canEdit={true}
 				onDragEnd={onDragEnd}
 			/>,
+			{ wrapper },
 		);
 		const card = container.querySelector("[data-task-id='task-1']") as Element;
 		fireEvent.dragEnd(card);
@@ -157,6 +220,7 @@ describe("TaskCard", () => {
 				taskTypes={NO_TYPES}
 				isDragging={true}
 			/>,
+			{ wrapper },
 		);
 		const card = container.querySelector("[data-task-id='task-1']") as Element;
 		// isDragging adds opacity-50 class
@@ -166,13 +230,133 @@ describe("TaskCard", () => {
 	it("shows the assignee icon when task has an assignee", () => {
 		const { container } = render(
 			<TaskCard
-				task={makeTask({ assignee_id: "user-1" })}
+				task={makeTask({ assignee_ids: ["user-1"] })}
 				statuses={NO_STATUSES}
 				taskTypes={NO_TYPES}
 			/>,
+			{ wrapper },
 		);
-		// assigned state: filled avatar circle with ring-primary/20
-		const assigneeEl = container.querySelector(".ring-primary\\/20");
+		// assigned state: filled avatar circle with the primary gradient
+		const assigneeEl = container.querySelector(".from-primary\\/20");
 		expect(assigneeEl).toBeInTheDocument();
+	});
+
+	describe("mobile move buttons", () => {
+		it("does not render on desktop even when handlers are provided", () => {
+			render(
+				<TaskCard
+					task={makeTask()}
+					statuses={NO_STATUSES}
+					taskTypes={NO_TYPES}
+					onMoveLeft={vi.fn()}
+					onMoveRight={vi.fn()}
+				/>,
+				{ wrapper },
+			);
+			expect(
+				screen.queryByRole("button", { name: "Move to previous column" }),
+			).not.toBeInTheDocument();
+			expect(
+				screen.queryByRole("button", { name: "Move to next column" }),
+			).not.toBeInTheDocument();
+		});
+
+		it("does not render on mobile when neither handler is provided", () => {
+			vi.mocked(useIsMobile).mockReturnValue(true);
+			render(
+				<TaskCard
+					task={makeTask()}
+					statuses={NO_STATUSES}
+					taskTypes={NO_TYPES}
+				/>,
+				{ wrapper },
+			);
+			expect(
+				screen.queryByRole("button", { name: "Move to previous column" }),
+			).not.toBeInTheDocument();
+			expect(
+				screen.queryByRole("button", { name: "Move to next column" }),
+			).not.toBeInTheDocument();
+		});
+
+		it("renders both buttons enabled on mobile when both handlers are provided", () => {
+			vi.mocked(useIsMobile).mockReturnValue(true);
+			render(
+				<TaskCard
+					task={makeTask()}
+					statuses={NO_STATUSES}
+					taskTypes={NO_TYPES}
+					onMoveLeft={vi.fn()}
+					onMoveRight={vi.fn()}
+				/>,
+				{ wrapper },
+			);
+			expect(
+				screen.getByRole("button", { name: "Move to previous column" }),
+			).toBeEnabled();
+			expect(
+				screen.getByRole("button", { name: "Move to next column" }),
+			).toBeEnabled();
+		});
+
+		it("disables move-left at the first column (no onMoveLeft)", () => {
+			vi.mocked(useIsMobile).mockReturnValue(true);
+			render(
+				<TaskCard
+					task={makeTask()}
+					statuses={NO_STATUSES}
+					taskTypes={NO_TYPES}
+					onMoveRight={vi.fn()}
+				/>,
+				{ wrapper },
+			);
+			expect(
+				screen.getByRole("button", { name: "Move to previous column" }),
+			).toBeDisabled();
+			expect(
+				screen.getByRole("button", { name: "Move to next column" }),
+			).toBeEnabled();
+		});
+
+		it("disables move-right at the last column (no onMoveRight)", () => {
+			vi.mocked(useIsMobile).mockReturnValue(true);
+			render(
+				<TaskCard
+					task={makeTask()}
+					statuses={NO_STATUSES}
+					taskTypes={NO_TYPES}
+					onMoveLeft={vi.fn()}
+				/>,
+				{ wrapper },
+			);
+			expect(
+				screen.getByRole("button", { name: "Move to previous column" }),
+			).toBeEnabled();
+			expect(
+				screen.getByRole("button", { name: "Move to next column" }),
+			).toBeDisabled();
+		});
+
+		it("calls onMoveRight without also triggering the card's onClick", () => {
+			vi.mocked(useIsMobile).mockReturnValue(true);
+			const onClick = vi.fn();
+			const onMoveRight = vi.fn();
+			render(
+				<TaskCard
+					task={makeTask()}
+					statuses={NO_STATUSES}
+					taskTypes={NO_TYPES}
+					onClick={onClick}
+					onMoveLeft={vi.fn()}
+					onMoveRight={onMoveRight}
+				/>,
+				{ wrapper },
+			);
+			fireEvent.click(
+				screen.getByRole("button", { name: "Move to next column" }),
+			);
+			expect(onMoveRight).toHaveBeenCalledOnce();
+			expect(onClick).not.toHaveBeenCalled();
+		});
 	});
 });

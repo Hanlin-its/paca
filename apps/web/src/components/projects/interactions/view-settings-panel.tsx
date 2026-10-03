@@ -9,12 +9,15 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getTaskTypeIconComponent } from "@/components/projects/task-types/task-type-icons";
+import { EntityAvatarContent } from "@/components/shared/entity-avatar";
 import {
 	Popover,
 	PopoverContent,
 	PopoverTrigger,
 } from "@/components/ui/popover";
+import { useDebouncedCallback } from "@/hooks/use-debounced-callback";
 import {
+	type CustomFieldFilterConfig,
 	type FilterConfig,
 	type FilterEntry,
 	type InteractionView,
@@ -25,6 +28,7 @@ import {
 import {
 	type CustomFieldDefinition,
 	customFieldsQueryOptions,
+	type ProjectMember,
 	projectMembersQueryOptions,
 	STATUS_CATEGORIES,
 	STATUS_CATEGORY_LABELS,
@@ -34,7 +38,10 @@ import {
 	taskStatusesQueryOptions,
 	taskTypesQueryOptions,
 } from "@/lib/project-api";
+import { resolveMemberAvatarUrl } from "@/lib/provider-logos";
 import { cn } from "@/lib/utils";
+import { PRIORITY_LEVELS } from "./priority";
+import { ChipField } from "./task-detail/property-field/chip-field";
 
 import {
 	buildAllFieldOptions,
@@ -491,7 +498,17 @@ function AssigneeFilterSection({
 	selectedIds,
 	onChange,
 }: {
-	members: { id: string; full_name: string; username: string }[];
+	members: Pick<
+		ProjectMember,
+		| "id"
+		| "full_name"
+		| "username"
+		| "avatar_thumb_url"
+		| "member_type"
+		| "agent_type"
+		| "agent_llm_provider"
+		| "agent_acp_provider"
+	>[];
 	selectedIds: string[];
 	onChange: (ids: string[]) => void;
 }) {
@@ -536,7 +553,9 @@ function AssigneeFilterSection({
 							onChange={() => toggle(m.id)}
 							icon={
 								<div className="flex size-5 shrink-0 items-center justify-center rounded-full bg-linear-to-br from-primary/20 to-primary/10 text-primary text-xs font-bold ring-1 ring-primary/20">
-									{display.slice(0, 1).toUpperCase()}
+									<EntityAvatarContent avatarUrl={resolveMemberAvatarUrl(m)}>
+										{display.slice(0, 1).toUpperCase()}
+									</EntityAvatarContent>
 								</div>
 							}
 						/>
@@ -727,6 +746,328 @@ function TaskTypeFilterSection({
 	);
 }
 
+// ── Importance filter ─────────────────────────────────────────────────────────
+
+function ImportanceFilterSection({
+	selectedBuckets,
+	onChange,
+}: {
+	selectedBuckets: number[];
+	onChange: (buckets: number[]) => void;
+}) {
+	const { t } = useTranslation("projects");
+	const isAll = selectedBuckets.length === 0;
+
+	const toggle = (bucket: number) => {
+		if (selectedBuckets.includes(bucket)) {
+			onChange(selectedBuckets.filter((b) => b !== bucket));
+		} else {
+			onChange([...selectedBuckets, bucket]);
+		}
+	};
+
+	return (
+		<div className="px-1 pb-3 space-y-0.5">
+			<CheckRow
+				id="importance-all"
+				label={t("layout.viewSettings.importanceFilter.allLevels")}
+				checked={isAll}
+				bold
+				onChange={() => onChange([])}
+			/>
+			{PRIORITY_LEVELS.map((level) => (
+				<CheckRow
+					key={level.value}
+					id={`importance-${level.value}`}
+					label={t(level.labelKey)}
+					checked={isAll || selectedBuckets.includes(level.value)}
+					onChange={() => toggle(level.value)}
+					dot={
+						<span
+							className="size-2 shrink-0 rounded-full"
+							style={{ backgroundColor: level.color }}
+						/>
+					}
+				/>
+			))}
+		</div>
+	);
+}
+
+// ── Tags filter ────────────────────────────────────────────────────────────────
+
+function TagsFilterSection({
+	tags,
+	onChange,
+}: {
+	tags: string[];
+	onChange: (tags: string[]) => void;
+}) {
+	const { t } = useTranslation("projects");
+	const [input, setInput] = useState("");
+
+	function handleAdd(tag: string) {
+		const trimmed = tag.trim();
+		if (!trimmed || tags.includes(trimmed)) return;
+		onChange([...tags, trimmed]);
+		setInput("");
+	}
+
+	function handleRemove(tag: string) {
+		onChange(tags.filter((x) => x !== tag));
+	}
+
+	return (
+		<div className="px-3 pb-3">
+			<ChipField
+				chips={tags.map((tag) => ({ key: tag, label: tag }))}
+				onRemoveChip={handleRemove}
+				canEdit
+				addLabel={t("layout.viewSettings.tagsFilter.addTag")}
+			>
+				<form
+					onSubmit={(e) => {
+						e.preventDefault();
+						handleAdd(input);
+					}}
+				>
+					<input
+						// biome-ignore lint/a11y/noAutofocus: intentional for popover
+						autoFocus
+						type="text"
+						value={input}
+						onChange={(e) => setInput(e.target.value)}
+						placeholder={t("layout.viewSettings.tagsFilter.addTagPlaceholder")}
+						className="w-full rounded-lg border border-border/30 bg-muted/25 px-3 py-2 text-sm placeholder:text-muted-foreground/60 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 transition-all duration-150"
+						onKeyDown={(e) => {
+							if (e.key === "Enter") {
+								e.preventDefault();
+								handleAdd(input);
+							}
+						}}
+					/>
+				</form>
+			</ChipField>
+		</div>
+	);
+}
+
+// ── Custom field filters ──────────────────────────────────────────────────────
+
+function customFieldFilterCount(
+	f: CustomFieldFilterConfig | undefined,
+): number {
+	if (!f) return 0;
+	if (f.selector) return filterConfigToIds(f.selector).length;
+	if (f.min != null || f.max != null) return 1;
+	if (f.after || f.before) return 1;
+	if (f.contains) return 1;
+	return 0;
+}
+
+function CustomFieldSelectorFilter({
+	options,
+	selectedIds,
+	onChange,
+	noOptionsLabel,
+}: {
+	options: { key: string; label: string }[];
+	selectedIds: string[];
+	onChange: (ids: string[]) => void;
+	noOptionsLabel: string;
+}) {
+	const { t } = useTranslation("projects");
+	const isAll = selectedIds.length === 0;
+
+	if (options.length === 0) {
+		return (
+			<p className="px-3 pb-2 text-xs text-muted-foreground/50">
+				{noOptionsLabel}
+			</p>
+		);
+	}
+
+	const toggle = (key: string) => {
+		if (selectedIds.includes(key))
+			onChange(selectedIds.filter((x) => x !== key));
+		else onChange([...selectedIds, key]);
+	};
+
+	return (
+		<div className="px-1 pb-3 space-y-0.5">
+			<CheckRow
+				id="cf-all"
+				label={t("layout.viewSettings.customFieldFilter.allValues")}
+				checked={isAll}
+				bold
+				onChange={() => onChange([])}
+			/>
+			{options.map((o) => (
+				<CheckRow
+					key={o.key}
+					id={`cf-${o.key}`}
+					label={o.label}
+					checked={selectedIds.includes(o.key)}
+					onChange={() => toggle(o.key)}
+				/>
+			))}
+		</div>
+	);
+}
+
+function RangeFilterInput({
+	kind,
+	min,
+	max,
+	onChange,
+}: {
+	kind: "number" | "date";
+	min?: string;
+	max?: string;
+	onChange: (min: string | undefined, max: string | undefined) => void;
+}) {
+	const { t } = useTranslation("projects");
+	return (
+		<div className="px-3 pb-3 flex items-center gap-2">
+			<input
+				type={kind === "number" ? "number" : "date"}
+				value={min ?? ""}
+				onChange={(e) => onChange(e.target.value || undefined, max)}
+				placeholder={t("layout.viewSettings.customFieldFilter.min")}
+				className="w-full min-w-0 rounded-md border border-border/30 bg-background px-2 py-1 text-xs outline-none transition-all hover:border-border/50 focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
+			/>
+			<span className="shrink-0 text-xs text-muted-foreground/50">–</span>
+			<input
+				type={kind === "number" ? "number" : "date"}
+				value={max ?? ""}
+				onChange={(e) => onChange(min, e.target.value || undefined)}
+				placeholder={t("layout.viewSettings.customFieldFilter.max")}
+				className="w-full min-w-0 rounded-md border border-border/30 bg-background px-2 py-1 text-xs outline-none transition-all hover:border-border/50 focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
+			/>
+		</div>
+	);
+}
+
+function CustomFieldContainsFilter({
+	value,
+	onChange,
+}: {
+	value?: string;
+	onChange: (v: string | undefined) => void;
+}) {
+	const { t } = useTranslation("projects");
+	const [localValue, setLocalValue] = useState(value ?? "");
+	const debouncedOnChange = useDebouncedCallback(onChange, 300);
+
+	useEffect(() => {
+		setLocalValue(value ?? "");
+	}, [value]);
+
+	return (
+		<div className="px-3 pb-3">
+			<input
+				type="text"
+				value={localValue}
+				onChange={(e) => {
+					setLocalValue(e.target.value);
+					debouncedOnChange(e.target.value || undefined);
+				}}
+				placeholder={t(
+					"layout.viewSettings.customFieldFilter.containsPlaceholder",
+				)}
+				className="w-full min-w-0 rounded-md border border-border/30 bg-background px-2 py-1 text-xs outline-none transition-all hover:border-border/50 focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
+			/>
+		</div>
+	);
+}
+
+function CustomFieldFilterSection({
+	cf,
+	value,
+	onChange,
+}: {
+	cf: CustomFieldDefinition;
+	value: CustomFieldFilterConfig | undefined;
+	onChange: (next: CustomFieldFilterConfig | undefined) => void;
+}) {
+	const { t } = useTranslation("projects");
+
+	if (cf.field_type === "select" || cf.field_type === "multi_select") {
+		const selectedIds = filterConfigToIds(value?.selector);
+		return (
+			<CustomFieldSelectorFilter
+				options={cf.options.map((opt) => ({
+					key: opt.value,
+					label: opt.value,
+				}))}
+				selectedIds={selectedIds}
+				noOptionsLabel={t("layout.viewSettings.customFieldFilter.noOptions")}
+				onChange={(ids) => {
+					const selector = idsToFilterConfig(ids);
+					onChange(selector ? { selector } : undefined);
+				}}
+			/>
+		);
+	}
+
+	if (cf.field_type === "boolean") {
+		const selectedIds = filterConfigToIds(value?.selector);
+		return (
+			<CustomFieldSelectorFilter
+				options={[
+					{ key: "true", label: t("viewUtils.groups.yes") },
+					{ key: "false", label: t("viewUtils.groups.no") },
+				]}
+				selectedIds={selectedIds}
+				noOptionsLabel=""
+				onChange={(ids) => {
+					const selector = idsToFilterConfig(ids);
+					onChange(selector ? { selector } : undefined);
+				}}
+			/>
+		);
+	}
+
+	if (cf.field_type === "number") {
+		return (
+			<RangeFilterInput
+				kind="number"
+				min={value?.min != null ? String(value.min) : undefined}
+				max={value?.max != null ? String(value.max) : undefined}
+				onChange={(min, max) => {
+					const next: CustomFieldFilterConfig = {
+						min: min !== undefined ? Number(min) : undefined,
+						max: max !== undefined ? Number(max) : undefined,
+					};
+					onChange(next.min == null && next.max == null ? undefined : next);
+				}}
+			/>
+		);
+	}
+
+	if (cf.field_type === "date") {
+		return (
+			<RangeFilterInput
+				kind="date"
+				min={value?.after}
+				max={value?.before}
+				onChange={(after, before) => {
+					const next: CustomFieldFilterConfig = { after, before };
+					onChange(!next.after && !next.before ? undefined : next);
+				}}
+			/>
+		);
+	}
+
+	// text / url
+	return (
+		<CustomFieldContainsFilter
+			value={value?.contains}
+			onChange={(contains) => onChange(contains ? { contains } : undefined)}
+		/>
+	);
+}
+
 // ── Collapsible filter group ──────────────────────────────────────────────────
 
 function CollapsibleFilter({
@@ -777,6 +1118,12 @@ interface ViewSettingsPanelProps {
 	onSave: (viewId: string, config: ViewConfig) => Promise<unknown>;
 	onPreview: (config: ViewConfig) => void;
 	isPending?: boolean;
+	/** True when `view.config` is this user's personal override. */
+	isPersonalized?: boolean;
+	/** True when the caller may publish these settings to every project member (views.write). */
+	canSaveForEveryone?: boolean;
+	/** Saves the current draft as the shared view everyone sees, clearing the caller's own override. */
+	onSaveForEveryone: (viewId: string, config: ViewConfig) => Promise<unknown>;
 }
 
 export function ViewSettingsPanel({
@@ -787,6 +1134,9 @@ export function ViewSettingsPanel({
 	onSave,
 	onPreview,
 	isPending,
+	isPersonalized,
+	canSaveForEveryone,
+	onSaveForEveryone,
 }: ViewSettingsPanelProps) {
 	const { t } = useTranslation("projects");
 	const { data: customFields = [] } = useQuery(
@@ -801,6 +1151,18 @@ export function ViewSettingsPanel({
 
 	const [draft, setDraft] = useState<ViewConfig>(() => view?.config ?? {});
 	const [fieldsOpen, setFieldsOpen] = useState(false);
+	// Only offer Reset when there's actually something to reset — the draft
+	// (including unsaved edits) differs from the shared/team config. Also
+	// gates "Save for everyone": publishing an unchanged shared config would
+	// be a no-op.
+	const differsFromShared =
+		JSON.stringify(draft) !== JSON.stringify(view?.shared_config ?? {});
+	// Gates the personal-only save actions ("Save" / "Save only for me"):
+	// nothing to persist if the draft matches what's already effectively
+	// active for this user (their own override, or the shared value if they
+	// have none).
+	const differsFromEffective =
+		JSON.stringify(draft) !== JSON.stringify(view?.config ?? {});
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: intentionally keyed on view?.id
 	useEffect(() => {
@@ -837,7 +1199,37 @@ export function ViewSettingsPanel({
 		if (!next.statuses) delete next.statuses;
 		if (!next.assignees) delete next.assignees;
 		if (!next.task_types) delete next.task_types;
+		if (!next.custom_fields || Object.keys(next.custom_fields).length === 0) {
+			delete next.custom_fields;
+		}
+		if (!next.start_date?.after && !next.start_date?.before) {
+			delete next.start_date;
+		}
+		if (!next.due_date?.after && !next.due_date?.before) {
+			delete next.due_date;
+		}
+		if (next.story_points?.min == null && next.story_points?.max == null) {
+			delete next.story_points;
+		}
+		if (!next.importance || next.importance.length === 0) {
+			delete next.importance;
+		}
+		if (!next.tags || next.tags.length === 0) {
+			delete next.tags;
+		}
 		update({ filters: Object.keys(next).length > 0 ? next : {} });
+	};
+
+	const updateCustomFieldFilter = (
+		fieldKey: string,
+		next: CustomFieldFilterConfig | undefined,
+	) => {
+		const current = { ...(draft.filters?.custom_fields ?? {}) };
+		if (next) current[fieldKey] = next;
+		else delete current[fieldKey];
+		updateFilters({
+			custom_fields: Object.keys(current).length > 0 ? current : undefined,
+		});
 	};
 
 	const handleSave = async () => {
@@ -847,11 +1239,23 @@ export function ViewSettingsPanel({
 		onOpenChange(false);
 	};
 
+	// Resets the draft to the team default, not to whatever was last saved —
+	// a personalized view's own saved override is not "default" from the
+	// user's perspective. Purely local: still requires Save (or Save for
+	// everyone) to persist, matching how a form's "reset" conventionally
+	// repopulates fields without submitting them.
 	const handleReset = () => {
-		const saved = view?.config ?? {};
-		setDraft(saved);
-		onPreview(saved);
+		const shared = view?.shared_config ?? {};
+		setDraft(shared);
+		onPreview(shared);
 		setFieldsOpen(false);
+	};
+
+	const handleSaveForEveryone = async () => {
+		if (!view) return;
+		await onSaveForEveryone(view.id, draft);
+		setFieldsOpen(false);
+		onOpenChange(false);
 	};
 
 	const visibleFields: string[] =
@@ -882,13 +1286,34 @@ export function ViewSettingsPanel({
 	const filterAssigneeIds = filterConfigToIds(draft.filters?.assignees);
 	const { allNormal: filterTaskTypeAllNormal, selectedIds: filterTaskTypeIds } =
 		taskTypeConfigToUI(draft.filters?.task_types);
+	const customFieldFilters = draft.filters?.custom_fields ?? {};
+	const customFieldFilterBadgeTotal = customFields.reduce(
+		(sum, cf) => sum + customFieldFilterCount(customFieldFilters[cf.field_key]),
+		0,
+	);
+	const filterStartDate = draft.filters?.start_date;
+	const filterDueDate = draft.filters?.due_date;
+	const filterStoryPoints = draft.filters?.story_points;
+	const filterImportance = draft.filters?.importance ?? [];
+	const filterTags = draft.filters?.tags ?? [];
+	const startDateBadge =
+		filterStartDate?.after || filterStartDate?.before ? 1 : 0;
+	const dueDateBadge = filterDueDate?.after || filterDueDate?.before ? 1 : 0;
+	const storyPointsBadge =
+		filterStoryPoints?.min != null || filterStoryPoints?.max != null ? 1 : 0;
 
 	const filterBadge =
 		filterSprintIds.length +
 		filterStatusIds.length +
 		filterAssigneeIds.length +
 		filterTaskTypeIds.length +
-		(filterTaskTypeAllNormal ? 1 : 0);
+		(filterTaskTypeAllNormal ? 1 : 0) +
+		customFieldFilterBadgeTotal +
+		startDateBadge +
+		dueDateBadge +
+		storyPointsBadge +
+		filterImportance.length +
+		filterTags.length;
 	const hasSavedFilters = filterBadge > 0;
 
 	return (
@@ -932,9 +1357,16 @@ export function ViewSettingsPanel({
 						</>
 					) : (
 						<>
-							<p className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground/70">
-								{t("layout.viewSettings.title")}
-							</p>
+							<div className="flex items-center gap-1.5">
+								<p className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground/70">
+									{t("layout.viewSettings.title")}
+								</p>
+								{isPersonalized && (
+									<span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold normal-case tracking-normal text-primary">
+										{t("layout.viewSettings.onlyVisibleToYou")}
+									</span>
+								)}
+							</div>
 							{hasSavedFilters && (
 								<button
 									type="button"
@@ -1115,6 +1547,115 @@ export function ViewSettingsPanel({
 										}
 									/>
 								</CollapsibleFilter>
+
+								<CollapsibleFilter
+									label={t("layout.viewSettings.startDateLabel")}
+									badge={startDateBadge}
+									defaultOpen={startDateBadge > 0}
+								>
+									<RangeFilterInput
+										kind="date"
+										min={filterStartDate?.after}
+										max={filterStartDate?.before}
+										onChange={(after, before) =>
+											updateFilters({ start_date: { after, before } })
+										}
+									/>
+								</CollapsibleFilter>
+
+								<CollapsibleFilter
+									label={t("layout.viewSettings.dueDateLabel")}
+									badge={dueDateBadge}
+									defaultOpen={dueDateBadge > 0}
+								>
+									<RangeFilterInput
+										kind="date"
+										min={filterDueDate?.after}
+										max={filterDueDate?.before}
+										onChange={(after, before) =>
+											updateFilters({ due_date: { after, before } })
+										}
+									/>
+								</CollapsibleFilter>
+
+								<CollapsibleFilter
+									label={t("layout.viewSettings.importanceLabel")}
+									badge={filterImportance.length}
+									defaultOpen={filterImportance.length > 0}
+								>
+									<ImportanceFilterSection
+										selectedBuckets={filterImportance}
+										onChange={(buckets) =>
+											updateFilters({
+												importance: buckets.length > 0 ? buckets : undefined,
+											})
+										}
+									/>
+								</CollapsibleFilter>
+
+								<CollapsibleFilter
+									label={t("layout.viewSettings.storyPointsLabel")}
+									badge={storyPointsBadge}
+									defaultOpen={storyPointsBadge > 0}
+								>
+									<RangeFilterInput
+										kind="number"
+										min={
+											filterStoryPoints?.min != null
+												? String(filterStoryPoints.min)
+												: undefined
+										}
+										max={
+											filterStoryPoints?.max != null
+												? String(filterStoryPoints.max)
+												: undefined
+										}
+										onChange={(min, max) =>
+											updateFilters({
+												story_points: {
+													min: min !== undefined ? Number(min) : undefined,
+													max: max !== undefined ? Number(max) : undefined,
+												},
+											})
+										}
+									/>
+								</CollapsibleFilter>
+
+								<CollapsibleFilter
+									label={t("layout.viewSettings.tagsLabel")}
+									badge={filterTags.length}
+									defaultOpen={filterTags.length > 0}
+								>
+									<TagsFilterSection
+										tags={filterTags}
+										onChange={(tags) =>
+											updateFilters({
+												tags: tags.length > 0 ? tags : undefined,
+											})
+										}
+									/>
+								</CollapsibleFilter>
+
+								{customFields.map((cf) => {
+									const value = customFieldFilters[cf.field_key];
+									const count = customFieldFilterCount(value);
+									return (
+										<CollapsibleFilter
+											key={cf.id}
+											label={cf.display_name}
+											badge={count}
+											defaultOpen={count > 0}
+										>
+											<CustomFieldFilterSection
+												cf={cf}
+												value={value}
+												onChange={(next) =>
+													updateCustomFieldFilter(cf.field_key, next)
+												}
+											/>
+										</CollapsibleFilter>
+									);
+								})}
 							</div>
 						</div>
 					</div>
@@ -1122,23 +1663,65 @@ export function ViewSettingsPanel({
 
 				{/* ── Footer ───────────────────────────────────────────────── */}
 				<div className="flex items-center justify-end gap-2 px-3 py-2.5 border-t border-border/30 bg-muted/10">
-					<button
-						type="button"
-						onClick={handleReset}
-						className="rounded-lg bg-muted/50 px-2.5 py-1.5 text-xs font-semibold text-muted-foreground/80 transition-all duration-150 hover:bg-muted hover:text-foreground"
-					>
-						{t("layout.viewSettings.reset")}
-					</button>
-					<button
-						type="button"
-						onClick={handleSave}
-						disabled={isPending}
-						className="rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-sm transition-all duration-150 hover:bg-primary/90 disabled:opacity-40"
-					>
-						{isPending
-							? t("layout.viewSettings.saving")
-							: t("layout.viewSettings.save")}
-					</button>
+					{differsFromShared && (
+						<button
+							type="button"
+							onClick={handleReset}
+							className="mr-auto rounded-lg bg-muted/50 px-2.5 py-1.5 text-xs font-semibold text-muted-foreground/80 transition-all duration-150 hover:bg-muted hover:text-foreground"
+						>
+							{t("layout.viewSettings.reset")}
+						</button>
+					)}
+					{canSaveForEveryone ? (
+						<div className="flex items-stretch">
+							{/* "Save for everyone" is primary here: for anyone who can
+							    publish shared settings, that's the common case — a
+							    personal-only save is the exception, tucked in the menu. */}
+							<button
+								type="button"
+								onClick={handleSaveForEveryone}
+								disabled={isPending || !differsFromShared}
+								className="rounded-l-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-sm transition-all duration-150 hover:bg-primary/90 disabled:opacity-40"
+							>
+								{isPending
+									? t("layout.viewSettings.saving")
+									: t("layout.viewSettings.saveForEveryone")}
+							</button>
+							<Popover>
+								<PopoverTrigger
+									type="button"
+									disabled={isPending}
+									className="rounded-r-lg border-l border-primary-foreground/20 bg-primary px-1.5 py-1.5 text-primary-foreground shadow-sm transition-all duration-150 hover:bg-primary/90 disabled:opacity-40"
+								>
+									<ChevronDown className="size-3" />
+								</PopoverTrigger>
+								<PopoverContent
+									align="end"
+									className="w-52 p-1 rounded-lg border border-border/40 shadow-lg"
+								>
+									<button
+										type="button"
+										onClick={handleSave}
+										disabled={isPending || !differsFromEffective}
+										className="flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-xs font-medium transition-colors duration-100 hover:bg-muted/60 disabled:opacity-40"
+									>
+										{t("layout.viewSettings.saveOnlyForMe")}
+									</button>
+								</PopoverContent>
+							</Popover>
+						</div>
+					) : (
+						<button
+							type="button"
+							onClick={handleSave}
+							disabled={isPending || !differsFromEffective}
+							className="rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-sm transition-all duration-150 hover:bg-primary/90 disabled:opacity-40"
+						>
+							{isPending
+								? t("layout.viewSettings.saving")
+								: t("layout.viewSettings.save")}
+						</button>
+					)}
 				</div>
 			</PopoverContent>
 		</Popover>

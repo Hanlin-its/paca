@@ -10,6 +10,21 @@
   <a href="https://github.com/Paca-AI/paca/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License" /></a>
   <a href="https://github.com/Paca-AI/paca/releases"><img src="https://img.shields.io/github/v/release/Paca-AI/paca" alt="Latest Release" /></a>
   <a href="https://github.com/Paca-AI/paca/stargazers"><img src="https://img.shields.io/github/stars/Paca-AI/paca?style=social" alt="Stars" /></a>
+  <a href="https://artifacthub.io/packages/helm/paca/paca"><img src="https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/paca" alt="Artifact Hub" /></a>
+</p>
+
+<p align="center"><sub>✨ Sponsored by</sub></p>
+
+<p align="center">
+  <a href="https://aws.amazon.com" title="Sponsored by AWS"><img src="docs/assets/aws-logo.svg" alt="Sponsored by AWS" height="40" /></a>
+  &nbsp;&nbsp;
+  <a href="https://neon.com" title="Sponsored by Neon"><img src="docs/assets/neon-logo.svg" alt="Sponsored by Neon" height="40" /></a>
+  &nbsp;&nbsp;
+  <a href="https://m.do.co/c/cce1c135acd1"><img src="https://opensource.nyc3.cdn.digitaloceanspaces.com/attribution/assets/PoweredByDO/DO_Powered_by_Badge_blue.svg" alt="Powered by DigitalOcean" height="40" /></a>
+  &nbsp;&nbsp;
+  <a href="https://app.virtuals.io/referral?code=rXZ9nf"><img src="https://os.virtuals.io/favicon.png" alt="Sponsored by Virtuals Protocol" height="40" /></a>
+  &nbsp;&nbsp;
+  <a href="https://fluxionai.world/register?source=github&campaign=github-paca&promo=PACA" title="Sponsored by Fluxion AI"><img src="docs/assets/fluxion-ai-logo.svg" alt="Sponsored by Fluxion AI" height="40" /></a>
 </p>
 
 <p align="center">
@@ -17,7 +32,7 @@
   ·
   <a href="#mcp-server--connect-any-ai-agent-to-paca">MCP Server</a>
   ·
-  <a href="#claude-code--paca-skill">Claude Code Skill</a>
+  <a href="#paca-skills--claude-code-gemini-cli-cursor-and-more">Paca Skills</a>
   ·
   <a href="docs/architecture/overview.md">Architecture</a>
   ·
@@ -119,6 +134,66 @@ Plan  →  Act  →  Check  →  Adapt
 
 ---
 
+## What's New in v0.17.0
+
+- **Jev AI integration** — plug [Jev](https://docs.typesafe.ai), an AI decision engine, into any project to let it make the small routing calls a team makes all day. It's opt-in and per-project: bring your own key for TypeSafe (the default) or any Jev-compatible provider such as [OpenJev](https://openjev.sh/docs) from **Settings → Jev AI**. The key is encrypted at rest and never shown again, and a project without a key behaves exactly as before.
+  - **Agent Auto-routing** — pick **Auto** in the chat's agent picker and Jev hands your message to the best-fit agent, based on each agent's description.
+  - **Task Auto-fill** — when a task is created, Jev fills in the fields left blank (priority, type, story points, tags, epic, and select/boolean custom fields). It only applies confident answers and never overwrites a field a person set.
+  - **Task Auto-assign** — set a task's assignee to **Auto** and Jev picks the best-matching member from their descriptions. If it isn't confident, it leaves the task unassigned and says why in the activity feed.
+  - **Jev Condition in automations** — a new condition node that routes a workflow on Jev's answer (a choice, a score, or yes/no), falling back to the **Else** branch whenever Jev is unsure or unavailable.
+
+<p align="center">
+  <img src="docs/assets/demo-jev.gif" width="720" alt="Paca v0.17.0 — Jev AI: Agent Auto-routing, Task Auto-fill, Auto-assign, and Jev Conditions" />
+</p>
+
+---
+
+## What's New in v0.15.0
+
+- **Browser extension for page annotations** — comment directly on an element of a running [environment](docs/ai-agent/environment-management.md)'s preview page, right on the page itself, and turn any comment into a real Paca task in one click. It authenticates through your existing Paca session — no separate login — via the same-hostname cookie trick documented in [apps/extension/README.md](apps/extension/README.md). Install the pre-built zip from each [release](https://github.com/Paca-AI/paca/releases), or build it from source.
+
+<p align="center">
+  <img src="docs/assets/demo-browser-extension.gif" width="720" alt="Paca v0.15.0 — Browser Extension for Commenting on Environment Previews" />
+</p>
+
+- **`provider_cli` agent type** — run an agent on a CLI you're already logged into — Claude Code, Codex, Gemini CLI, or Cursor CLI — inside one of its own static environments. Log into the CLI once from the environment's terminal (a static environment, because the CLI's own login has to persist across conversations), and Paca drives that CLI directly for every conversation afterward, syncing your configured MCP servers into its config along the way.
+
+---
+
+## What's New in v0.14.0
+
+- **Static environments** — create a named, long-lived container that persists independently of any single conversation: agents attach to it instead of spinning up a fresh disposable sandbox, so files on disk and background processes survive across chats. Reach a running environment through an in-browser terminal, real SSH with per-environment authorized keys, or user-managed port forwards to preview a live dev server — on both self-hosted Docker Compose and Kubernetes/Helm. See [docs/ai-agent/environment-management.md](docs/ai-agent/environment-management.md) for the full design.
+
+<p align="center">
+  <img src="docs/assets/demo-environments.gif" width="720" alt="Paca v0.14.0 — Static Environments with Terminal, SSH, and Port Forwarding" />
+</p>
+
+---
+
+## What's New in v0.12.0
+
+- **Workspace branding** — customize your workspace's logo, favicon, and primary accent color from **Settings → Workspace Branding**. Upload a logo and favicon (PNG, JPEG, WEBP, or GIF, up to 5 MB) and pick from a curated set of accent colors, each with matching light- and dark-mode variants applied automatically across buttons, highlights, the sidebar, and the login screen.
+
+---
+
+## What's New in v0.11.0
+
+- **Event-driven automation engine** — a complete redesign of the automation system into a visual, n8n-style graph builder. Compose **Trigger → Condition → Action** flows on an interactive canvas with multi-branch switch logic, an `Else` fallback path, and nine built-in trigger types — including UTC cron schedules, due-date offsets, task-dependency gates, and inbound webhooks with secret-token auth. Actions can **retarget linked tasks** (parent, children, blockers, or explicit picks) with automatic fan-out, **dispatch AI agents** with custom prompts, or **call external APIs**. Every run is traced step-by-step in a new **Run History** panel, and a project-wide **Dependency Map** visualizes cross-task automation relationships. Plugins can contribute custom trigger, condition, and action node types via WASM.
+
+<p align="center">
+  <img src="docs/assets/demo-automation-workflow.png" width="720" alt="Paca v0.11.0 — Event-Driven Automation Engine with Visual Graph Builder" />
+</p>
+
+---
+
+## What's New in v0.10.0
+
+- **ACP agent support** — connect any [Agent Client Protocol](https://agentclientprotocol.com) coding CLI as a Paca AI agent: Claude Code, Codex, Gemini CLI, or a custom ACP server. A lightweight local bridge (`paca-acp-bridge`) runs from your project's source directory and streams the conversation back to Paca over an authenticated WebSocket — no code is cloned into a cloud sandbox, and the agent uses your own local auth, git/`gh` credentials, and whatever MCP servers or skills you've already set up for that CLI. See [apps/acp-bridge/README.md](apps/acp-bridge/README.md) for setup.
+
+---
+
+---
+
 ## What's New in v0.4.0
 
 - **In-app AI chat** — chat with AI agents at the project level to plan work, create or update epics, stories, tasks, and documentation — all in plain English without leaving Paca
@@ -168,83 +243,26 @@ The script walks you through configuration interactively and starts the full sta
   <img src="docs/assets/demo-install.gif" width="720" alt="How to Install Paca on Any Linux Server with One Command" />
 </p>
 
----
-
-### Option 2 — Docker Compose (manual)
-
-**1. Create a directory and download the compose file**
-
-```bash
-mkdir paca && cd paca
-curl -fsSL https://github.com/Paca-AI/paca/releases/latest/download/docker-compose.yml -o docker-compose.yml
-mkdir -p caddy
-curl -fsSL https://github.com/Paca-AI/paca/releases/latest/download/Caddyfile -o caddy/Caddyfile
-```
-
-**2. Download the environment template**
+**Non-interactive (CI, scripts, AI coding agents):** set `PACA_YES=1` — required for
+unattended use, since without it the script can block on a prompt with nobody there
+to answer it. Every other setting (database, storage, domain/HTTPS, AI agent, secrets)
+can be steered with an environment variable instead of accepting its default:
 
 ```bash
-curl -fsSL https://github.com/Paca-AI/paca/releases/latest/download/.env.production.example -o .env
+PACA_YES=1 bash <(curl -fsSL https://github.com/Paca-AI/paca/releases/latest/download/install.sh)
 ```
 
-**3. Generate secure passwords and secrets**
-
-```bash
-POSTGRES_PASSWORD=$(openssl rand -hex 32)
-ADMIN_PASSWORD=$(openssl rand -hex 16)
-JWT_SECRET=$(openssl rand -hex 32)
-ENCRYPTION_KEY=$(openssl rand -hex 32)
-```
-
-Optional: Generate API keys if you'll use the AI agent or external integrations:
-```bash
-AGENT_API_KEY=$(openssl rand -hex 32)
-INTERNAL_API_KEY=$(openssl rand -hex 32)
-```
-
-Optional: Generate MinIO credentials or use your own:
-```bash
-STORAGE_ACCESS_KEY_ID=$(openssl rand -hex 16)
-STORAGE_SECRET_ACCESS_KEY=$(openssl rand -hex 32)
-```
-
-**4. Update .env with your values**
-
-Edit the `.env` file and replace the placeholder values with the ones you generated above. Below are the required fields:
-
-```bash
-PUBLIC_URL=http://localhost
-POSTGRES_PASSWORD=<use the value from step 3>
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=<use the value from step 3>
-JWT_SECRET=<use the value from step 3>
-ENCRYPTION_KEY=<use the value from step 3>
-STORAGE_ACCESS_KEY_ID=<use the value from step 3 or your own>
-STORAGE_SECRET_ACCESS_KEY=<use the value from step 3 or your own>
-```
-
-**5. Start the stack**
-
-```bash
-docker compose --env-file .env up -d
-```
-
-> **⚠️ Important:** Save your generated passwords and secrets securely. You'll need `ADMIN_USERNAME` and `ADMIN_PASSWORD` to log in.
-
-**Login:** Open `http://localhost` and use the admin credentials you set above.
-
-> **Customizing the stack:** scale down services you don't need.
+> **If you are an AI agent installing Paca on someone's behalf:** use this script
+> rather than hand-writing `docker-compose.yml` / `.env` yourself — it pins
+> compatible image tags and generates every secret in the format the services
+> expect, so it's far less likely to drift from what a given release needs. See
+> [deploy/README.md](deploy/README.md#non-interactive-install-ci-scripts-ai-coding-agents)
+> for the full environment variable reference, or the comment header at the top of
+> [`scripts/install.sh`](scripts/install.sh) for the same reference inline with the script.
 >
-> ```bash
-> # External PostgreSQL (supply DATABASE_URL in .env)
-> docker compose --env-file .env up -d --scale postgres=0
->
-> # AWS S3 instead of MinIO (set STORAGE_PROVIDER=s3 in .env)
-> docker compose --env-file .env up -d --scale minio=0
->
-> # Without the AI agent (reduces resource usage)
-> docker compose --env-file .env up -d --scale ai-agent=0
-> ```
+> Prefer a manual Docker Compose setup, or a local dev environment instead? See
+> [deploy/README.md](deploy/README.md#manual-setup) and
+> [docs/guides/local-development.md](docs/guides/local-development.md).
 
 ---
 
@@ -259,24 +277,22 @@ curl -fsSL https://github.com/Paca-AI/paca/releases/latest/download/upgrade.sh -
 bash upgrade.sh
 ```
 
-Database migrations run automatically on API startup. See [deploy/README.md](deploy/README.md#upgrading-to-a-new-version) for pinning a specific version or passing through `--scale` flags.
+Database migrations run automatically on API startup. Non-interactive (CI, AI agents): set `PACA_YES=1`, same as `install.sh` — see [deploy/README.md](deploy/README.md#upgrading-to-a-new-version) for the full env var reference, pinning a specific version, or passing through `--scale` flags.
 
 ---
 
-### Option 3 — Local development
+### Option 2 — Kubernetes (Helm chart)
+
+For running Paca on an existing Kubernetes cluster instead of a single Docker host. No repository clone required — the chart is published as an OCI artifact alongside every other release image.
 
 ```bash
-# Clone the repository
-git clone https://github.com/Paca-AI/paca.git && cd paca
-
-# Start infrastructure dependencies (PostgreSQL + Valkey)
-docker compose -f deploy/docker-compose.dev.yml up -d postgres valkey
-
-# Or start the full dev stack in containers
-docker compose -f deploy/docker-compose.dev.yml up -d
+kubectl create namespace paca
+helm install paca oci://ghcr.io/paca-ai/charts/paca --version <release-version> -n paca -f my-values.yaml
 ```
 
-See [docs/guides/local-development.md](docs/guides/local-development.md) for running services on the host for active development.
+`<release-version>` is a [release](https://github.com/Paca-AI/paca/releases) tag without its leading `v` (e.g. `0.13.1` for `v0.13.1`); omit `--version` to install the newest chart published. At minimum, `my-values.yaml` needs `publicUrl` and the required secrets (`jwtSecret`, `adminPassword`, `encryptionKey`, and others) — there are no guessable defaults, so the chart refuses to render without them.
+
+See [Artifact Hub](https://artifacthub.io/packages/helm/paca/paca) for the full values reference, exposing the app via Ingress/TLS or a LoadBalancer, what's bundled vs. pointing at managed Postgres/Redis/S3, the AI agent sandbox's Kubernetes-specific RBAC, and troubleshooting.
 
 ---
 
@@ -358,18 +374,19 @@ For a complete reference and advanced configuration (agent-mode, plugin tools, p
 
 ---
 
-## Claude Code — `/paca` skills
+## `/paca` skills — Claude Code, Gemini CLI, Cursor, and more
 
-If you use [Claude Code](https://claude.ai/code), install the Paca skill set and manage your entire Paca workspace through natural-language slash commands — without leaving your editor and without creating local files. Every command reads your Paca documentation first to understand the project before acting.
+Install the Paca skill set and manage your entire Paca workspace through natural-language slash commands — without leaving your editor and without creating local files. Every command reads your Paca documentation first to understand the project before acting.
 
-Skills are defined in the [`skills/`](skills/) directory using the [Agent Skills](https://agentskills.io/specification) format — one subdirectory per skill, each with a `SKILL.md` containing YAML frontmatter and instructions. The install script strips the frontmatter and writes the body to `~/.claude/commands/` for use as Claude Code slash commands.
+Skills use the [Agent Skills](https://agentskills.io/specification) format (YAML frontmatter + instructions) and are served by a running Paca instance's own API (`GET /api/v1/skills`), not read from a checked-out directory — so installed content always matches the exact version that instance runs. The install script fetches and installs them to [Claude Code](https://claude.ai/code) (`~/.claude/commands/`), Gemini CLI (`~/.gemini/commands/`), Cursor (`.cursor/commands/`, project-scoped), and any AGENTS.md-reading tool (project-scoped) in one pass, and also pulls in skills contributed by your installed plugins. See [docs/guides/install-skills.md](docs/guides/install-skills.md) for details.
 
 ### Install
 
-Run this once in your terminal to install all skills globally:
+Point the installer at a running Paca instance and run this once in your terminal to install all skills to every supported platform found on this machine:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Paca-AI/paca/master/scripts/install-claude-skill.sh | bash
+PACA_API_URL=http://localhost:8080 \
+  curl -fsSL https://raw.githubusercontent.com/Paca-AI/paca/master/scripts/install-paca-skills.sh | bash
 ```
 
 Then connect the Paca MCP server to Claude Code:
@@ -399,21 +416,20 @@ Run `/paca-setup` inside a Claude Code session for a guided interactive walkthro
 | `/paca-doc <task-or-topic>` | Write or update documentation in Paca Docs |
 | `/paca-setup` | Interactive MCP connection wizard |
 
-For full setup options and command reference, see [docs/guides/claude-code-skill.md](docs/guides/claude-code-skill.md).
+For full setup options and command reference, see [docs/guides/install-skills.md](docs/guides/install-skills.md).
 
 ---
 
 ## Architecture
 
 ```
-apps/web          React + TanStack Start + shadcn/ui — user interface
-apps/mcp          @paca-ai/paca-mcp — MCP server for AI agent integration
-services/api      Go + Gin — core business logic and REST API
-services/realtime Node.js + Socket.IO — real-time event fan-out
-services/ai-agent Python + FastAPI + OpenHands SDK — AI agent orchestration
-apps/e2e          Playwright — end-to-end test suite
-
-skills/           Agent Skills — /paca slash commands for Claude Code
+apps/web              React + TanStack Start + shadcn/ui — user interface
+apps/mcp              @paca-ai/paca-mcp — MCP server for AI agent integration
+services/api          Go + Gin — core business logic and REST API
+services/realtime     Node.js + Socket.IO — real-time event fan-out
+services/agent-runner Go — AI agent execution (Goose over ACP)
+services/agent-server Docker image for the Goose sandbox agent-runner spawns per conversation
+apps/e2e              Playwright — end-to-end test suite
 
 PostgreSQL        Persistent store
 Valkey            Cache + async event streams between services
@@ -441,7 +457,8 @@ But Paca is built from conviction: human-AI collaboration in a real Scrum team s
 | [docs/guides/getting-started.md](docs/guides/getting-started.md) | Getting started (install, Docker, local dev) |
 | [docs/guides/local-development.md](docs/guides/local-development.md) | Contributor dev environment setup |
 | [docs/guides/mcp-server-setup.md](docs/guides/mcp-server-setup.md) | Connect AI agents via MCP |
-| [docs/guides/claude-code-skill.md](docs/guides/claude-code-skill.md) | `/paca` skill for Claude Code — manage Paca from your editor |
+| [docs/guides/install-skills.md](docs/guides/install-skills.md) | `/paca` skill for Claude Code — manage Paca from your editor |
+| [apps/extension/README.md](apps/extension/README.md) | Browser extension — comment on environment preview pages, turn comments into tasks |
 | [docs/plugins/](docs/plugins/) | Plugin system: backend (WASM) and frontend |
 | [deploy/README.md](deploy/README.md) | Full deployment reference |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute |
@@ -449,12 +466,14 @@ But Paca is built from conviction: human-AI collaboration in a real Scrum team s
 
 ---
 
-## Star History
-
-[![Star History Chart](https://api.star-history.com/chart?repos=paca-ai/paca&type=date&legend=top-left)](https://www.star-history.com/?repos=paca-ai%2Fpaca&type=date&legend=top-left)
-
----
-
 ## License
 
 Distributed under the **Apache License 2.0**. See [LICENSE](LICENSE) for details.
+
+---
+
+## A Small Thank-You for the Community
+
+Some partners offer a little extra to folks who find them through Paca — just perks for this project, not promotions:
+
+- **Fluxion AI** — signup bonus bumped to **$3** for anyone who joins through Paca's community link: [https://fluxionai.world/register?source=github&campaign=github-paca&promo=PACA](https://fluxionai.world/register?source=github&campaign=github-paca&promo=PACA)

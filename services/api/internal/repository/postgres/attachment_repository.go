@@ -7,9 +7,10 @@ import (
 	"fmt"
 	"time"
 
-	attachmentdom "github.com/Paca-AI/api/internal/domain/attachment"
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+
+	attachmentdom "github.com/Paca-AI/api/internal/domain/attachment"
 )
 
 // --- sqlx models -----------------------------------------------------------
@@ -26,14 +27,6 @@ type fileRecord struct {
 	UploadedBy        *string   `db:"uploaded_by"`
 	CreatedAt         time.Time `db:"created_at"`
 	UpdatedAt         time.Time `db:"updated_at"`
-}
-
-type taskAttachmentRecord struct {
-	ID        string    `db:"id"`
-	TaskID    string    `db:"task_id"`
-	FileID    string    `db:"file_id"`
-	CreatedBy *string   `db:"created_by"`
-	CreatedAt time.Time `db:"created_at"`
 }
 
 // taskAttachmentWithFileRow is the flat join result for task attachment + file.

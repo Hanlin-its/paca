@@ -1,4 +1,10 @@
 {
+	"common": {
+		"notFound": "Not found",
+		"somethingWentWrong": "Something went wrong",
+		"retry": "Retry",
+		"noPermissionToView": "You don't have permission to view this"
+	},
 	"dialog": {
 		"closeLabel": "閉じる",
 		"closeButton": "閉じる"
@@ -18,5 +24,21 @@
 		"newPasswordMustDiffer": "新しいパスワードは現在のパスワードと異なるものにしてください。",
 		"confirmPasswordRequired": "新しいパスワードを再入力してください。",
 		"passwordsDoNotMatch": "パスワードが一致しません。"
+	},
+	"timeAgo": {
+		"justNow": "たった今",
+		"minutes_one": "{{count}}分前",
+		"minutes_other": "{{count}}分前",
+		"hours_one": "{{count}}時間前",
+		"hours_other": "{{count}}時間前",
+		"days_one": "{{count}}日前",
+		"days_other": "{{count}}日前"
+	},
+	"pagination": {
+		"navLabel": "ページ送り",
+		"previous": "前のページ",
+		"next": "次のページ",
+		"page": "{{page}} ページ",
+		"pageOfTotal": "{{totalPages}} ページ中 {{page}} ページ目"
 	}
 }

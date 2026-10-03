@@ -45,6 +45,11 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("config: COOKIE_SECURE: %w", err)
 	}
 
+	authRateLimit, err := strconv.Atoi(env("AUTH_RATE_LIMIT_PER_MINUTE", "20"))
+	if err != nil || authRateLimit < 0 {
+		return nil, fmt.Errorf("config: AUTH_RATE_LIMIT_PER_MINUTE must be a non-negative integer, got %q", env("AUTH_RATE_LIMIT_PER_MINUTE", "20"))
+	}
+
 	// Collect all missing required keys before returning so the caller sees
 	// every problem in a single error rather than one failure at a time.
 	var errs []error
@@ -82,6 +87,15 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("config: PLUGINS_MARKETPLACE_TIMEOUT: %w", err)
 	}
 
+	releaseCacheTTL, err := parseDuration(env("RELEASE_CHECK_CACHE_TTL", "1h"))
+	if err != nil {
+		return nil, fmt.Errorf("config: RELEASE_CHECK_CACHE_TTL: %w", err)
+	}
+	releaseTimeout, err := parseDuration(env("RELEASE_CHECK_TIMEOUT", "5s"))
+	if err != nil {
+		return nil, fmt.Errorf("config: RELEASE_CHECK_TIMEOUT: %w", err)
+	}
+
 	// Defaults here must match pluginrt.DefaultResourceLimits().
 	pluginMaxCallDuration, err := parseDuration(env("PLUGINS_MAX_CALL_DURATION", "5s"))
 	if err != nil {
@@ -91,7 +105,7 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config: PLUGINS_MAX_MEMORY_PAGES: %w", err)
 	}
-	pluginMaxRequestBodyBytes, err := parseInt64(env("PLUGINS_MAX_REQUEST_BODY_BYTES", "10485760"))
+	pluginMaxRequestBodyBytes, err := parseInt64(env("PLUGINS_MAX_REQUEST_BODY_BYTES", "1048576"))
 	if err != nil {
 		return nil, fmt.Errorf("config: PLUGINS_MAX_REQUEST_BODY_BYTES: %w", err)
 	}
@@ -127,6 +141,17 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("config: STORAGE_USE_SSL: %w", err)
 	}
 
+	// Required even though it authenticates only a handful of internal
+	// ai-agent routes: ai-agent's own INTERNAL_API_KEY is a required,
+	// non-empty pydantic field (see services/ai-agent/src/config.py), so an
+	// empty key here would never actually authenticate anything — it would
+	// just silently break ACP bridge status/disconnect calls instead of
+	// failing loudly at startup.
+	aiAgentInternalKey, err := requireEnv("AI_AGENT_INTERNAL_KEY")
+	if err != nil {
+		errs = append(errs, err)
+	}
+
 	if len(errs) > 0 {
 		return nil, errors.Join(errs...)
 	}
@@ -134,9 +159,11 @@ func Load() (*Config, error) {
 	return &Config{
 		Env: env("ENV", "development"),
 		Server: ServerConfig{
-			Port:         env("PORT", "8080"),
-			CookieSecure: cookieSecure,
-			PublicURL:    env("PUBLIC_URL", ""),
+			Port:               env("PORT", "8080"),
+			CookieSecure:       cookieSecure,
+			PublicURL:          env("PUBLIC_URL", ""),
+			CORSAllowedOrigins: parseCORSOrigins(env("CORS_ORIGINS", "*")),
+			AuthRateLimit:      authRateLimit,
 		},
 		Database: DatabaseConfig{
 			DSN: dsn,
@@ -160,8 +187,8 @@ func Load() (*Config, error) {
 			Password: adminPass,
 		},
 		Storage: StorageConfig{
-			Provider:        env("STORAGE_PROVIDER", "minio"),
-			Endpoint:        env("STORAGE_ENDPOINT", "minio:9000"),
+			Provider:        env("STORAGE_PROVIDER", "rustfs"),
+			Endpoint:        env("STORAGE_ENDPOINT", "rustfs:9000"),
 			PublicURL:       env("STORAGE_PUBLIC_URL", ""),
 			Region:          env("STORAGE_REGION", "us-east-1"),
 			Bucket:          env("STORAGE_BUCKET", "paca"),
@@ -186,6 +213,7 @@ func Load() (*Config, error) {
 			WASMDir:               env("PLUGINS_WASM_DIR", "./plugins/local/backend"),
 			FrontendDir:           env("PLUGINS_FRONTEND_DIR", "./plugins/local/frontend"),
 			MCPDir:                env("PLUGINS_MCP_DIR", "./plugins/local/mcp"),
+			SkillsDir:             env("PLUGINS_SKILLS_DIR", "./plugins/local/skills"),
 			S3Prefix:              env("PLUGINS_S3_PREFIX", "plugins"),
 			MarketplaceCatalogURL: env("PLUGINS_MARKETPLACE_CATALOG_URL", "https://raw.githubusercontent.com/Paca-AI/paca-plugins/master/catalog/plugins.json"),
 			MarketplaceTimeout:    marketplaceTimeout,
@@ -195,8 +223,32 @@ func Load() (*Config, error) {
 				MaxRequestBodyBytes: pluginMaxRequestBodyBytes,
 			},
 		},
-		AIAgentURL: env("AI_AGENT_URL", "http://ai-agent:8080"),
+		Release: ReleaseConfig{
+			Version:      env("PACA_VERSION", "dev"),
+			UpstreamRepo: env("RELEASE_UPSTREAM_REPO", "Paca-AI/paca"),
+			ForkRepo:     env("RELEASE_FORK_REPO", ""),
+			CacheTTL:     releaseCacheTTL,
+			Timeout:      releaseTimeout,
+		},
+		AIAgentURL:         env("AI_AGENT_URL", "http://ai-agent:8080"),
+		AIAgentInternalKey: aiAgentInternalKey,
+		SSHBastionHost:     env("SSH_BASTION_HOST", ""),
+		PortForwardHost:    env("PORT_FORWARD_HOST", ""),
 	}, nil
+}
+
+// parseCORSOrigins splits a comma-separated CORS_ORIGINS value into an
+// allow-list, trimming whitespace and dropping empty entries.
+func parseCORSOrigins(v string) []string {
+	parts := strings.Split(v, ",")
+	origins := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			origins = append(origins, p)
+		}
+	}
+	return origins
 }
 
 // env returns the environment variable value or a fallback default.

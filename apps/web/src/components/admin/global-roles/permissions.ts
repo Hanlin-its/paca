@@ -1,11 +1,16 @@
-import { FolderKanban, type LucideIcon, Shield, Users } from "lucide-react";
+import {
+	FolderKanban,
+	type LucideIcon,
+	Puzzle,
+	Settings,
+	Shield,
+	Users,
+} from "lucide-react";
 
-export interface KnownPermission {
-	key: string;
-	labelKey: string;
-	descriptionKey: string;
-	domain: string;
-}
+import type { PluginKnownPermission } from "@/lib/plugin-api";
+
+export { toPluginKnownPermissions } from "@/lib/plugin-api";
+export type KnownPermission = PluginKnownPermission;
 
 export const KNOWN_PERMISSIONS = [
 	{
@@ -92,6 +97,18 @@ export const KNOWN_PERMISSIONS = [
 		descriptionKey: "globalRoles.permissions.projectRolesWrite.description",
 		domain: "projects",
 	},
+	{
+		key: "settings.write",
+		labelKey: "globalRoles.permissions.settingsWrite.label",
+		descriptionKey: "globalRoles.permissions.settingsWrite.description",
+		domain: "settings",
+	},
+	{
+		key: "settings.sso.write",
+		labelKey: "globalRoles.permissions.settingsSsoWrite.label",
+		descriptionKey: "globalRoles.permissions.settingsSsoWrite.description",
+		domain: "settings",
+	},
 ] as const satisfies KnownPermission[];
 
 export interface PermissionGroup {
@@ -115,5 +132,15 @@ export const PERMISSION_GROUPS = [
 		domain: "projects",
 		labelKey: "globalRoles.permissionGroups.projects",
 		Icon: FolderKanban,
+	},
+	{
+		domain: "plugins",
+		labelKey: "globalRoles.permissionGroups.plugins",
+		Icon: Puzzle,
+	},
+	{
+		domain: "settings",
+		labelKey: "globalRoles.permissionGroups.settings",
+		Icon: Settings,
 	},
 ] as const satisfies PermissionGroup[];

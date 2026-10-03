@@ -2,6 +2,13 @@
 	"activityPane": {
 		"title": "활동",
 		"empty": "아직 활동이 없습니다",
+		"emptyComments": "아직 댓글이 없습니다",
+		"showAllActivity": "전체 활동 보기",
+		"filter": {
+			"label": "활동 필터",
+			"comments": "댓글",
+			"all": "전체 활동"
+		},
 		"editingComment": "댓글 수정 중...",
 		"cancel": "취소",
 		"sendHint": "⌘↵ 로 전송",
@@ -11,15 +18,6 @@
 		"delete": "삭제",
 		"viewDiff": "차이점 보기",
 		"revert": "되돌리기",
-		"timeAgo": {
-			"justNow": "방금 전",
-			"minutes_one": "{{count}}분 전",
-			"minutes_other": "{{count}}분 전",
-			"hours_one": "{{count}}시간 전",
-			"hours_other": "{{count}}시간 전",
-			"days_one": "{{count}}일 전",
-			"days_other": "{{count}}일 전"
-		},
 		"errors": {
 			"revertFailed": "되돌리기에 실패했습니다. 다시 시도해 주세요."
 		}
@@ -27,11 +25,21 @@
 	"contentDiff": {
 		"emptyLine": "(빈 줄)",
 		"noDifferences": "텍스트 차이가 없습니다",
+		"diffTooLarge": "차이가 너무 커서 미리볼 수 없습니다 ({{lines}}줄)",
+		"collapsedLines": "변경되지 않은 {{count}}줄 숨김",
 		"changeDiff": "변경 내용 차이",
 		"removed": "삭제됨",
 		"added": "추가됨"
 	},
 	"home": {
+		"updateBanner": {
+			"title": "업데이트 사용 가능",
+			"upstream": "Paca가 {{version}}을(를) 출시했습니다.",
+			"fork": "버전 {{version}}을(를) 사용할 수 있습니다.",
+			"current": "현재 {{version}}을(를) 사용 중입니다.",
+			"viewRelease": "릴리스 보기",
+			"dismiss": "닫기"
+		},
 		"greeting": {
 			"morning": "좋은 아침이에요",
 			"afternoon": "안녕하세요",
@@ -61,15 +69,27 @@
 			},
 			"aiAgents": {
 				"label": "AI 에이전트",
-				"sub": "설정된 에이전트 없음"
+				"sub": "설정된 에이전트 없음",
+				"subActive": "{{count}}개 설정됨"
 			}
+		},
+		"myTasks": {
+			"title": "내 작업",
+			"subtitle": "모든 프로젝트에서 나에게 할당된 열린 작업",
+			"emptyTitle": "모두 처리했습니다",
+			"emptyDescription": "현재 나에게 할당된 열린 작업이 없습니다.",
+			"loadError": "작업을 불러오지 못했습니다. 다시 시도해 주세요.",
+			"loadMore": "더 보기",
+			"loading": "불러오는 중…"
 		},
 		"projectsSection": {
 			"title": "프로젝트",
 			"countInWorkspace_one": "워크스페이스에 프로젝트 {{count}}개",
 			"countInWorkspace_other": "워크스페이스에 프로젝트 {{count}}개",
 			"newShort": "새로 만들기",
-			"newProjectCard": "새 프로젝트"
+			"newProjectCard": "새 프로젝트",
+			"loadMore": "프로젝트 더 보기",
+			"loadingMore": "불러오는 중…"
 		},
 		"projectCard": {
 			"public": "공개",

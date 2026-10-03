@@ -14,7 +14,9 @@ const mocks = vi.hoisted(() => {
 		connectSocket: vi.fn(() => socket),
 		joinProject: vi.fn(),
 		leaveProject: vi.fn(),
+		rejoinProject: vi.fn(),
 		invalidateQueries: vi.fn(),
+		setQueryData: vi.fn(),
 	};
 });
 
@@ -22,6 +24,7 @@ vi.mock("@/lib/socket-client", () => ({
 	connectSocket: mocks.connectSocket,
 	joinProject: mocks.joinProject,
 	leaveProject: mocks.leaveProject,
+	rejoinProject: mocks.rejoinProject,
 }));
 
 vi.mock("@tanstack/react-query", async () => {
@@ -32,6 +35,7 @@ vi.mock("@tanstack/react-query", async () => {
 		...actual,
 		useQueryClient: () => ({
 			invalidateQueries: mocks.invalidateQueries,
+			setQueryData: mocks.setQueryData,
 		}),
 	};
 });
@@ -103,6 +107,75 @@ describe("useProjectRealtime", () => {
 		});
 	});
 
+	it("invalidates views query key on view.* events", () => {
+		renderHook(() => useProjectRealtime("proj-abc"));
+
+		const [, listener] = mocks.socket.on.mock.calls[0] as [
+			string,
+			(event: { type: string; payload: Record<string, unknown> }) => void,
+		];
+
+		listener({ type: "view.created", payload: {} });
+
+		expect(mocks.invalidateQueries).toHaveBeenCalledWith({
+			queryKey: ["projects", "proj-abc", "views"],
+		});
+	});
+
+	it("invalidates environments query key on environment.status_changed events", () => {
+		renderHook(() => useProjectRealtime("proj-abc"));
+
+		const [, listener] = mocks.socket.on.mock.calls[0] as [
+			string,
+			(event: { type: string; payload: Record<string, unknown> }) => void,
+		];
+
+		listener({ type: "environment.status_changed", payload: {} });
+
+		expect(mocks.invalidateQueries).toHaveBeenCalledWith({
+			queryKey: ["projects", "proj-abc", "environments"],
+		});
+	});
+
+	it("invalidates workflows and tasks query keys on workflow.* events", () => {
+		renderHook(() => useProjectRealtime("proj-abc"));
+
+		const [, listener] = mocks.socket.on.mock.calls[0] as [
+			string,
+			(event: { type: string; payload: Record<string, unknown> }) => void,
+		];
+
+		listener({ type: "workflow.node.added", payload: {} });
+
+		expect(mocks.invalidateQueries).toHaveBeenCalledWith({
+			queryKey: ["projects", "proj-abc", "workflows"],
+		});
+		expect(mocks.invalidateQueries).toHaveBeenCalledWith({
+			queryKey: ["projects", "proj-abc", "tasks"],
+		});
+	});
+
+	it("invalidates workflows and tasks query keys on workflow.assigned events", () => {
+		renderHook(() => useProjectRealtime("proj-abc"));
+
+		const [, listener] = mocks.socket.on.mock.calls[0] as [
+			string,
+			(event: { type: string; payload: Record<string, unknown> }) => void,
+		];
+
+		listener({
+			type: "workflow.assigned",
+			payload: { project_id: "proj-abc", task_id: "task-1" },
+		});
+
+		expect(mocks.invalidateQueries).toHaveBeenCalledWith({
+			queryKey: ["projects", "proj-abc", "workflows"],
+		});
+		expect(mocks.invalidateQueries).toHaveBeenCalledWith({
+			queryKey: ["projects", "proj-abc", "tasks"],
+		});
+	});
+
 	it("invalidates task github query key on github.branch.linked events", () => {
 		renderHook(() => useProjectRealtime("proj-abc"));
 
@@ -165,6 +238,44 @@ describe("useProjectRealtime", () => {
 		expect(mocks.invalidateQueries).not.toHaveBeenCalled();
 	});
 
+	it("registers a connect listener on mount", () => {
+		renderHook(() => useProjectRealtime("proj-abc"));
+
+		expect(mocks.socket.on).toHaveBeenCalledWith(
+			"connect",
+			expect.any(Function),
+		);
+	});
+
+	it("re-joins the project room when the socket reconnects, without re-registering as a subscriber", () => {
+		renderHook(() => useProjectRealtime("proj-abc"));
+
+		mocks.joinProject.mockClear();
+
+		const [, onConnect] = mocks.socket.on.mock.calls.find(
+			([event]) => event === "connect",
+		) as [string, () => void];
+		onConnect();
+
+		expect(mocks.rejoinProject).toHaveBeenCalledWith("proj-abc");
+		// Must not call joinProject again — that would bump the reference
+		// count that leaveProject decrements on unmount, since a reconnect
+		// isn't a new subscriber.
+		expect(mocks.joinProject).not.toHaveBeenCalled();
+	});
+
+	it("removes the connect listener on unmount", () => {
+		const { unmount } = renderHook(() => useProjectRealtime("proj-abc"));
+
+		const [, onConnect] = mocks.socket.on.mock.calls.find(
+			([event]) => event === "connect",
+		) as [string, () => void];
+
+		unmount();
+
+		expect(mocks.socket.off).toHaveBeenCalledWith("connect", onConnect);
+	});
+
 	it("re-joins and re-registers when projectId changes", () => {
 		const { rerender } = renderHook(
 			({ projectId }) => useProjectRealtime(projectId),
@@ -179,5 +290,67 @@ describe("useProjectRealtime", () => {
 		expect(mocks.leaveProject).toHaveBeenCalledWith("proj-1");
 		// New project joined.
 		expect(mocks.joinProject).toHaveBeenCalledWith("proj-2");
+	});
+	it("appends a full persisted event to the tail cache instead of refetching", () => {
+		renderHook(() => useProjectRealtime("proj-abc"));
+		const [, listener] = mocks.socket.on.mock.calls[0] as [
+			string,
+			(event: { type: string; payload: Record<string, unknown> }) => void,
+		];
+
+		listener({
+			type: "agent.tool_call",
+			payload: {
+				id: "evt-1",
+				conversation_id: "conv-1",
+				event_index: 42,
+				event_type: "tool_call",
+				event_source: "agent",
+				payload: { toolCallId: "tc-1", title: "Running ls" },
+				created_at: "2026-01-01T00:00:00Z",
+			},
+		});
+
+		// persistAndPublish (services/agent-runner) puts the full row on the
+		// realtime message now — appended straight into the tail cache, no
+		// GET .../events round trip needed.
+		expect(mocks.setQueryData).toHaveBeenCalled();
+		expect(mocks.invalidateQueries).not.toHaveBeenCalled();
+	});
+
+	it("does not refetch the conversation list or detail for a legacy index-only event", () => {
+		renderHook(() => useProjectRealtime("proj-abc"));
+		const [, listener] = mocks.socket.on.mock.calls[0] as [
+			string,
+			(event: { type: string; payload: Record<string, unknown> }) => void,
+		];
+
+		// No `id` — an event_index alone still counts as "persisted" (so the
+		// reconciling-fetch path below stays reserved for genuine status
+		// notifications), it just has nothing to append.
+		listener({
+			type: "agent.acptoolcallevent",
+			payload: { conversation_id: "conv-1", event_index: "42" },
+		});
+
+		expect(mocks.setQueryData).toHaveBeenCalled();
+		expect(mocks.invalidateQueries).not.toHaveBeenCalled();
+	});
+
+	it("refetches the conversations prefix for a lifecycle event", () => {
+		renderHook(() => useProjectRealtime("proj-abc"));
+		const [, listener] = mocks.socket.on.mock.calls[0] as [
+			string,
+			(event: { type: string; payload: Record<string, unknown> }) => void,
+		];
+
+		listener({
+			type: "agent.conversation.finished",
+			payload: { conversation_id: "conv-1" },
+		});
+
+		expect(mocks.invalidateQueries).toHaveBeenCalledWith({
+			queryKey: ["projects", "proj-abc", "conversations"],
+		});
 	});
 });

@@ -50,6 +50,16 @@ Each plugin gets a dedicated namespace in the database (`plugin_data_{pluginId}`
 | `paca.storage_set(key_ptr, key_len, val_ptr, val_len) → ok` | Set a value in the plugin's key-value store. |
 | `paca.storage_delete(key_ptr, key_len) → ok` | Delete a key from the plugin's key-value store. |
 
+#### Plugin Cache (TTL, Valkey/Redis-backed)
+
+Backed by the host's shared Valkey/Redis instance, keyed under a per-plugin namespace so plugins can't read or overwrite each other's entries. Unlike Plugin-Owned Storage above, entries can expire and there is no durability guarantee — treat the cache as recomputable data only. If the host has no cache backend configured, `cache_get` always misses and `cache_set`/`cache_delete` are no-ops, so plugins should always be able to fall back to recomputing a value on a miss.
+
+| Function | Description |
+|---|---|
+| `paca.cache_get(key_ptr, key_len, value_ptr_ptr, value_len_ptr)` | Get a value from the plugin's cache. A zero-length response means a miss (never cached, expired, or no cache backend configured). |
+| `paca.cache_set(key_ptr, key_len, val_ptr, val_len, ttl_seconds) → ok` | Set a value in the plugin's cache with the given TTL in seconds. `ttl_seconds = 0` stores the value with no expiry; negative values are rejected (`ok = 0`). |
+| `paca.cache_delete(key_ptr, key_len) → ok` | Delete a key from the plugin's cache. |
+
 #### Core Data Access (Read-Only, Scoped)
 
 | Function | Description |
@@ -177,6 +187,18 @@ The host validates the requested permissions at install time against the allowli
 
 All routes declared under `backend.routes` are automatically mounted at `/api/v1/plugins/{pluginId}/projects/:projectId/{path}`.
 
+### Minimum Host Version (`minCoreVersion`)
+
+A manifest may declare `minCoreVersion` as a strict `X.Y.Z` (or `vX.Y.Z`) semver string — the lowest Paca (host) build the plugin is compatible with. The host enforces this on every path that persists a manifest:
+
+- `POST /api/v1/admin/plugins` (direct install)
+- `POST /api/v1/admin/plugins/marketplace/install` (marketplace install)
+- `PATCH /api/v1/admin/plugins/:pluginId` and `POST /api/v1/admin/plugins/:pluginId/upgrade` (manifest updates/upgrades)
+
+If the running build's version is older than `minCoreVersion`, the request fails with `PLUGIN_INCOMPATIBLE_HOST_VERSION` before any migrations run or the new manifest is loaded into the runtime, and nothing is persisted. Omitting the field means the plugin has no minimum. A host not built from a tagged release (`PACA_VERSION` unset, reporting `"dev"`) is treated as unconstrained, since there's no release version to compare against.
+
+The error response's `error` field is an English-only message meant for logs/CLI use. Clients that need to render a localized message should instead use `error_details`, an `{"error_details": {...}}` object included alongside `error_code`/`error` for this code, carrying `plugin_id`, `required_version`, and `host_version` as plain (non-localized) strings to interpolate into their own translated copy.
+
 ### Route Middleware Policy
 
 Each backend route can declare a host-enforced middleware chain in `backend.routes[].middlewares`.
@@ -257,7 +279,7 @@ Limits are configurable via environment variables (see `services/api/.env.exampl
 |---|---|---|
 | `PLUGINS_MAX_CALL_DURATION` | `5s` | Max time for a single plugin function call |
 | `PLUGINS_MAX_MEMORY_PAGES` | `1024` (64 MiB) | Max WASM linear-memory pages per module instance |
-| `PLUGINS_MAX_REQUEST_BODY_BYTES` | `10485760` (10 MiB) | Max inbound HTTP request body / event payload size |
+| `PLUGINS_MAX_REQUEST_BODY_BYTES` | `1048576` (1 MiB) | Max inbound HTTP request body / event payload size |
 
 ## Plugin Storage Location
 

@@ -9,8 +9,9 @@ import (
 	"testing"
 	"time"
 
-	globalroledom "github.com/Paca-AI/api/internal/domain/globalrole"
 	"github.com/google/uuid"
+
+	globalroledom "github.com/Paca-AI/api/internal/domain/globalrole"
 )
 
 // ---------------------------------------------------------------------------
@@ -78,9 +79,10 @@ func attachmentPath(base, projectID, taskID, suffix string) string {
 // ---------------------------------------------------------------------------
 
 func TestE2EAttachmentManagement_CRUD(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	if env.attachmentSvc == nil {
-		t.Skip("attachment service not available (MinIO container did not start)")
+		t.Skip("attachment service not available (RustFS container did not start)")
 	}
 
 	seedAttachmentUser(t, env, "attach-crud-user", "attachpass1!")
@@ -198,6 +200,29 @@ func TestE2EAttachmentManagement_CRUD(t *testing.T) {
 		}
 	})
 
+	t.Run("get_attachment_content", func(t *testing.T) {
+		if attachmentID == "" {
+			t.Skip("attachment_id not available (previous subtest failed)")
+		}
+		path := attachmentPath(env.base, projID, taskID, "/"+attachmentID+"/content")
+		req := mustRequest(env.ctx, t, http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp := mustDo(t, client, req)
+		defer func() { _ = resp.Body.Close() }()
+		assertStatus(t, resp, http.StatusOK)
+
+		if ct := resp.Header.Get("Content-Type"); ct != "text/plain" {
+			t.Errorf("expected Content-Type text/plain, got %q", ct)
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read response body: %v", err)
+		}
+		if string(body) != fileContent {
+			t.Errorf("expected content %q, got %q", fileContent, string(body))
+		}
+	})
+
 	t.Run("get_download_url_inline", func(t *testing.T) {
 		if attachmentID == "" {
 			t.Skip("attachment_id not available (previous subtest failed)")
@@ -274,9 +299,10 @@ func TestE2EAttachmentManagement_CRUD(t *testing.T) {
 }
 
 func TestE2EAttachmentManagement_Unauthenticated(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	if env.attachmentSvc == nil {
-		t.Skip("attachment service not available (MinIO container did not start)")
+		t.Skip("attachment service not available (RustFS container did not start)")
 	}
 
 	projID := uuid.NewString()

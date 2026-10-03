@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/Paca-AI/api/internal/platform/netguard"
 )
 
 var (
@@ -44,6 +46,7 @@ type MarketplacePluginArtifact struct {
 	MigrationsTarGzURL string `json:"migrations_tar_gz_url,omitempty"`
 	ManifestTarGzURL   string `json:"manifest_tar_gz_url"`
 	MCPTarGzURL        string `json:"mcp_tar_gz_url,omitempty"`
+	SkillsTarGzURL     string `json:"skills_tar_gz_url,omitempty"`
 }
 
 // MarketplaceClient fetches the plugin catalog from a public URL.
@@ -59,7 +62,7 @@ func NewMarketplaceClient(catalogURL string, timeout time.Duration) *Marketplace
 	}
 	return &MarketplaceClient{
 		catalogURL: catalogURL,
-		httpClient: &http.Client{Timeout: timeout},
+		httpClient: &http.Client{Timeout: timeout, Transport: netguard.NewSafeHTTPTransport()},
 	}
 }
 
@@ -151,6 +154,11 @@ func validateMarketplacePlugin(ctx context.Context, p MarketplacePlugin) error {
 			return fmt.Errorf("artifacts.mcp_tar_gz_url: %w", err)
 		}
 	}
+	if strings.TrimSpace(p.Artifacts.SkillsTarGzURL) != "" {
+		if err := validateMarketplaceURL(ctx, p.Artifacts.SkillsTarGzURL); err != nil {
+			return fmt.Errorf("artifacts.skills_tar_gz_url: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -187,48 +195,10 @@ func validateMarketplaceURL(ctx context.Context, rawURL string) error {
 
 	// Check each resolved IP against private/internal ranges
 	for _, ipAddr := range ips {
-		if isPrivateOrInternalIP(ipAddr.IP) {
+		if netguard.IsPrivateOrInternalIP(ipAddr.IP) {
 			return fmt.Errorf("URL resolves to private/internal IP address: %s", ipAddr.IP.String())
 		}
 	}
 
 	return nil
-}
-
-// isPrivateOrInternalIP checks if an IP is in a private or internal range.
-func isPrivateOrInternalIP(ip net.IP) bool {
-	// Check for loopback
-	if ip.IsLoopback() {
-		return true
-	}
-
-	// Check for link-local
-	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-		return true
-	}
-
-	// Check for private IPv4 ranges
-	privateIPv4Ranges := []string{
-		"10.0.0.0/8",
-		"172.16.0.0/12",
-		"192.168.0.0/16",
-		"169.254.0.0/16", // link-local
-	}
-
-	for _, cidr := range privateIPv4Ranges {
-		_, ipNet, _ := net.ParseCIDR(cidr)
-		if ipNet.Contains(ip) {
-			return true
-		}
-	}
-
-	// Check for private IPv6 ranges
-	if ip.To4() == nil { // IPv6
-		// Unique local addresses (fc00::/7)
-		if len(ip) == 16 && (ip[0]&0xfe) == 0xfc {
-			return true
-		}
-	}
-
-	return false
 }

@@ -1,19 +1,22 @@
 # Deploy
 
-This directory contains deployment assets for two distinct use cases:
+This directory contains deployment assets for three distinct use cases:
 
 - contributor-friendly local development;
-- production container deployment for self-hosters.
+- production container deployment for self-hosters (Docker Compose);
+- production deployment on Kubernetes — see [helm/README.md](helm/README.md).
 
 ## Contents
 
 | File | Description |
 |---|---|
-| `docker-compose.dev.yml` | Local development stack: PostgreSQL, Valkey, MinIO, and optional app containers |
+| `docker-compose.dev.yml` | Local development stack: PostgreSQL, Valkey, RustFS, and optional app containers |
 | `docker-compose.prod.yml` | Production stack: pulls pre-built images from DockerHub, no source checkout required |
 | `docker-compose.e2e.yml` | End-to-end test stack mirroring production topology with fixed test credentials |
 | `.env.dev.example` | Optional environment file for `docker-compose.dev.yml` (tunnel / custom domain) |
 | `.env.production.example` | Example environment file for manual production deployments |
+| `caddy/` | Gateway container: `Caddyfile` (stock `caddy:2-alpine` image, no custom build needed) |
+| `helm/` | Kubernetes Helm chart — same stack, deployed via `helm install` instead of `docker compose up` |
 
 Service container definitions live with each service:
 - [`services/api/Dockerfile`](../services/api/Dockerfile)
@@ -39,10 +42,85 @@ The installer supports:
 |---|---|
 | Bundled PostgreSQL | Starts a postgres container (default) |
 | External PostgreSQL | Supply a `DATABASE_URL`; postgres container is suppressed |
-| Self-hosted MinIO | Starts a MinIO container for S3-compatible file storage (default) |
-| AWS S3 | Supply AWS credentials; MinIO container is suppressed |
+| Self-hosted RustFS | Starts a RustFS container for S3-compatible file storage (default) |
+| AWS S3 | Supply AWS credentials; RustFS container is suppressed |
 | HTTPS | Enabled by default — Let's Encrypt for a real domain, Caddy's local CA otherwise; can be disabled for plain HTTP |
-| AI Agent | Enabled by default; can be skipped to reduce resource usage |
+| Agent Runner | Enabled by default; can be skipped to reduce resource usage. See [docs/ai-agent/api-design.md](../docs/ai-agent/api-design.md) for the agent REST API once it's running. |
+
+#### Non-interactive install (CI, scripts, AI coding agents)
+
+Set `PACA_YES=1` to skip every prompt. This is **required**, not just convenient,
+for unattended use: without it, the script will eventually hit a `read` and block
+waiting for terminal input — harmless for a human at a keyboard, but a hang for
+anything driving the script programmatically. `PACA_YES=1` alone guarantees a
+complete, silent run: every field not given a value below falls back to a sane
+default, generating fresh random secrets as needed.
+
+```bash
+PACA_YES=1 bash install.sh
+# or, without a local copy of the script at all:
+PACA_YES=1 bash <(curl -fsSL https://github.com/Paca-AI/paca/releases/latest/download/install.sh)
+```
+
+> **AI agents:** prefer this script over hand-rolling `docker-compose.yml` / `.env`
+> from the [manual setup](#manual-setup) instructions below. It pins compatible
+> image tags, generates every secret in the format the services expect, and stays
+> in sync with what each release actually needs — a hand-built `.env` is much more
+> likely to drift and fail in a way that's hard to diagnose from outside the repo.
+
+Every other prompt can be steered with an environment variable instead of
+accepting its default — set `PACA_YES=1` plus whichever of these you care about.
+Variables named after an actual `.env` key are written there verbatim; variables
+prefixed `PACA_` are installer-only choices with no direct `.env` equivalent.
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `PACA_DIR` | Installation directory | `./paca` |
+| `PACA_VERSION` | Release tag to install | `latest` |
+| `PACA_START` | Pull images and start immediately after writing config (`yes`/`no`) | `yes` |
+| `ADMIN_USERNAME` | Admin login (min 3 chars) | `admin` |
+| `ADMIN_PASSWORD` | Admin login (min 8 chars) | auto-generated |
+| `ENCRYPTION_KEY` | 64-char lowercase hex; **must match** the original if reconnecting to an existing DB | auto-generated |
+| `DATABASE_URL` | Setting this selects external/managed PostgreSQL and suppresses the bundled container. Recommended managed option: [Neon](https://neon.com) (free tier available) | unset → bundled PostgreSQL |
+| `POSTGRES_PASSWORD` | Bundled PostgreSQL only | auto-generated |
+| `BACKUP_ENABLED` | `true`/`false` (bundled PostgreSQL only) | `true` |
+| `BACKUP_DIR` | Host directory for backup dumps | `./backups` |
+| `BACKUP_CRON` | 5-field cron, UTC | `0 2 * * *` |
+| `BACKUP_RETENTION_DAYS` | Days of backups to keep | `7` |
+| `STORAGE_PROVIDER` | `rustfs`/`s3` | `rustfs` |
+| `STORAGE_REGION` | | `us-east-1` |
+| `STORAGE_BUCKET` | Required if `STORAGE_PROVIDER=s3` | `paca` (rustfs only) |
+| `STORAGE_ACCESS_KEY_ID` | Required if `STORAGE_PROVIDER=s3` | auto-generated (rustfs only) |
+| `STORAGE_SECRET_ACCESS_KEY` | Required if `STORAGE_PROVIDER=s3` | auto-generated (rustfs only) |
+| `PACA_ADDRESS` | Domain or IP Paca is reachable at | `localhost` |
+| `PACA_HTTPS` | `yes`/`no`; ignored when `PACA_ADDRESS=localhost` | `yes` |
+| `GATEWAY_PORT` | Only used when serving plain HTTP | `80` |
+| `PUBLIC_URL` | Full public URL, no trailing slash | derived from the above |
+| `PACA_WEB` | `bundled`/`external` | `bundled` |
+| `PACA_AGENT_RUNNER` | Include the Agent Runner service (`yes`/`no`) | `yes` |
+| `AGENT_API_KEY` | Agent Runner → API pre-shared key | auto-generated |
+| `INTERNAL_API_KEY` | API → Agent Runner pre-shared key | auto-generated |
+| `JWT_SECRET` | | auto-generated |
+
+Fully unattended example — custom domain, S3, no Agent Runner:
+
+```bash
+PACA_YES=1 \
+PACA_ADDRESS=paca.example.com \
+STORAGE_PROVIDER=s3 STORAGE_BUCKET=my-bucket \
+STORAGE_ACCESS_KEY_ID=AKIA... STORAGE_SECRET_ACCESS_KEY=... \
+PACA_AGENT_RUNNER=no \
+ADMIN_PASSWORD='a-strong-password' \
+bash install.sh
+```
+
+Auto-generated secrets are printed at the end of a successful run and saved in
+`.env` — nothing is silently left blank. If `PACA_DIR` already has a `.env` from
+a previous run, the script keeps it by default (`y` on "Keep existing .env?")
+rather than regenerating from your new variables; delete it first if you want a
+clean re-run to pick up new values. See the comment header at the top of
+[`scripts/install.sh`](../scripts/install.sh) for this same reference inline
+with the script.
 
 ### Manual setup
 
@@ -69,15 +147,25 @@ Create a `.env` with the required variables:
 JWT_SECRET=<strong-random-secret>
 ADMIN_PASSWORD=<strong-password>
 POSTGRES_PASSWORD=<strong-random-password>
-# Required when using AI agent: generate with 'openssl rand -hex 32'
-AGENT_API_KEY=<strong-random-secret>
+# Required even if you don't plan to use Agent Runner (--scale agent-runner=0) —
+# the api service itself refuses to start without this set, since it's also
+# used to authenticate the api → agent-runner internal status/control calls.
+# Generate with: openssl rand -hex 32
 INTERNAL_API_KEY=<strong-random-secret>
-# Required for plugin secrets at rest: generate with 'openssl rand -hex 32'
+# Optional — only used by Agent Runner to call back into the api service as
+# its own bot user. Leave unset if you're skipping Agent Runner.
+# Generate with: openssl rand -hex 32
+AGENT_API_KEY=<strong-random-secret>
+# Required to encrypt LLM-type agents' API keys and plugin secrets at rest.
+# Not enforced at startup, but leaving it empty stores those values in
+# plaintext instead of failing — set it unless you're certain you don't need
+# it (e.g. ACP-only agents, no plugins with stored secrets).
+# Generate with: openssl rand -hex 32
 ENCRYPTION_KEY=<64-char-hex>
 PUBLIC_URL=http://your-domain-or-ip
 ```
 
-Start the full stack (bundled PostgreSQL + MinIO):
+Start the full stack (bundled PostgreSQL + RustFS):
 
 ```bash
 docker compose --env-file .env up -d
@@ -111,6 +199,64 @@ Without `SITE_ADDRESS` (or set to a bare port like `:80`), the gateway serves pl
 HTTP — the simplest option, and the right one when another proxy or load balancer in
 front of this server already terminates TLS.
 
+**With SSH access** (optional, off by default): lets a user `ssh` directly
+into a running static environment's own real sshd for pair programming —
+see
+[`docs/ai-agent/environment-management.md`](../docs/ai-agent/environment-management.md)'s
+"Terminal / SSH Access" section and
+[`deploy/helm/README.md`'s own "SSH access" section](helm/README.md#ssh-access)
+for the Kubernetes/Helm equivalent (same feature, same underlying Go code
+in `agent-runner`, on both deployment targets). Each environment's SSH
+port is published as a native Docker `-p` binding straight onto this
+host — `agent-runner` decides which host port to assign, but nothing
+relays traffic through its own process, so a real `ssh` client's full
+feature set (agent forwarding, SFTP, further port-forwards) all just
+work. Enabling it is setting a port range:
+
+```bash
+SSH_BASTION_PORT_RANGE_START=2200
+SSH_BASTION_PORT_RANGE_END=2299
+```
+
+A user connects with `ssh -p <port> root@<this-host>` once an environment
+is `running` — its own Connect page shows the exact port once one's
+assigned. Authentication is a public key they've already registered there,
+pushed straight into that environment's own `authorized_keys`. Each
+environment's sshd host key lives on that environment's own persisted
+workspace volume, so it survives restarts the same way its files do — no
+separate bastion-wide volume to lose. Leaving
+`SSH_BASTION_PORT_RANGE_START`/`_END` unset (the default) means no
+environment is ever assigned a port and nothing is ever published for it.
+
+**With port forwarding** (optional, off by default): lets a user expose
+any container port inside a running static environment (their own dev
+server, most commonly) at `<this-host>:<host_port>` — the exact same
+native-publish mechanism as SSH access above, just for a user-managed,
+one-to-many set of forwards a user adds from the environment's Connect
+page instead of a single auto-created port. See
+[`docs/ai-agent/environment-management.md`](../docs/ai-agent/environment-management.md)'s
+"Port Forwarding" section. Enabling it is the same shape as SSH access, a
+disjoint port range so the two can never collide:
+
+```bash
+PORT_FORWARD_RANGE_START=2300
+PORT_FORWARD_RANGE_END=2399
+```
+
+Adding or removing a forward on a running environment requires clicking
+"Restart" on its Connect page to apply — Docker has no way to add or
+remove a `-p` binding on an already-running container, so the environment
+is stopped, recreated from its same persisted volume (no data lost), and
+started again with the updated set of published ports.
+
+`PORT_FORWARD_HOST` (the api service's own `${PUBLIC_HOSTNAME:-localhost}`
+in `docker-compose.dev.yml`, or an explicit host you set yourself in
+`docker-compose.prod.yml` — see that file's own comments) is passed to the
+`agent-runner` service too, not just `api`: the agent itself is told each
+forward's real `<host>:<host_port>` address in-conversation, so if it
+starts a dev server on a forwarded port it can hand the user a working URL
+directly instead of the user having to look it up on the Connect page.
+
 **With external PostgreSQL** (suppress the bundled container):
 
 ```bash
@@ -118,23 +264,31 @@ front of this server already terminates TLS.
 docker compose --env-file .env up -d --scale postgres=0
 ```
 
-**With AWS S3** (suppress MinIO):
+> **💡 Looking for a managed PostgreSQL?** [Neon](https://neon.com) is a serverless Postgres platform with a generous free tier, instant branching, and autoscaling — a great fit for Paca. Create a database, copy the connection string, and set it as `DATABASE_URL` in `.env`.
+
+
+**With AWS S3** (suppress RustFS):
 
 ```bash
 # Set STORAGE_PROVIDER=s3 and real AWS credentials in .env.
-docker compose --env-file .env up -d --scale minio=0
+docker compose --env-file .env up -d --scale rustfs=0
 ```
 
-**Without the AI agent**:
+**Without Agent Runner**:
 
 ```bash
-docker compose --env-file .env up -d --scale ai-agent=0
+docker compose --env-file .env up -d --scale agent-runner=0
 ```
+
+`INTERNAL_API_KEY` must still be set in `.env` even with Agent Runner scaled
+to 0 — the api service requires it unconditionally at startup regardless of
+whether agent-runner is actually running (see above). `AGENT_API_KEY` can be
+left unset in this case.
 
 Flags can be combined:
 
 ```bash
-docker compose --env-file .env up -d --scale postgres=0 --scale minio=0
+docker compose --env-file .env up -d --scale postgres=0 --scale rustfs=0
 ```
 
 ### Upgrading to a new version
@@ -156,11 +310,46 @@ Pin to a specific release instead of `latest`:
 PACA_VERSION=v1.2.3 bash upgrade.sh
 ```
 
-Pass through any `--scale` flags you used originally:
+Common `--scale` choices from install time are detected and re-applied automatically —
+external PostgreSQL (`DATABASE_URL` set), AWS S3 (`STORAGE_PROVIDER=s3`), an externally
+hosted web app, and a disabled AI agent all stay scaled to 0 without you passing
+anything. (Installs from before this was tracked get a one-time best-effort guess for
+the web app / AI agent, based on whether a container for that service currently exists,
+and the guess is then recorded in `.env` so it isn't re-guessed on the next upgrade —
+check the printed messages and override with e.g. `--scale web=1` if a guess is wrong.)
+Only pass `--scale` yourself for scaling that isn't one of these, e.g. a custom
+replica count:
 
 ```bash
-bash upgrade.sh --scale web=0 --scale minio=0
+bash upgrade.sh --scale web=0 --scale rustfs=0
 ```
+
+> **Still running the bundled MinIO container from before this release?** `upgrade.sh`
+> detects it and refuses to proceed until you say which way you want it — migrate its
+> data (see [Migrating from MinIO to RustFS](../docs/deployment/README.md#migrating-from-minio-to-rustfs))
+> or keep MinIO running for now with `PACA_KEEP_MINIO=1` (see
+> [that section's follow-up](../docs/deployment/README.md#prefer-to-keep-running-your-existing-minio-container-for-now)).
+
+**Non-interactive (CI, scripts, AI coding agents):** set `PACA_YES=1` — required for
+unattended use, for the same reason as `install.sh`: without it, the script can block
+on a prompt with nobody there to answer it. `PACA_YES=1` proceeds with the upgrade and
+takes the default (yes) on any conditional `.env` migration prompt (e.g. switching
+`AGENT_SERVER_IMAGE` off the old upstream default). Override with `PACA_UPDATE_AGENT_IMAGE=no`
+if you want to keep that value as-is. `PACA_PROCEED=no` gives a lightweight,
+non-destructive version check — it prints current vs. target version and exits without
+touching any files:
+
+```bash
+cd /path/to/your/paca/install
+PACA_YES=1 bash upgrade.sh
+# check what would change without upgrading:
+PACA_YES=1 PACA_PROCEED=no bash upgrade.sh
+```
+
+> **AI agents:** prefer this script over a manual `docker compose pull && up`. It backs
+> up `docker-compose.yml`/`Caddyfile`/`.env` first, only re-pins image tags when a
+> specific version was requested, and backfills any `.env` variables introduced since
+> the install was created — a manual pull+restart skips all of that.
 
 **Manual:** pull the latest images and restart the stack — this is enough when
 `docker-compose.yml` and the Caddyfile haven't changed shape since your last upgrade:
@@ -193,7 +382,16 @@ docker run --rm \
   alpine sh -c "cp -av /from/. /to/"
 docker volume rm paca-prod_postgres_data
 
-# Repeat for minio_data, valkey_data, and plugin volumes as needed.
+# Repeat for valkey_data and plugin volumes as needed the same way — a raw
+# volume copy works for them since their on-disk format didn't change.
+#
+# The object-storage volume is a special case if you're also still on the
+# bundled MinIO: it's named minio_data here, not rustfs_data — this release
+# renamed the service, but MinIO's and RustFS's on-disk formats aren't
+# compatible, so a raw copy like the postgres one above would just produce a
+# rustfs_data volume full of files RustFS can't read. Use the dedicated
+# mc-based migration in docs/deployment/README.md's "Migrating from MinIO to
+# RustFS" section instead, before starting the new stack below.
 
 # 3. Start the new stack.
 docker compose --env-file .env up -d
@@ -209,7 +407,7 @@ Set the image variables in `.env` to lock to a specific release:
 PACA_API_IMAGE=pacaai/paca-api:1.2.3
 PACA_WEB_IMAGE=pacaai/paca-web:1.2.3
 PACA_REALTIME_IMAGE=pacaai/paca-realtime:1.2.3
-PACA_AI_AGENT_IMAGE=pacaai/paca-ai-agent:1.2.3
+PACA_AGENT_RUNNER_IMAGE=pacaai/paca-agent-runner:1.2.3
 ```
 
 ### Database backups
@@ -313,8 +511,18 @@ and use Docker Compose only for PostgreSQL and Valkey.
 | Valkey | 6379 | Local cache / event streams |
 | API | 8080 (internal) | Routed via gateway at `/api/` |
 | Web | 3000 (internal) | Routed via gateway at `/` |
-| MinIO S3 API | 9000 | Local object store (S3-compatible) |
-| MinIO Console | 9001 | MinIO web UI (credentials: `minioadmin` / `minioadmin`) |
+| RustFS S3 API | 9000 | Local object store (S3-compatible) |
+| RustFS Console | 9001 | RustFS web UI (credentials: `rustfsadmin` / `rustfsadmin`) |
+| Static environment SSH | 2200-2299 | One port per running environment, on by default in dev — see the warning below |
+| Static environment port forwards | 2300-2399 | One port per user-added forward, on by default in dev — see the warning below |
+
+Unlike `docker-compose.prod.yml` (opt-in, empty by default), the two ranges
+above are **on by default** in dev for convenience. Docker publishes them
+on `0.0.0.0`, so any environment you create against this dev stack is
+reachable from your whole LAN, not just `localhost`, for as long as it's
+running — fine on a trusted network, but worth knowing. Set
+`SSH_BASTION_PORT_RANGE_START`/`_END` and `PORT_FORWARD_RANGE_START`/`_END`
+empty in a local `.env` override if that's not your situation.
 
 ### Database backups (dev)
 

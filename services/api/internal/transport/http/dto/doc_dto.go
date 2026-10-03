@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"time"
 
-	docdom "github.com/Paca-AI/api/internal/domain/doc"
 	"github.com/google/uuid"
+
+	docdom "github.com/Paca-AI/api/internal/domain/doc"
 )
 
 // =============================================================================
@@ -173,16 +174,21 @@ type UpdateDocCommentRequest struct {
 
 // DocActivityResponse is the public representation of a doc activity entry.
 type DocActivityResponse struct {
-	ID            uuid.UUID       `json:"id"`
-	DocumentID    uuid.UUID       `json:"document_id"`
-	ActorID       *uuid.UUID      `json:"actor_id,omitempty"`
-	ActorName     string          `json:"actor_name,omitempty"`
-	ActorUsername string          `json:"actor_username,omitempty"`
-	ActivityType  string          `json:"activity_type"`
-	Content       json.RawMessage `json:"content"`
-	CreatedAt     time.Time       `json:"created_at"`
-	UpdatedAt     time.Time       `json:"updated_at"`
-	DeletedAt     *time.Time      `json:"deleted_at,omitempty"`
+	ID            uuid.UUID  `json:"id"`
+	DocumentID    uuid.UUID  `json:"document_id"`
+	ActorID       *uuid.UUID `json:"actor_id,omitempty"`
+	ActorName     string     `json:"actor_name,omitempty"`
+	ActorUsername string     `json:"actor_username,omitempty"`
+	// ActorAvatarURL/ActorAvatarThumbURL are presigned GET URLs, populated by
+	// the handler (not this mapper) via attachmentdom.AvatarService — nil
+	// when the actor has no avatar.
+	ActorAvatarURL      *string         `json:"actor_avatar_url,omitempty"`
+	ActorAvatarThumbURL *string         `json:"actor_avatar_thumb_url,omitempty"`
+	ActivityType        string          `json:"activity_type"`
+	Content             json.RawMessage `json:"content"`
+	CreatedAt           time.Time       `json:"created_at"`
+	UpdatedAt           time.Time       `json:"updated_at"`
+	DeletedAt           *time.Time      `json:"deleted_at,omitempty"`
 }
 
 // DocActivityFromEntity maps a domain Activity to a DocActivityResponse DTO.
@@ -198,5 +204,31 @@ func DocActivityFromEntity(a *docdom.Activity) DocActivityResponse {
 		CreatedAt:     a.CreatedAt,
 		UpdatedAt:     a.UpdatedAt,
 		DeletedAt:     a.DeletedAt,
+	}
+}
+
+// DocumentSearchHitResponse is one result of a title/content document search:
+// list-item metadata plus where the query matched and an excerpt (empty for
+// title matches). Content is never included.
+type DocumentSearchHitResponse struct {
+	ID        uuid.UUID  `json:"id"`
+	ProjectID uuid.UUID  `json:"project_id"`
+	FolderID  *uuid.UUID `json:"folder_id,omitempty"`
+	Title     string     `json:"title"`
+	MatchedIn string     `json:"matched_in"`
+	Snippet   string     `json:"snippet,omitempty"`
+	UpdatedAt time.Time  `json:"updated_at"`
+}
+
+// DocumentSearchHitFromEntity maps a domain SearchHit to its DTO.
+func DocumentSearchHitFromEntity(h docdom.SearchHit) DocumentSearchHitResponse {
+	return DocumentSearchHitResponse{
+		ID:        h.Document.ID,
+		ProjectID: h.Document.ProjectID,
+		FolderID:  h.Document.FolderID,
+		Title:     h.Document.Title,
+		MatchedIn: h.MatchedIn,
+		Snippet:   h.Snippet,
+		UpdatedAt: h.Document.UpdatedAt,
 	}
 }

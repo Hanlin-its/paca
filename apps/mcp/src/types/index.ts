@@ -12,13 +12,46 @@ export interface PacaConfig {
 	gatewayURL?: string;
 	/** Agent UUID forwarded as X-Agent-ID on every API request. */
 	agentId?: string;
-	/** Project UUID - required when agentId is provided for single-project agent mode. */
+	/**
+	 * Project UUID — required when agentId is provided AND the agent is
+	 * project-scoped ("single-project agent mode": every tool call is
+	 * pinned to this one project, see server.ts). Left unset for a
+	 * global-scope agent (agentId set, no fixed project) or a personal API
+	 * key — either runs "unpinned": each tool call may target any project
+	 * the caller has permission in, passed explicitly per call.
+	 */
 	projectId?: string;
-}
-
-export interface PermissionMap {
-	global: Record<string, boolean>;
-	projects: Record<string, Record<string, boolean>>;
+	/**
+	 * Human user UUID this agent is acting on behalf of, forwarded as
+	 * X-Actor-User-ID on every API request. Only ever set for a global agent
+	 * dispatched from a trigger that names a human actor (e.g. a global-chat
+	 * message) — lets server-side attribution (e.g. who created a project)
+	 * point at that human instead of the shared agent-bot identity. Unset
+	 * for a personal API key or a project-scoped agent's automation runs.
+	 */
+	actorUserId?: string;
+	/**
+	 * UUID of the conversation this MCP server instance is running as part
+	 * of, forwarded as X-Conversation-ID on every API request — set
+	 * unconditionally by agent-runner's buildMCPServers (PACA_CONVERSATION_ID),
+	 * unlike projectId/actorUserId. Lets services/api's
+	 * GetConversationForAgent (the read_conversation tool's backing
+	 * endpoint) authorize a cross-conversation read against *this*
+	 * conversation's own project/actor/owning member, instead of trusting
+	 * agentId alone — see that method's doc comment for why bare agent
+	 * identity isn't sufficient. Unset only for a personal API key running
+	 * outside any conversation.
+	 */
+	conversationId?: string;
+	/**
+	 * Names (e.g. "com.paca.github") of the repository plugins installed on
+	 * this conversation's project, forwarded from the agent-runner trigger's
+	 * repo_plugin_ids field as PACA_REPO_PLUGIN_IDS (comma-separated). Empty
+	 * or unset means no repository plugin is configured, in which case the
+	 * repo tools (list_repositories/clone_repository/push_branch) are hidden
+	 * entirely — see server.ts's tool-listing handler.
+	 */
+	repoPluginIds?: string[];
 }
 
 export interface SuccessEnvelope<T> {
@@ -81,7 +114,7 @@ export interface Task {
 	description?: unknown[] | null;
 	importance: number;
 	story_points?: number | null;
-	assignee_id?: string | null;
+	assignee_ids?: string[];
 	reporter_id?: string | null;
 	custom_fields: Record<string, unknown>;
 	start_date?: string | null;
@@ -186,6 +219,16 @@ export interface Document {
 	created_by?: string | null;
 	updated_by?: string | null;
 	created_at: string;
+	updated_at: string;
+}
+
+export interface DocumentSearchHit {
+	id: string;
+	project_id?: string | null;
+	folder_id?: string | null;
+	title: string;
+	matched_in: "title" | "content";
+	snippet?: string;
 	updated_at: string;
 }
 
@@ -295,16 +338,10 @@ export interface DocumentActivityListResult {
 }
 
 // ==================== Document Comments ====================
-
-export interface DocumentComment {
-	id: string;
-	document_id: string;
-	user_id: string;
-	user_name: string;
-	content: string;
-	created_at: string;
-	updated_at: string;
-}
+// The API's add/update comment endpoints both respond with the same
+// DocActivityResponse DTO as list-activities (actor_id/actor_name/
+// actor_username, not a separate user_id/user_name shape), so comment
+// methods are typed as DocumentActivity rather than a distinct interface.
 
 // ==================== Project Members ====================
 
@@ -420,7 +457,7 @@ export interface UpdateTaskStatusInput {
 
 // ==================== Views ====================
 
-export type ViewType = "table" | "board" | "roadmap";
+export type ViewType = "table" | "board" | "roadmap" | "plugin";
 export type ViewLayout = "Board" | "Table" | "Roadmap";
 export type ViewsContext = "sprint" | "backlog" | "timeline";
 
@@ -431,11 +468,21 @@ export interface FilterConfig {
 	items?: Record<string, FilterEntry>;
 }
 
+export interface CustomFieldFilterConfig {
+	selector?: FilterConfig;
+	min?: number;
+	max?: number;
+	after?: string;
+	before?: string;
+	contains?: string;
+}
+
 export interface ViewFilters {
 	task_types?: FilterConfig;
 	statuses?: FilterConfig;
 	assignees?: FilterConfig;
 	sprints?: FilterConfig;
+	custom_fields?: Record<string, CustomFieldFilterConfig>;
 }
 
 export interface ViewConfig {
@@ -446,6 +493,10 @@ export interface ViewConfig {
 	field_sum?: string;
 	slice_by?: string;
 	filters?: ViewFilters;
+	/** Required when view_type is "plugin": the reverse-DNS plugin manifest ID that provides this view (e.g. "com.paca.dashboard"). On update_view, null explicitly clears an existing binding. */
+	plugin_manifest_id?: string | null;
+	/** Required when view_type is "plugin": the component name from that plugin's "view" extension point (e.g. "DashboardIntegrationView"). On update_view, null explicitly clears an existing binding. */
+	plugin_component?: string | null;
 }
 
 export interface View {
@@ -514,13 +565,18 @@ export type FieldType =
 	| "boolean"
 	| "url";
 
+export interface CustomFieldOption {
+	value: string;
+	color?: string | null;
+}
+
 export interface CustomFieldDefinition {
 	id: string;
 	project_id: string;
 	field_key: string;
 	display_name: string;
 	field_type: FieldType;
-	options: string[];
+	options: CustomFieldOption[];
 	is_required: boolean;
 	created_at: string;
 	updated_at: string;
@@ -530,14 +586,14 @@ export interface CreateCustomFieldInput {
 	display_name: string;
 	field_key: string;
 	field_type: FieldType;
-	options?: string[];
+	options?: CustomFieldOption[];
 	is_required?: boolean;
 }
 
 export interface UpdateCustomFieldInput {
 	display_name?: string;
 	field_type?: FieldType;
-	options?: string[];
+	options?: CustomFieldOption[];
 	is_required?: boolean;
 }
 
@@ -721,6 +777,276 @@ export interface TaskLink {
 export interface CreateTaskLinkInput {
 	target_task_id: string;
 	link_type: LinkType;
+}
+
+// ==================== Automation ====================
+// A project-scoped graph of Trigger/Condition/Action nodes connected by
+// edges — replaces the old task-dependency workflow canvas and the flat
+// trigger/condition/action rule list with one unified model.
+
+export type AutomationStatus = "draft" | "active" | "archived";
+export type AutomationNodeKind = "trigger" | "condition" | "action";
+
+export interface Automation {
+	id: string;
+	project_id: string;
+	name: string;
+	description: string;
+	status: AutomationStatus;
+	created_by?: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface AutomationNode {
+	id: string;
+	automation_id: string;
+	kind: AutomationNodeKind;
+	type: string;
+	config: Record<string, unknown>;
+	pos_x: number;
+	pos_y: number;
+}
+
+export interface AutomationEdge {
+	id: string;
+	automation_id: string;
+	source_node_id: string;
+	source_handle?: string | null;
+	target_node_id: string;
+}
+
+export interface AutomationGraph {
+	automation: Automation;
+	nodes: AutomationNode[];
+	edges: AutomationEdge[];
+}
+
+export type AutomationRunStatus = "running" | "completed" | "failed";
+export type AutomationRunStepStatus = "completed" | "failed" | "skipped";
+
+export interface AutomationRun {
+	id: string;
+	automation_id: string;
+	trigger_node_id: string;
+	task_id: string;
+	status: AutomationRunStatus;
+	started_at: string;
+	finished_at?: string | null;
+}
+
+export interface AutomationRunStep {
+	id: string;
+	run_id: string;
+	node_id: string;
+	status: AutomationRunStepStatus;
+	input_snapshot?: Record<string, unknown> | null;
+	output_snapshot?: Record<string, unknown> | null;
+	error?: string;
+	executed_at: string;
+}
+
+export interface CreateAutomationInput {
+	name: string;
+	description?: string;
+}
+
+export interface UpdateAutomationInput {
+	name?: string;
+	description?: string;
+}
+
+export interface AddAutomationNodeInput {
+	kind: AutomationNodeKind;
+	type: string;
+	config?: Record<string, unknown>;
+	pos_x?: number;
+	pos_y?: number;
+}
+
+export interface UpdateAutomationNodeInput {
+	config?: Record<string, unknown>;
+	pos_x?: number;
+	pos_y?: number;
+}
+
+export interface AddAutomationEdgeInput {
+	source_node_id: string;
+	source_handle?: string | null;
+	target_node_id: string;
+}
+
+// ==================== Agent Conversations (conversation-tools) ====================
+// Read-only view used by the read_conversation tool to let one agent read
+// another conversation's transcript (e.g. one attached as chat context).
+// Field-for-field mirror of services/api's dto.AgentConversationResponse /
+// dto.AgentConversationEventResponse. ProjectID/TriggeredByMemberID are unset
+// for a global-chat conversation, which carries ActorUserID instead — see
+// that DTO's doc comment.
+
+export type ConversationStatus =
+	| "queued"
+	| "running"
+	| "paused"
+	| "finished"
+	| "failed"
+	| "stopped";
+
+export type ConversationTriggerType =
+	| "task_assigned"
+	| "comment_mention"
+	| "chat_message"
+	| "description_write"
+	| "automation_message";
+
+export interface AgentConversation {
+	id: string;
+	agent_id: string;
+	project_id?: string | null;
+	trigger_type: ConversationTriggerType;
+	task_id?: string | null;
+	chat_session_id?: string | null;
+	triggered_by_member_id?: string | null;
+	actor_user_id?: string | null;
+	status: ConversationStatus;
+	iteration_count: number;
+	input_tokens: number;
+	output_tokens: number;
+	total_tokens: number;
+	cost_usd?: number | null;
+	error_message?: string | null;
+	pr_url?: string | null;
+	started_at?: string | null;
+	finished_at?: string | null;
+	created_at: string;
+	agent_name?: string;
+	agent_handle?: string;
+	environment_id?: string | null;
+}
+
+export interface AgentConversationEvent {
+	id: string;
+	conversation_id: string;
+	event_index: number;
+	event_type: string;
+	event_source: "agent" | "user" | "system";
+	payload: Record<string, unknown>;
+	created_at: string;
+}
+
+/**
+ * Query params for one page of a conversation's events — see
+ * conversation_handler.go's parseConversationEventWindowQuery. `after` and
+ * `before` are mutually exclusive; leaving both unset opens on the newest
+ * `limit` events.
+ */
+export interface ConversationEventWindow {
+	after?: string;
+	before?: string;
+	limit?: number;
+}
+
+export interface ConversationEventPage {
+	items: AgentConversationEvent[];
+	total: number;
+	/** Opaque cursor to resume forward toward newer events (pass as `after`), or null. */
+	next_cursor: string | null;
+	/** Opaque cursor to resume backward toward older events (pass as `before`), or null when this page already starts at event_index 0. */
+	prev_cursor: string | null;
+}
+
+// ==================== Repository (repo-tools) ====================
+
+/**
+ * One repository as returned by a repository plugin's
+ * `GET /api/v1/plugins/{pluginId}/projects/{projectId}/repositories` route
+ * (a plugin-owned endpoint proxied through PluginHandler.ProxyRequest —
+ * there is no core-API implementation of repository listing to mirror
+ * beyond this shape). Ported from the equivalent per-item dict shape in the
+ * now-removed services/ai-agent's repo_tools.py ListRepositoriesExecutor.
+ */
+export interface RepositoryListItem {
+	id: string;
+	full_name: string;
+	owner: string;
+	repo_name: string;
+	clone_url: string;
+}
+
+/**
+ * Clone credentials for one repository, from the same plugin's
+ * `.../repositories/{repoId}/clone-info` route. `token` is short-lived and
+ * must never be logged — see repo-tools.ts's scrubToken.
+ */
+export interface RepositoryCloneInfo {
+	id: string;
+	full_name: string;
+	clone_url: string;
+	token: string;
+}
+
+/**
+ * A comment pinned to one element of one page, created via the Paca browser
+ * extension while viewing a forwarded port of a running environment. Mirrors
+ * services/api's PageAnnotationResponse — see
+ * services/api/internal/transport/http/dto/annotation_dto.go.
+ */
+export interface AnnotationElementSnapshot {
+	tag_name: string;
+	text_excerpt: string;
+	outer_html_excerpt: string;
+	accessible_name: string;
+	role: string;
+}
+
+export interface AnnotationConsoleEntry {
+	level: string;
+	message: string;
+	timestamp: string;
+}
+
+export interface AnnotationFailedRequest {
+	method: string;
+	url: string;
+	status_code: number;
+	error?: string;
+}
+
+export interface AnnotationComment {
+	id: string;
+	body: string;
+	created_by: string;
+	created_by_name: string;
+	created_by_username: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface PageAnnotation {
+	id: string;
+	project_id: string;
+	environment_id: string;
+	port_forward_id: string;
+	page_path: string;
+	element_selector: string;
+	element_snapshot: AnnotationElementSnapshot;
+	console_errors: AnnotationConsoleEntry[];
+	failed_requests: AnnotationFailedRequest[];
+	screenshot_file_id: string | null;
+	body: string;
+	status: "open" | "resolved";
+	task_id: string | null;
+	created_by: string;
+	created_by_name: string;
+	created_by_username: string;
+	created_at: string;
+	updated_at: string;
+	comments: AnnotationComment[];
+}
+
+export interface AnnotationListResult {
+	items: PageAnnotation[];
+	next_cursor?: string | null;
 }
 
 // ==================== API Response Helpers ====================

@@ -7,7 +7,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/Paca-AI/api/internal/apierr"
@@ -193,9 +192,9 @@ func (h *PluginHandler) InstallMarketplacePlugin(w http.ResponseWriter, r *http.
 		return
 	}
 
-	manifest, err := h.installer.Install(r.Context(), *entry)
+	manifest, err := h.installer.Install(r.Context(), *entry, h.svc.CheckHostCompatibility)
 	if err != nil {
-		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "failed to install plugin artifacts: "+err.Error()))
+		presenter.Error(w, r, installArtifactsError(err))
 		return
 	}
 
@@ -320,9 +319,10 @@ func (h *PluginHandler) UpdatePlugin(w http.ResponseWriter, r *http.Request) {
 
 // UpgradeMarketplacePlugin handles POST /api/v1/admin/plugins/:pluginId/upgrade.
 // It fetches the latest version from the marketplace catalog, validates that the
-// marketplace version is strictly newer than the installed version, downloads and
-// replaces all artifacts, runs any new migrations, updates the DB record, and
-// reloads the plugin in the WASM runtime.
+// marketplace version is strictly newer than the installed version and that the
+// host satisfies the new manifest's minCoreVersion, downloads and replaces all
+// artifacts, runs any new migrations, updates the DB record, and reloads the
+// plugin in the WASM runtime.
 func (h *PluginHandler) UpgradeMarketplacePlugin(w http.ResponseWriter, r *http.Request) {
 	if h.marketplace == nil || h.installer == nil {
 		presenter.Error(w, r, apierr.New(apierr.CodeInternalError, "marketplace installer not configured"))
@@ -365,7 +365,7 @@ func (h *PluginHandler) UpgradeMarketplacePlugin(w http.ResponseWriter, r *http.
 	}
 
 	// Enforce semver ordering: refuse no-ops and downgrades.
-	cmp, err := compareSemver(entry.Version, installed.Version)
+	cmp, err := plugindom.CompareSemver(entry.Version, installed.Version)
 	if err != nil {
 		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "version comparison failed: "+err.Error()))
 		return
@@ -379,10 +379,13 @@ func (h *PluginHandler) UpgradeMarketplacePlugin(w http.ResponseWriter, r *http.
 		return
 	}
 
-	// Download and overwrite existing artifacts.
-	manifest, err := h.installer.Install(r.Context(), *entry)
+	// Download and overwrite existing artifacts. CheckHostCompatibility runs
+	// inside Install, before any of the currently-installed plugin's live
+	// files are touched, so an incompatible upgrade leaves them untouched
+	// entirely rather than requiring cleanup after the fact.
+	manifest, err := h.installer.Install(r.Context(), *entry, h.svc.CheckHostCompatibility)
 	if err != nil {
-		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "failed to install plugin artifacts: "+err.Error()))
+		presenter.Error(w, r, installArtifactsError(err))
 		return
 	}
 	if manifest.Version != entry.Version {
@@ -581,7 +584,7 @@ func (h *PluginHandler) ProxyRequest(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	if found == nil {
+	if found == nil || found.Manifest.Backend == nil {
 		presenter.Error(w, r, apierr.New(apierr.CodePluginNotFound, "plugin not found or disabled"))
 		return
 	}
@@ -610,6 +613,13 @@ func (h *PluginHandler) ProxyRequest(w http.ResponseWriter, r *http.Request) {
 	callerID := ""
 	userIDStr := ""
 	callerRole := ""
+	// An agent-API-key request names its agent; the runtime's permission_check
+	// judges it by that agent's own role rather than by userIDStr, which for an
+	// agent key is the shared bot user (see pluginrt.HTTPRequest.AgentID).
+	agentIDStr := ""
+	if agentID, ok := middleware.AgentIDFromRequest(r); ok {
+		agentIDStr = agentID.String()
+	}
 	if claims != nil {
 		callerRole = claims.Role
 		userIDStr = claims.Subject
@@ -652,9 +662,58 @@ func (h *PluginHandler) ProxyRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Build flattened headers map (first value per header name).
+	headers := make(map[string]string, len(r.Header))
+	for k, vs := range r.Header {
+		if len(vs) > 0 {
+			headers[k] = vs[0]
+		}
+	}
+
+	// Build flattened query-param map (first value per key), same convention
+	// as headers above.
+	rawQuery := r.URL.Query()
+	query := make(map[string]string, len(rawQuery))
+	for k, vs := range rawQuery {
+		if len(vs) > 0 {
+			query[k] = vs[0]
+		}
+	}
+
+	// Measure the envelope's exact overhead for this request (everything but
+	// the body) before reading the body, so the size cap accounts for the
+	// real headers/query/path instead of a guessed constant — those vary a
+	// lot in practice (large cookies, forwarded headers, long query strings).
+	envelopeProbe := &pluginrt.HTTPRequest{
+		Method:     r.Method,
+		Path:       subPath,
+		Query:      query,
+		ProjectID:  pathParams[projectParamName],
+		CallerID:   callerID,
+		UserID:     userIDStr,
+		CallerRole: callerRole,
+		AgentID:    agentIDStr,
+		Headers:    headers,
+	}
+	probeBytes, err := json.Marshal(envelopeProbe)
+	if err != nil {
+		presenter.Error(w, r, apierr.New(apierr.CodeInternalError, "failed to serialise request"))
+		return
+	}
+
 	// Read request body, capped so an oversized body can never reach the
 	// plugin's WASM memory (see Runtime.HandleRequest for why that matters).
-	if maxBody := h.runtime.MaxRequestBodyBytes(); maxBody > 0 {
+	// MaxHTTPBodyBytes (not MaxRequestBodyBytes) is used here because the raw
+	// body is base64-encoded and wrapped in the JSON envelope above before it
+	// reaches the runtime's own size check — using the same limit for both
+	// would let a body the HTTP layer accepts still get rejected downstream.
+	maxBody := h.runtime.MaxHTTPBodyBytes(int64(len(probeBytes)))
+	if maxBody < 0 {
+		presenter.Error(w, r, apierr.New(apierr.CodePayloadTooLarge,
+			"request headers/path/query leave no room for a body under the plugin payload limit"))
+		return
+	}
+	if maxBody > 0 {
 		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
 	}
 	bodyBytes, err := io.ReadAll(r.Body)
@@ -669,21 +728,15 @@ func (h *PluginHandler) ProxyRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build flattened headers map (first value per header name).
-	headers := make(map[string]string, len(r.Header))
-	for k, vs := range r.Header {
-		if len(vs) > 0 {
-			headers[k] = vs[0]
-		}
-	}
-
 	req := &pluginrt.HTTPRequest{
 		Method:     r.Method,
 		Path:       subPath,
+		Query:      query,
 		ProjectID:  pathParams[projectParamName],
 		CallerID:   callerID,
 		UserID:     userIDStr,
 		CallerRole: callerRole,
+		AgentID:    agentIDStr,
 		Headers:    headers,
 		Body:       bodyBytes,
 	}
@@ -699,6 +752,10 @@ func (h *PluginHandler) ProxyRequest(w http.ResponseWriter, r *http.Request) {
 
 	respBytes, err := h.runtime.HandleRequest(reqCtx, pluginID, reqBytes)
 	if err != nil {
+		if errors.Is(err, pluginrt.ErrPayloadTooLarge) {
+			presenter.Error(w, r, apierr.New(apierr.CodePayloadTooLarge, "request payload too large"))
+			return
+		}
 		presenter.Error(w, r, apierr.New(apierr.CodeInternalError, "plugin execution error: "+err.Error()))
 		return
 	}
@@ -832,22 +889,43 @@ func (h *PluginHandler) applyPluginRouteMiddlewares(w http.ResponseWriter, r *ht
 }
 
 func (h *PluginHandler) routeMiddlewares(route *plugindom.PluginRoute) []plugindom.PluginRouteMiddleware {
-	if route != nil {
-		// Distinguish omitted (nil) vs explicit empty list:
-		// nil -> apply default policy, [] -> no middlewares.
-		if route.Middlewares != nil {
-			return route.Middlewares
-		}
-		if route.Public {
-			return nil
-		}
+	if route == nil {
+		// No declared route matched this request's method+path at all — this
+		// isn't "a route that forgot to declare middlewares" (the case the
+		// fail-closed default below exists for), it's not a route. Apply no
+		// host middleware and let it reach the plugin's own WASM router
+		// unauthenticated, same as before this request's method+path was
+		// known to be unmatched — that router is what turns it into a 404
+		// (see matchPluginRoute's caller). Requiring auth just to learn that
+		// a path doesn't exist would be a behavior change with no security
+		// upside: nothing declared is reachable through a path with no
+		// matching route.
+		return nil
 	}
 
-	// Default policy for plugin routes: optional authn + fresh-password check.
-	// Project-scoped permission checks must be declared explicitly in the
-	// plugin route's middlewares list.
+	// Distinguish omitted (nil) vs explicit empty list:
+	// nil -> apply default policy, [] -> no middlewares.
+	if route.Middlewares != nil {
+		return route.Middlewares
+	}
+	if route.Public {
+		return nil
+	}
+
+	// Default policy for a route that exists in the manifest but didn't
+	// declare its own middlewares: require authentication + a fresh
+	// password. Every route in every audited first-party plugin declares
+	// its own middlewares explicitly, so this default is never actually
+	// exercised today — it exists purely to fail closed for the next
+	// plugin/route that forgets to declare one, rather than silently
+	// allowing anonymous access (the previous default's optionalAuthn made
+	// that mistake invisible: a route with no middlewares at all was
+	// reachable by anyone, logged in or not). Permission checks still must
+	// be declared explicitly in the plugin route's middlewares list — there
+	// is no sensible universal default for which permission an arbitrary
+	// future route should require.
 	return []plugindom.PluginRouteMiddleware{
-		{Name: "optionalAuthn"},
+		{Name: "authn"},
 		{Name: "requireFreshPassword"},
 	}
 }
@@ -1009,52 +1087,15 @@ func parsePluginID(r *http.Request) (uuid.UUID, error) {
 	return id, nil
 }
 
-// compareSemver returns a positive integer when a > b, 0 when equal, and a
-// negative integer when a < b. Only strict "X.Y.Z" (or "vX.Y.Z") versions
-// are accepted; pre-release identifiers and build metadata cause an error.
-func compareSemver(a, b string) (int, error) {
-	pa, err := parseSemver(a)
-	if err != nil {
-		return 0, fmt.Errorf("invalid version %q: %w", a, err)
+// installArtifactsError maps an error from Installer.Install to a response
+// error. A *apierr.Error (from the checkManifest callback, e.g.
+// PLUGIN_INCOMPATIBLE_HOST_VERSION with its structured Details) is passed
+// through unchanged so the client still gets the specific code/details;
+// anything else (download/extract/parse failures) is a generic bad request.
+func installArtifactsError(err error) error {
+	var apiErr *apierr.Error
+	if errors.As(err, &apiErr) {
+		return apiErr
 	}
-	pb, err := parseSemver(b)
-	if err != nil {
-		return 0, fmt.Errorf("invalid version %q: %w", b, err)
-	}
-	for i := range pa {
-		if pa[i] != pb[i] {
-			return pa[i] - pb[i], nil
-		}
-	}
-	return 0, nil
-}
-
-// parseSemver parses a strict "X.Y.Z" (or "vX.Y.Z") version string into its
-// major, minor, and patch integer components. Pre-release identifiers (e.g.
-// "1.0.0-beta.1") and build metadata (e.g. "1.0.0+001") are rejected with an
-// error so that callers never silently treat different precedence levels as
-// equal.
-func parseSemver(v string) ([3]int, error) {
-	v = strings.TrimPrefix(v, "v")
-	// Reject build metadata.
-	if strings.ContainsRune(v, '+') {
-		return [3]int{}, fmt.Errorf("version %q must not contain build metadata", v)
-	}
-	// Reject pre-release identifiers.
-	if strings.ContainsRune(v, '-') {
-		return [3]int{}, fmt.Errorf("version %q must not contain pre-release identifiers; only strict X.Y.Z versions are supported", v)
-	}
-	parts := strings.SplitN(v, ".", 3)
-	if len(parts) != 3 {
-		return [3]int{}, fmt.Errorf("expected major.minor.patch, got %q", v)
-	}
-	var result [3]int
-	for i, p := range parts {
-		n, err := strconv.Atoi(p)
-		if err != nil || n < 0 {
-			return [3]int{}, fmt.Errorf("non-numeric version component %q", p)
-		}
-		result[i] = n
-	}
-	return result, nil
+	return apierr.New(apierr.CodeBadRequest, "failed to install plugin artifacts: "+err.Error())
 }

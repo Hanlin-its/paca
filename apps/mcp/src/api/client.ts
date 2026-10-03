@@ -7,6 +7,8 @@ import type {
 	Document,
 	PacaConfig,
 	Project,
+	RepositoryCloneInfo,
+	RepositoryListItem,
 	Sprint,
 	SuccessEnvelope,
 	Task,
@@ -15,7 +17,7 @@ import type {
 	UpdateSprintInput,
 	UpdateTaskInput,
 } from "../types/index.js";
-import { markdownToBlocknote } from "../utils/index.js";
+import { formatApiRequestError, markdownToBlocknote } from "../utils/index.js";
 
 /**
  * Paca API client for interacting with the Paca backend.
@@ -49,6 +51,14 @@ export class PacaAPIClient {
 		if (this.config.agentId) {
 			headers["X-Agent-ID"] = this.config.agentId;
 		}
+		// Only ever meaningful alongside X-Agent-ID (see PacaConfig.actorUserId's
+		// doc comment: "unset for a personal API key"). Gating on agentId here
+		// too — not just trusting actorUserId's own truthiness — means a stray
+		// or misconfigured PACA_ACTOR_USER_ID can never reach the server
+		// without an agent identity attached to it.
+		if (this.config.agentId && this.config.actorUserId) {
+			headers["X-Actor-User-ID"] = this.config.actorUserId;
+		}
 
 		const options: RequestInit = {
 			method,
@@ -64,8 +74,12 @@ export class PacaAPIClient {
 		if (!response.ok) {
 			const errorText = await response.text();
 			throw new Error(
-				`API request failed: ${response.status} ${response.statusText} - ${errorText}`,
+				formatApiRequestError(response.status, response.statusText, errorText),
 			);
+		}
+
+		if (response.status === 204) {
+			return undefined;
 		}
 
 		const jsonResponse = await response.json();
@@ -146,6 +160,8 @@ export class PacaAPIClient {
 			assigneeId?: string;
 			taskTypeIds?: string[];
 			parentTaskId?: string;
+			search?: string;
+			searchContent?: boolean;
 			pageSize?: number;
 			cursor?: string;
 		} = {},
@@ -164,6 +180,10 @@ export class PacaAPIClient {
 			params.push(`task_type_ids=${options.taskTypeIds.join(",")}`);
 		if (options.parentTaskId !== undefined)
 			params.push(`parent_task_id=${options.parentTaskId}`);
+		if (options.search) {
+			params.push(`search=${encodeURIComponent(options.search)}`);
+			if (options.searchContent) params.push("search_content=true");
+		}
 
 		const queryString = params.length > 0 ? `?${params.join("&")}` : "";
 		const response = await this.get(
@@ -203,7 +223,8 @@ export class PacaAPIClient {
 		if (input.task_type_id !== undefined)
 			body.task_type_id = input.task_type_id;
 		if (input.sprint_id !== undefined) body.sprint_id = input.sprint_id;
-		if (input.assignee_id !== undefined) body.assignee_id = input.assignee_id;
+		if (input.assignee_id !== undefined)
+			body.assignee_ids = input.assignee_id ? [input.assignee_id] : [];
 		if (input.parent_task_id !== undefined)
 			body.parent_task_id = input.parent_task_id;
 		if (input.importance !== undefined) body.importance = input.importance;
@@ -233,7 +254,8 @@ export class PacaAPIClient {
 		if (input.task_type_id !== undefined)
 			body.task_type_id = input.task_type_id;
 		if (input.sprint_id !== undefined) body.sprint_id = input.sprint_id;
-		if (input.assignee_id !== undefined) body.assignee_id = input.assignee_id;
+		if (input.assignee_id !== undefined)
+			body.assignee_ids = input.assignee_id ? [input.assignee_id] : [];
 		if (input.reporter_id !== undefined) body.reporter_id = input.reporter_id;
 		if (input.parent_task_id !== undefined)
 			body.parent_task_id = input.parent_task_id;
@@ -370,5 +392,34 @@ export class PacaAPIClient {
 
 	async deleteDocument(projectId: string, docId: string): Promise<void> {
 		await this.delete(`/api/v1/projects/${projectId}/docs/${docId}`);
+	}
+
+	// ==================== Repository Methods ====================
+	// These hit a repository plugin's own proxied backend routes (mounted at
+	// /api/v1/plugins/:pluginId/* — see PluginHandler.ProxyRequest in
+	// services/api), not a core-API endpoint. Matches whatever a repository
+	// plugin (e.g. paca-plugin-github) actually implements — ported from the
+	// equivalent request shapes in the now-removed services/ai-agent's
+	// repo_tools.py (ListRepositoriesExecutor / CloneRepositoryExecutor /
+	// PushBranchExecutor).
+
+	async listPluginRepositories(
+		pluginId: string,
+		projectId: string,
+	): Promise<RepositoryListItem[]> {
+		const response = await this.get(
+			`/api/v1/plugins/${pluginId}/projects/${projectId}/repositories`,
+		);
+		return Array.isArray(response) ? response : [];
+	}
+
+	async getRepositoryCloneInfo(
+		pluginId: string,
+		projectId: string,
+		repoId: string,
+	): Promise<RepositoryCloneInfo | undefined> {
+		return this.get(
+			`/api/v1/plugins/${pluginId}/projects/${projectId}/repositories/${repoId}/clone-info`,
+		);
 	}
 }

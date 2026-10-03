@@ -1,14 +1,19 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
 	"github.com/Paca-AI/api/internal/apierr"
+	attachmentdom "github.com/Paca-AI/api/internal/domain/attachment"
 	docdom "github.com/Paca-AI/api/internal/domain/doc"
+	notificationdom "github.com/Paca-AI/api/internal/domain/notification"
 	"github.com/Paca-AI/api/internal/transport/http/dto"
 	"github.com/Paca-AI/api/internal/transport/http/middleware"
 	"github.com/Paca-AI/api/internal/transport/http/presenter"
@@ -16,14 +21,43 @@ import (
 
 // DocumentHandler handles documentation endpoints.
 type DocumentHandler struct {
-	svc         docdom.Service
-	activitySvc docdom.ActivityService
+	svc             docdom.Service
+	activitySvc     docdom.ActivityService
+	avatarSvc       attachmentdom.AvatarService
+	notificationSvc notificationdom.Service
 }
 
 // NewDocumentHandler returns a DocumentHandler wired to the doc service and
 // activity service.
 func NewDocumentHandler(svc docdom.Service, activitySvc docdom.ActivityService) *DocumentHandler {
 	return &DocumentHandler{svc: svc, activitySvc: activitySvc}
+}
+
+// WithDocAvatarService configures avatar URL resolution for activity
+// responses (comments/system events show the actor's avatar).
+func (h *DocumentHandler) WithDocAvatarService(svc attachmentdom.AvatarService) *DocumentHandler {
+	h.avatarSvc = svc
+	return h
+}
+
+// WithDocNotificationService configures dispatching a plugin event (no
+// in-app row) when a document's content is updated to newly @mention a
+// user (see notificationdom.Service.NotifyDocMentioned).
+func (h *DocumentHandler) WithDocNotificationService(svc notificationdom.Service) *DocumentHandler {
+	h.notificationSvc = svc
+	return h
+}
+
+// toDocActivityResponse maps a to a DocActivityResponse and, if an
+// AvatarService is configured, resolves the actor's avatar keys into
+// presigned display URLs.
+func (h *DocumentHandler) toDocActivityResponse(ctx context.Context, a *docdom.Activity) dto.DocActivityResponse {
+	resp := dto.DocActivityFromEntity(a)
+	if h.avatarSvc != nil {
+		resp.ActorAvatarURL, _ = h.avatarSvc.ResolveAvatarURL(ctx, a.ActorAvatarKey)
+		resp.ActorAvatarThumbURL, _ = h.avatarSvc.ResolveAvatarURL(ctx, a.ActorAvatarThumbKey)
+	}
+	return resp
 }
 
 // =============================================================================
@@ -140,7 +174,10 @@ func (h *DocumentHandler) DeleteFolder(w http.ResponseWriter, r *http.Request) {
 // =============================================================================
 
 // ListDocuments handles GET /projects/:projectId/docs.
-// Optional query param: folder_id — filter by folder.
+// Optional query params: folder_id — filter by folder; search — case-
+// insensitive title match; page_size (1-200), cursor — opt into keyset
+// pagination (see docdom.Repository.ListDocuments's doc comment). Omitting
+// page_size returns every matching document in one response, as before.
 func (h *DocumentHandler) ListDocuments(w http.ResponseWriter, r *http.Request) {
 	projectID, err := parseProjectID(r)
 	if err != nil {
@@ -158,7 +195,26 @@ func (h *DocumentHandler) ListDocuments(w http.ResponseWriter, r *http.Request) 
 		folderID = &id
 	}
 
-	docs, err := h.svc.ListDocuments(r.Context(), projectID, folderID)
+	var search *string
+	if raw := strings.TrimSpace(r.URL.Query().Get("search")); raw != "" {
+		search = &raw
+	}
+
+	var limit *int
+	if raw := r.URL.Query().Get("page_size"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 200 {
+			presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "page_size must be an integer between 1 and 200"))
+			return
+		}
+		limit = &n
+	}
+	var cursor *string
+	if raw := r.URL.Query().Get("cursor"); raw != "" {
+		cursor = &raw
+	}
+
+	docs, hasMore, err := h.svc.ListDocuments(r.Context(), projectID, folderID, search, cursor, limit)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
@@ -166,6 +222,46 @@ func (h *DocumentHandler) ListDocuments(w http.ResponseWriter, r *http.Request) 
 	resp := make([]dto.DocumentListItemResponse, 0, len(docs))
 	for _, d := range docs {
 		resp = append(resp, dto.DocumentListItemFromEntity(d))
+	}
+	var nextCursor *string
+	if hasMore && len(docs) > 0 {
+		s := docdom.EncodeDocumentCursor(docs[len(docs)-1])
+		nextCursor = &s
+	}
+	presenter.OK(w, r, map[string]any{"items": resp, "next_cursor": nextCursor})
+}
+
+// SearchDocuments handles GET /projects/:projectId/docs/search.
+// Query params: q (required) — text to find in a document's title or body,
+// case-insensitive; limit (1-50, default 20).
+func (h *DocumentHandler) SearchDocuments(w http.ResponseWriter, r *http.Request) {
+	projectID, err := parseProjectID(r)
+	if err != nil {
+		presenter.Error(w, r, err)
+		return
+	}
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if q == "" {
+		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "q is required"))
+		return
+	}
+	limit := 20
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 50 {
+			presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "limit must be an integer between 1 and 50"))
+			return
+		}
+		limit = n
+	}
+	hits, err := h.svc.SearchDocuments(r.Context(), projectID, q, limit)
+	if err != nil {
+		presenter.Error(w, r, err)
+		return
+	}
+	resp := make([]dto.DocumentSearchHitResponse, 0, len(hits))
+	for _, hit := range hits {
+		resp = append(resp, dto.DocumentSearchHitFromEntity(hit))
 	}
 	presenter.OK(w, r, map[string]any{"items": resp})
 }
@@ -250,6 +346,11 @@ func (h *DocumentHandler) CreateDocument(w http.ResponseWriter, r *http.Request)
 
 // UpdateDocument handles PATCH /projects/:projectId/docs/:docId.
 func (h *DocumentHandler) UpdateDocument(w http.ResponseWriter, r *http.Request) {
+	projectID, err := parseProjectID(r)
+	if err != nil {
+		presenter.Error(w, r, err)
+		return
+	}
 	docID, err := parseDocID(r)
 	if err != nil {
 		presenter.Error(w, r, err)
@@ -279,7 +380,7 @@ func (h *DocumentHandler) UpdateDocument(w http.ResponseWriter, r *http.Request)
 	// Capture old state for activity recording.
 	oldDoc, _ := h.svc.GetDocument(r.Context(), docID)
 
-	d, err := h.svc.UpdateDocument(r.Context(), docID, docdom.UpdateDocumentInput{
+	d, err := h.svc.UpdateDocument(r.Context(), projectID, docID, docdom.UpdateDocumentInput{
 		Title:     req.Title,
 		Content:   req.Content.Ptr(),
 		FolderID:  req.FolderID.Ptr(),
@@ -305,6 +406,15 @@ func (h *DocumentHandler) UpdateDocument(w http.ResponseWriter, r *http.Request)
 				Content:      content,
 			})
 		}
+
+		// Publish a plugin event for each user newly @mentioned in the
+		// content (no in-app row — see notificationSvc.NotifyDocMentioned's
+		// doc comment).
+		if h.notificationSvc != nil && req.Content.Set && req.Content.Value != nil {
+			for _, mentionedID := range newlyMentionedUserIDs(oldDoc.Content, req.Content.Value) {
+				h.notificationSvc.NotifyDocMentioned(r.Context(), mentionedID, *updatedBy, oldDoc.ProjectID, docID)
+			}
+		}
 	}
 
 	presenter.OK(w, r, dto.DocumentFromEntity(d))
@@ -323,7 +433,7 @@ func (h *DocumentHandler) DeleteDocument(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if err := h.svc.DeleteDocument(r.Context(), docID); err != nil {
+	if err := h.svc.DeleteDocument(r.Context(), projectID, docID); err != nil {
 		presenter.Error(w, r, err)
 		return
 	}
@@ -353,12 +463,17 @@ func (h *DocumentHandler) DeleteDocument(w http.ResponseWriter, r *http.Request)
 
 // ListSnapshots handles GET /projects/:projectId/docs/:docId/snapshots.
 func (h *DocumentHandler) ListSnapshots(w http.ResponseWriter, r *http.Request) {
+	projectID, err := parseProjectID(r)
+	if err != nil {
+		presenter.Error(w, r, err)
+		return
+	}
 	docID, err := parseDocID(r)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
 	}
-	snaps, err := h.svc.ListSnapshots(r.Context(), docID)
+	snaps, err := h.svc.ListSnapshots(r.Context(), projectID, docID)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
@@ -372,12 +487,17 @@ func (h *DocumentHandler) ListSnapshots(w http.ResponseWriter, r *http.Request) 
 
 // GetSnapshot handles GET /projects/:projectId/docs/:docId/snapshots/:snapshotId.
 func (h *DocumentHandler) GetSnapshot(w http.ResponseWriter, r *http.Request) {
+	projectID, err := parseProjectID(r)
+	if err != nil {
+		presenter.Error(w, r, err)
+		return
+	}
 	snapshotID, err := parseDocSnapshotID(r)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
 	}
-	snap, err := h.svc.GetSnapshot(r.Context(), snapshotID)
+	snap, err := h.svc.GetSnapshot(r.Context(), projectID, snapshotID)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
@@ -391,19 +511,24 @@ func (h *DocumentHandler) GetSnapshot(w http.ResponseWriter, r *http.Request) {
 
 // ListActivities handles GET /projects/:projectId/docs/:docId/activities.
 func (h *DocumentHandler) ListActivities(w http.ResponseWriter, r *http.Request) {
+	projectID, err := parseProjectID(r)
+	if err != nil {
+		presenter.Error(w, r, err)
+		return
+	}
 	docID, err := parseDocID(r)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
 	}
-	activities, err := h.activitySvc.ListActivities(r.Context(), docID)
+	activities, err := h.activitySvc.ListActivities(r.Context(), projectID, docID)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
 	}
 	resp := make([]dto.DocActivityResponse, 0, len(activities))
 	for _, a := range activities {
-		resp = append(resp, dto.DocActivityFromEntity(a))
+		resp = append(resp, h.toDocActivityResponse(r.Context(), a))
 	}
 	presenter.OK(w, r, map[string]any{"items": resp})
 }
@@ -453,7 +578,7 @@ func (h *DocumentHandler) AddComment(w http.ResponseWriter, r *http.Request) {
 		presenter.Error(w, r, err)
 		return
 	}
-	presenter.Created(w, r, dto.DocActivityFromEntity(a))
+	presenter.Created(w, r, h.toDocActivityResponse(r.Context(), a))
 }
 
 // UpdateComment handles PATCH /projects/:projectId/docs/:docId/comments/:commentId.
@@ -495,7 +620,7 @@ func (h *DocumentHandler) UpdateComment(w http.ResponseWriter, r *http.Request) 
 		presenter.Error(w, r, err)
 		return
 	}
-	presenter.OK(w, r, dto.DocActivityFromEntity(a))
+	presenter.OK(w, r, h.toDocActivityResponse(r.Context(), a))
 }
 
 // DeleteComment handles DELETE /projects/:projectId/docs/:docId/comments/:commentId.

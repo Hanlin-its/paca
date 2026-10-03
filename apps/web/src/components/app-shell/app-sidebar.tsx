@@ -1,4 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+	useInfiniteQuery,
+	useMutation,
+	useQuery,
+	useQueryClient,
+} from "@tanstack/react-query";
 import {
 	Link,
 	useNavigate,
@@ -6,11 +11,14 @@ import {
 	useRouterState,
 } from "@tanstack/react-router";
 import {
+	Activity,
 	ArrowLeft,
 	BookOpen,
 	Bot,
+	CheckCircle2,
 	ChevronDown,
 	ChevronRight,
+	Clock,
 	File,
 	FileText,
 	Folder,
@@ -19,27 +27,34 @@ import {
 	GanttChart,
 	Home,
 	KanbanSquare,
+	Loader2,
+	MessageSquare,
 	Monitor,
 	Moon,
 	MoreHorizontal,
 	Pencil,
 	Plus,
 	Puzzle,
+	Server,
 	Settings,
 	Shield,
+	Sparkles,
 	Sun,
 	Trash2,
 	Users,
+	Workflow,
 } from "lucide-react";
 import {
 	type ComponentType,
 	useCallback,
 	useEffect,
+	useMemo,
 	useRef,
 	useState,
 } from "react";
 import { useTranslation } from "react-i18next";
 
+import { EntityAvatarContent } from "@/components/shared/entity-avatar";
 import { Badge } from "@/components/ui/badge";
 import {
 	DropdownMenu,
@@ -66,11 +81,13 @@ import {
 	SidebarSeparator,
 	useSidebar,
 } from "@/components/ui/sidebar";
+import { useBranding } from "@/hooks/use-branding";
 import { usePermissions } from "@/hooks/use-permissions";
 import { useProjectPermissions } from "@/hooks/use-project-permissions";
 import type { ThemeMode } from "@/hooks/use-theme-mode";
 import { useThemeMode } from "@/hooks/use-theme-mode";
-import { currentUserOptionalQueryOptions } from "@/lib/auth-api";
+import { ApiErrorCode, getApiErrorCode } from "@/lib/api-error";
+import { currentUserQueryOptions } from "@/lib/auth-api";
 import {
 	createDocument,
 	createFolder,
@@ -85,10 +102,26 @@ import {
 	updateFolder,
 } from "@/lib/doc-api";
 import { sprintsQueryOptions, updateTask } from "@/lib/interaction-api";
+import type { PluginNavRegistration } from "@/lib/plugin-api";
 import { ExtensionPoint } from "@/lib/plugins/extension-point";
-import { projectQueryOptions, projectsQueryOptions } from "@/lib/project-api";
+import { resolvePluginIcon } from "@/lib/plugins/icon-resolver";
+import { usePluginRegistry } from "@/lib/plugins/registry";
+import {
+	getProjectInitials,
+	projectQueryOptions,
+	projectsInfiniteQueryOptions,
+} from "@/lib/project-api";
+import { createLoadMoreScrollHandler } from "@/lib/scroll-pagination";
 import { cn } from "@/lib/utils";
 import { UserMenu } from "./user-menu";
+
+// Shared by every inactive nav item (top-level, project, plugin, and
+// interaction rows) so the sidebar's neutral-grey text color — deliberately
+// not tracking --primary, since that now follows the admin-configurable
+// brand color — stays consistent without repeating this string at each of
+// the many call sites below.
+const NAV_ITEM_INACTIVE_CLASS =
+	"text-sidebar-foreground/80 dark:text-sidebar-foreground/60 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground";
 
 // ── Docs Tree ─────────────────────────────────────────────────────────────────
 
@@ -148,12 +181,23 @@ function DocsDocRow({
 	const navigate = useNavigate();
 	const qc = useQueryClient();
 	const [renaming, setRenaming] = useState(false);
+	const [renameError, setRenameError] = useState<string | null>(null);
+	// The title last submitted, so a failed attempt reopens the editor with
+	// what the person typed instead of reverting to the original title.
+	const [pendingTitle, setPendingTitle] = useState<string | null>(null);
+	// Bumped on every failed attempt to remount TreeInlineRename — it tracks
+	// "already confirmed" internally to dedupe Enter+blur, so without a fresh
+	// instance a retry after an error couldn't re-confirm.
+	const [renameAttempt, setRenameAttempt] = useState(0);
 
 	const isActive = location === `/projects/${projectId}/docs/${doc.id}`;
 
 	const renameMutation = useMutation({
 		mutationFn: (title: string) => updateDocument(projectId, doc.id, { title }),
 		onSuccess: (updated) => {
+			setRenameError(null);
+			setRenaming(false);
+			setPendingTitle(null);
 			qc.setQueryData(docQueryKeys.detail(projectId, doc.id), updated);
 			qc.invalidateQueries({ queryKey: docQueryKeys.list(projectId) });
 			if (doc.folder_id) {
@@ -161,6 +205,14 @@ function DocsDocRow({
 					queryKey: docQueryKeys.list(projectId, doc.folder_id),
 				});
 			}
+		},
+		onError: (err: unknown) => {
+			setRenameError(
+				getApiErrorCode(err) === ApiErrorCode.DocTitleInvalid
+					? t("docs.errors.titleInvalid")
+					: t("docs.errors.renameFailed"),
+			);
+			setRenameAttempt((n) => n + 1);
 		},
 	});
 
@@ -175,93 +227,109 @@ function DocsDocRow({
 	});
 
 	return (
-		<div
-			className="group relative flex items-center gap-1 pr-1"
-			style={{ paddingLeft: `${8 + depth * 16 + 16}px` }}
-		>
-			<button
-				type="button"
-				className={cn(
-					"flex flex-1 min-w-0 items-center gap-1.5 rounded-md px-2 py-1 cursor-pointer transition-all duration-150 text-sm",
-					isActive
-						? "bg-primary/10 text-primary font-medium"
-						: "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground",
-				)}
-				onClick={() => {
-					if (renaming) return;
-					navigate({
-						to: "/projects/$projectId/docs/$docId",
-						params: { projectId, docId: doc.id },
-					});
-				}}
-				onKeyDown={(e) => {
-					if (e.key === "Enter" || e.key === " ") {
+		<>
+			<div
+				className="group relative flex items-center gap-1 pr-1"
+				style={{ paddingLeft: `${8 + depth * 16 + 16}px` }}
+			>
+				<button
+					type="button"
+					className={cn(
+						"flex flex-1 min-w-0 items-center gap-1.5 rounded-md px-2 py-1 cursor-pointer transition-all duration-150 text-sm",
+						isActive
+							? "bg-primary/10 text-primary font-medium"
+							: "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground",
+					)}
+					onClick={() => {
+						if (renaming) return;
 						navigate({
 							to: "/projects/$projectId/docs/$docId",
 							params: { projectId, docId: doc.id },
 						});
-					}
-				}}
-			>
-				<FileText
-					className={cn(
-						"size-3.5 shrink-0 transition-colors",
-						isActive ? "text-primary/70" : "text-sidebar-foreground/40",
-					)}
-				/>
-				{renaming ? (
-					<TreeInlineRename
-						initialValue={doc.title || t("docs.untitled")}
-						onConfirm={(title) => {
-							renameMutation.mutate(title);
-							setRenaming(false);
-						}}
-						onCancel={() => setRenaming(false)}
-					/>
-				) : (
-					<span className="truncate leading-snug">
-						{doc.title || (
-							<span className="italic text-sidebar-foreground/40">
-								{t("docs.untitled")}
-							</span>
+					}}
+					onKeyDown={(e) => {
+						if (e.key === "Enter" || e.key === " ") {
+							navigate({
+								to: "/projects/$projectId/docs/$docId",
+								params: { projectId, docId: doc.id },
+							});
+						}
+					}}
+				>
+					<FileText
+						className={cn(
+							"size-3.5 shrink-0 transition-colors",
+							isActive ? "text-primary/70" : "text-sidebar-foreground/40",
 						)}
-					</span>
-				)}
-			</button>
+					/>
+					{renaming ? (
+						<TreeInlineRename
+							key={renameAttempt}
+							initialValue={pendingTitle ?? (doc.title || t("docs.untitled"))}
+							onConfirm={(title) => {
+								setPendingTitle(title);
+								renameMutation.mutate(title);
+							}}
+							onCancel={() => {
+								setRenaming(false);
+								setRenameError(null);
+								setPendingTitle(null);
+							}}
+						/>
+					) : (
+						<span className="truncate leading-snug">
+							{doc.title || (
+								<span className="italic text-sidebar-foreground/40">
+									{t("docs.untitled")}
+								</span>
+							)}
+						</span>
+					)}
+				</button>
 
-			{canWrite && !renaming && (
-				<DropdownMenu>
-					<DropdownMenuTrigger
-						className="opacity-0 group-hover:opacity-100 flex size-5 shrink-0 items-center justify-center rounded text-sidebar-foreground/40 hover:text-sidebar-foreground hover:bg-sidebar-accent/60 transition-all duration-150"
-						onClick={(e) => e.stopPropagation()}
-					>
-						<MoreHorizontal className="size-3" />
-					</DropdownMenuTrigger>
-					<DropdownMenuContent align="start" className="w-36">
-						<DropdownMenuItem
-							onClick={(e) => {
-								e.stopPropagation();
-								setRenaming(true);
-							}}
+				{canWrite && !renaming && (
+					<DropdownMenu>
+						<DropdownMenuTrigger
+							className="opacity-0 group-hover:opacity-100 flex size-5 shrink-0 items-center justify-center rounded text-sidebar-foreground/40 hover:text-sidebar-foreground hover:bg-sidebar-accent/60 transition-all duration-150"
+							onClick={(e) => e.stopPropagation()}
 						>
-							<Pencil className="size-3.5 mr-2" />
-							{t("docs.rename")}
-						</DropdownMenuItem>
-						<DropdownMenuSeparator />
-						<DropdownMenuItem
-							className="text-destructive focus:text-destructive"
-							onClick={(e) => {
-								e.stopPropagation();
-								deleteMutation.mutate();
-							}}
-						>
-							<Trash2 className="size-3.5 mr-2" />
-							{t("docs.delete")}
-						</DropdownMenuItem>
-					</DropdownMenuContent>
-				</DropdownMenu>
+							<MoreHorizontal className="size-3" />
+						</DropdownMenuTrigger>
+						<DropdownMenuContent align="start" className="w-36">
+							<DropdownMenuItem
+								onClick={(e) => {
+									e.stopPropagation();
+									setRenameError(null);
+									setRenaming(true);
+								}}
+							>
+								<Pencil className="size-3.5 mr-2" />
+								{t("docs.rename")}
+							</DropdownMenuItem>
+							<DropdownMenuSeparator />
+							<DropdownMenuItem
+								className="text-destructive focus:text-destructive"
+								onClick={(e) => {
+									e.stopPropagation();
+									deleteMutation.mutate();
+								}}
+							>
+								<Trash2 className="size-3.5 mr-2" />
+								{t("docs.delete")}
+							</DropdownMenuItem>
+						</DropdownMenuContent>
+					</DropdownMenu>
+				)}
+			</div>
+			{renameError && (
+				<p
+					className="text-xs text-destructive px-2 py-0.5"
+					style={{ paddingLeft: `${8 + depth * 16 + 16}px` }}
+				>
+					{renameError}
+				</p>
 			)}
-		</div>
+		</>
 	);
 }
 
@@ -286,6 +354,14 @@ function DocsFolderNode({
 	const { t } = useTranslation("appShell");
 	const qc = useQueryClient();
 	const [renaming, setRenaming] = useState(false);
+	const [renameError, setRenameError] = useState<string | null>(null);
+	// The name last submitted, so a failed attempt reopens the editor with
+	// what the person typed instead of reverting to the original name.
+	const [pendingName, setPendingName] = useState<string | null>(null);
+	// Bumped on every failed attempt to remount TreeInlineRename — it tracks
+	// "already confirmed" internally to dedupe Enter+blur, so without a fresh
+	// instance a retry after an error couldn't re-confirm.
+	const [renameAttempt, setRenameAttempt] = useState(0);
 	const [addingDoc, setAddingDoc] = useState(false);
 	const navigate = useNavigate();
 
@@ -299,8 +375,20 @@ function DocsFolderNode({
 	const childFolders = allFolders.filter((f) => f.parent_id === folder.id);
 	const renameMutation = useMutation({
 		mutationFn: (name: string) => updateFolder(projectId, folder.id, { name }),
-		onSuccess: () =>
-			qc.invalidateQueries({ queryKey: docQueryKeys.folders(projectId) }),
+		onSuccess: () => {
+			setRenameError(null);
+			setRenaming(false);
+			setPendingName(null);
+			qc.invalidateQueries({ queryKey: docQueryKeys.folders(projectId) });
+		},
+		onError: (err: unknown) => {
+			setRenameError(
+				getApiErrorCode(err) === ApiErrorCode.DocFolderNameInvalid
+					? t("docs.errors.folderNameInvalid")
+					: t("docs.errors.renameFailed"),
+			);
+			setRenameAttempt((n) => n + 1);
+		},
 	});
 
 	const deleteMutation = useMutation({
@@ -363,12 +451,17 @@ function DocsFolderNode({
 					)}
 					{renaming ? (
 						<TreeInlineRename
-							initialValue={folder.name}
+							key={renameAttempt}
+							initialValue={pendingName ?? folder.name}
 							onConfirm={(name) => {
+								setPendingName(name);
 								renameMutation.mutate(name);
-								setRenaming(false);
 							}}
-							onCancel={() => setRenaming(false)}
+							onCancel={() => {
+								setRenaming(false);
+								setRenameError(null);
+								setPendingName(null);
+							}}
 						/>
 					) : (
 						<span className="truncate leading-snug font-medium">
@@ -390,6 +483,7 @@ function DocsFolderNode({
 								<DropdownMenuItem
 									onClick={(e) => {
 										e.stopPropagation();
+										setRenameError(null);
 										setRenaming(true);
 									}}
 								>
@@ -412,6 +506,15 @@ function DocsFolderNode({
 					</div>
 				)}
 			</div>
+
+			{renameError && (
+				<p
+					className="text-xs text-destructive px-2 py-0.5"
+					style={{ paddingLeft: `${8 + depth * 16 + 26}px` }}
+				>
+					{renameError}
+				</p>
+			)}
 
 			{/* Children */}
 			{isExpanded && (
@@ -713,25 +816,40 @@ function ProjectSwitcher({
 }) {
 	const { t } = useTranslation("appShell");
 	const [open, setOpen] = useState(false);
-	const { data: projectsResult } = useQuery(projectsQueryOptions());
+	const {
+		data: projectsData,
+		fetchNextPage,
+		hasNextPage,
+		isFetchingNextPage,
+	} = useInfiniteQuery(projectsInfiniteQueryOptions());
 	const { data: currentProject } = useQuery({
 		...projectQueryOptions(currentProjectId ?? ""),
 		enabled: !!currentProjectId,
 	});
 
-	const projects = projectsResult?.items ?? [];
+	const projects = useMemo(
+		() => projectsData?.pages.flatMap((p) => p.items) ?? [],
+		[projectsData],
+	);
+	const handleProjectsScroll = createLoadMoreScrollHandler({
+		hasMore: !!hasNextPage,
+		isLoadingMore: isFetchingNextPage,
+		onLoadMore: () => void fetchNextPage(),
+	});
 	const label = currentProject?.name ?? t("projectSwitcher.projects");
 	const initials = currentProject?.name
-		? currentProject.name.slice(0, 2).toUpperCase()
+		? getProjectInitials(currentProject.name)
 		: null;
 
-	const { data: user } = useQuery(currentUserOptionalQueryOptions);
+	const { data: user } = useQuery(currentUserQueryOptions);
 
 	if (!user) {
 		return (
 			<div className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-sm font-medium text-sidebar-foreground/80 select-none">
 				<div className="flex size-5 shrink-0 items-center justify-center rounded-md bg-primary/15 text-primary text-xs font-bold">
-					{initials ?? <FolderKanban className="size-3" />}
+					<EntityAvatarContent avatarUrl={currentProject?.avatar_thumb_url}>
+						{initials ?? <FolderKanban className="size-3" />}
+					</EntityAvatarContent>
 				</div>
 				<span className="flex-1 truncate text-left">{label}</span>
 			</div>
@@ -749,7 +867,9 @@ function ProjectSwitcher({
 				)}
 			>
 				<div className="flex size-5 shrink-0 items-center justify-center rounded-md bg-primary/15 text-primary text-xs font-bold">
-					{initials ?? <FolderKanban className="size-3" />}
+					<EntityAvatarContent avatarUrl={currentProject?.avatar_thumb_url}>
+						{initials ?? <FolderKanban className="size-3" />}
+					</EntityAvatarContent>
 				</div>
 				<span className="flex-1 truncate text-left">{label}</span>
 				<ChevronDown
@@ -759,7 +879,12 @@ function ProjectSwitcher({
 					)}
 				/>
 			</DropdownMenuTrigger>
-			<DropdownMenuContent align="start" sideOffset={6} className="w-60">
+			<DropdownMenuContent
+				align="start"
+				sideOffset={6}
+				className="w-60"
+				onScroll={handleProjectsScroll}
+			>
 				<DropdownMenuGroup>
 					<DropdownMenuLabel className="text-xs text-muted-foreground pb-1">
 						{t("projectSwitcher.yourProjects")}
@@ -780,7 +905,9 @@ function ProjectSwitcher({
 								}
 							>
 								<div className="flex size-5 shrink-0 items-center justify-center rounded bg-primary/15 text-primary text-xs font-bold">
-									{p.name.slice(0, 2).toUpperCase()}
+									<EntityAvatarContent avatarUrl={p.avatar_thumb_url}>
+										{getProjectInitials(p.name)}
+									</EntityAvatarContent>
 								</div>
 								<span className="truncate">{p.name}</span>
 								{p.id === currentProjectId && (
@@ -788,6 +915,12 @@ function ProjectSwitcher({
 								)}
 							</DropdownMenuItem>
 						))}
+						{isFetchingNextPage ? (
+							<div className="flex items-center justify-center gap-1.5 py-2 text-xs text-muted-foreground">
+								<Loader2 className="size-3 animate-spin" />
+								{t("projectSwitcher.loadingMore")}
+							</div>
+						) : null}
 					</DropdownMenuGroup>
 				) : (
 					<div className="flex flex-col items-center gap-1 px-3 py-4">
@@ -817,14 +950,21 @@ function NavItem({
 	icon: Icon,
 	label,
 	badge,
+	exact,
 }: {
 	to: string;
 	icon: ComponentType<{ className?: string }>;
 	label: string;
 	badge?: string;
+	/** Match only the exact path, not any sub-route below it. Use this when
+	 * a deeper route (e.g. a plugin page under this segment) has its own
+	 * distinct nav item and shouldn't also light up this one. */
+	exact?: boolean;
 }) {
 	const location = useRouterState({ select: (s) => s.location.pathname });
-	const isActive = location === to || location.startsWith(`${to}/`);
+	const isActive = exact
+		? location === to
+		: location === to || location.startsWith(`${to}/`);
 
 	return (
 		<SidebarMenuItem>
@@ -836,7 +976,7 @@ function NavItem({
 					"relative transition-all duration-150",
 					isActive
 						? "bg-primary/10 text-primary font-medium before:absolute before:left-0 before:inset-y-2 before:w-0.75 before:rounded-full before:bg-primary"
-						: "hover:bg-sidebar-accent/60",
+						: NAV_ITEM_INACTIVE_CLASS,
 				)}
 			>
 				<Icon className="size-4" />
@@ -854,9 +994,24 @@ function NavItem({
 // ── Project Nav ───────────────────────────────────────────────────────────────
 const PROJECT_NAV_ITEMS = [
 	{ segment: "agents", icon: Bot, labelKey: "nav.agents" },
+	{ segment: "environments", icon: Server, labelKey: "nav.environments" },
+	{
+		segment: "conversations",
+		icon: MessageSquare,
+		labelKey: "nav.conversations",
+	},
+	{ segment: "automation", icon: Workflow, labelKey: "nav.automation" },
 	{ segment: "team", icon: Users, labelKey: "nav.team" },
+	{ segment: "activity", icon: Activity, labelKey: "nav.activity" },
 	{ segment: "settings", icon: Settings, labelKey: "nav.settings" },
 ] as const;
+
+// Unlike the rest of the project nav, the activity log is hidden from members
+// who can't read it: by default only owners/managers/admins can, so showing
+// it to everyone would mostly lead to a no-permission page.
+const PERMISSION_GATED_SEGMENTS: Partial<Record<string, string>> = {
+	activity: "project.activities.read",
+};
 
 function ProjectNav() {
 	const { t } = useTranslation("appShell");
@@ -880,7 +1035,15 @@ function ProjectNav() {
 	);
 }
 
-const ANON_HIDDEN_SEGMENTS = new Set(["agents", "team", "settings"]);
+const ANON_HIDDEN_SEGMENTS = new Set([
+	"agents",
+	"environments",
+	"conversations",
+	"automation",
+	"team",
+	"activity",
+	"settings",
+]);
 
 function ProjectNavItems({
 	projectId,
@@ -891,6 +1054,7 @@ function ProjectNavItems({
 }) {
 	const { t } = useTranslation("appShell");
 	const location = useRouterState({ select: (s) => s.location.pathname });
+	const { hasProjectPermission } = useProjectPermissions(projectId);
 
 	const [collapsed, setCollapsed] = useState(() => {
 		try {
@@ -936,9 +1100,12 @@ function ProjectNavItems({
 			{!collapsed && (
 				<SidebarGroupContent>
 					<SidebarMenu>
-						{PROJECT_NAV_ITEMS.filter(
-							(item) => !isAnonymous || !ANON_HIDDEN_SEGMENTS.has(item.segment),
-						).map(({ segment, icon: Icon, labelKey }) => {
+						{PROJECT_NAV_ITEMS.filter((item) => {
+							if (isAnonymous && ANON_HIDDEN_SEGMENTS.has(item.segment))
+								return false;
+							const required = PERMISSION_GATED_SEGMENTS[item.segment];
+							return !required || hasProjectPermission(required);
+						}).map(({ segment, icon: Icon, labelKey }) => {
 							const href = segment
 								? `/projects/${projectId}/${segment}`
 								: `/projects/${projectId}`;
@@ -956,7 +1123,7 @@ function ProjectNavItems({
 											"relative transition-all duration-150",
 											isActive
 												? "bg-primary/10 text-primary font-medium before:absolute before:left-0 before:inset-y-2 before:w-0.75 before:rounded-full before:bg-primary"
-												: "hover:bg-sidebar-accent/60",
+												: NAV_ITEM_INACTIVE_CLASS,
 										)}
 									>
 										<Icon className="size-4" />
@@ -969,6 +1136,85 @@ function ProjectNavItems({
 				</SidebarGroupContent>
 			)}
 		</SidebarGroup>
+	);
+}
+
+// ── Plugin-contributed pages ────────────────────────────────────────────────
+
+/** Sidebar nav items for plugin `project.page` extension points (e.g. a
+ * project-wide time-tracking view), routed to
+ * /projects/:projectId/plugins/:pluginId/:slug. */
+function PluginProjectPages({ projectId }: { projectId: string }) {
+	const { t } = useTranslation("appShell");
+	const { getNavItems } = usePluginRegistry();
+	const location = useRouterState({ select: (s) => s.location.pathname });
+	// A nav item's own requiredPermission no longer hides it from the
+	// sidebar — matching how the built-in project nav (Team, Environments,
+	// etc. in PROJECT_NAV_ITEMS below) is always shown to any project
+	// member regardless of their specific permissions. The page it routes
+	// to renders a no-permission state instead (see ProjectPluginPage),
+	// consistent with how project settings tabs already behave (e.g.
+	// TaskTypesSettings).
+	const navItems = getNavItems("project");
+	if (navItems.length === 0) return null;
+
+	return (
+		<SidebarGroup>
+			<SidebarGroupLabel>{t("nav.plugins")}</SidebarGroupLabel>
+			<SidebarGroupContent>
+				<SidebarMenu>
+					{navItems.map((item) => {
+						const Icon = resolvePluginIcon(item.icon);
+						const to = `/projects/${projectId}/plugins/${item.pluginId}/${item.slug}`;
+						const isActive = location === to || location.startsWith(`${to}/`);
+						return (
+							<SidebarMenuItem key={`${item.pluginId}:${item.slug}`}>
+								<SidebarMenuButton
+									isActive={isActive}
+									tooltip={item.label}
+									render={<Link to={to} />}
+									className={cn(
+										"relative transition-all duration-150",
+										isActive
+											? "bg-primary/10 text-primary font-medium before:absolute before:left-0 before:inset-y-2 before:w-0.75 before:rounded-full before:bg-primary"
+											: NAV_ITEM_INACTIVE_CLASS,
+									)}
+								>
+									<Icon className="size-4" />
+									<span>{item.label}</span>
+								</SidebarMenuButton>
+							</SidebarMenuItem>
+						);
+					})}
+				</SidebarMenu>
+			</SidebarGroupContent>
+		</SidebarGroup>
+	);
+}
+
+/** Admin-sidebar nav items for plugin `admin.page` extension points (e.g. a
+ * cross-project time-tracking summary), routed to
+ * /admin/plugins/:pluginId/:slug. Rendered inline in the existing
+ * "Administration" SidebarMenu, so no extra group wrapper here. `navItems`
+ * is unfiltered by permission (see AppSidebar's `adminPluginNavItems`) — a
+ * caller who lacks an item's `requiredPermission` still sees the link, and
+ * gets a no-permission state on the page itself. */
+function PluginAdminPages({ navItems }: { navItems: PluginNavRegistration[] }) {
+	return (
+		<>
+			{navItems.map((item) => {
+				const Icon = resolvePluginIcon(item.icon);
+				const to = `/admin/plugins/${item.pluginId}/${item.slug}`;
+				return (
+					<NavItem
+						key={`${item.pluginId}:${item.slug}`}
+						to={to}
+						icon={Icon}
+						label={item.label}
+					/>
+				);
+			})}
+		</>
 	);
 }
 
@@ -1009,6 +1255,61 @@ function ProjectInteractionsSection({
 	const [dragOverInteractionId, setDragOverInteractionId] = useState<
 		string | null
 	>(null);
+	// Collapsed by default; persisted per-project once the user makes a choice.
+	const [completedSprintsCollapsed, setCompletedSprintsCollapsed] = useState(
+		() => {
+			try {
+				const stored = localStorage.getItem(
+					`paca:sidebar-completed-sprints-collapsed:${projectId}`,
+				);
+				return stored === null ? true : stored === "true";
+			} catch {
+				return true;
+			}
+		},
+	);
+	// Expanded by default (planned sprints are near-term actionable items,
+	// unlike completed ones); persisted per-project once the user collapses it.
+	const [plannedSprintsCollapsed, setPlannedSprintsCollapsed] = useState(() => {
+		try {
+			const stored = localStorage.getItem(
+				`paca:sidebar-planned-sprints-collapsed:${projectId}`,
+			);
+			return stored === null ? false : stored === "true";
+		} catch {
+			return false;
+		}
+	});
+
+	const toggleCompletedSprints = () => {
+		setCompletedSprintsCollapsed((prev) => {
+			const next = !prev;
+			try {
+				localStorage.setItem(
+					`paca:sidebar-completed-sprints-collapsed:${projectId}`,
+					String(next),
+				);
+			} catch {
+				/* ignore */
+			}
+			return next;
+		});
+	};
+
+	const togglePlannedSprints = () => {
+		setPlannedSprintsCollapsed((prev) => {
+			const next = !prev;
+			try {
+				localStorage.setItem(
+					`paca:sidebar-planned-sprints-collapsed:${projectId}`,
+					String(next),
+				);
+			} catch {
+				/* ignore */
+			}
+			return next;
+		});
+	};
 
 	// Clear the drop-target highlight whenever any drag ends (covers drag-cancel
 	// and mouse-release outside a valid target, where dragleave may not fire).
@@ -1068,11 +1369,13 @@ function ProjectInteractionsSection({
 		updateSprintMutation.mutate({ taskId, sprintId });
 	};
 
+	// No refetchInterval: kept live via useProjectRealtime's socket-driven
+	// sprint.* invalidation (see hooks/use-project-realtime.ts) instead of
+	// polling.
 	const { data: sprints = [] } = useQuery({
 		...sprintsQueryOptions(projectId),
 		enabled: canViewSprints,
 		retry: false,
-		refetchInterval: 30_000,
 	});
 
 	// Hide entire section if user lacks the "View Sprints" permission
@@ -1082,6 +1385,14 @@ function ProjectInteractionsSection({
 	const openSprints = sprints
 		.filter((s) => s.status === "active")
 		.sort((a, b) => a.name.localeCompare(b.name));
+
+	const plannedSprints = sprints
+		.filter((s) => s.status === "planned")
+		.sort((a, b) => a.name.localeCompare(b.name));
+
+	const completedSprints = sprints
+		.filter((s) => s.status === "completed")
+		.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
 
 	const backlogHref = `/projects/${projectId}/interactions/backlog`;
 	const isBacklogActive = location.startsWith(backlogHref);
@@ -1132,7 +1443,7 @@ function ProjectInteractionsSection({
 									"relative transition-all duration-150",
 									isTimelineActive
 										? "bg-primary/10 text-primary font-medium before:absolute before:left-0 before:inset-y-2 before:w-0.75 before:rounded-full before:bg-primary"
-										: "hover:bg-sidebar-accent/60",
+										: NAV_ITEM_INACTIVE_CLASS,
 								)}
 							>
 								<GanttChart className="size-4" />
@@ -1153,7 +1464,7 @@ function ProjectInteractionsSection({
 									"relative transition-all duration-150",
 									isBacklogActive
 										? "bg-primary/10 text-primary font-medium before:absolute before:left-0 before:inset-y-2 before:w-0.75 before:rounded-full before:bg-primary"
-										: "hover:bg-sidebar-accent/60",
+										: NAV_ITEM_INACTIVE_CLASS,
 									dragOverInteractionId === "backlog" &&
 										"ring-2 ring-primary/40 bg-primary/5 text-primary",
 								)}
@@ -1181,7 +1492,7 @@ function ProjectInteractionsSection({
 											"relative transition-all duration-150",
 											isActive
 												? "bg-primary/10 text-primary font-medium before:absolute before:left-0 before:inset-y-2 before:w-0.75 before:rounded-full before:bg-primary"
-												: "hover:bg-sidebar-accent/60",
+												: NAV_ITEM_INACTIVE_CLASS,
 											dragOverInteractionId === sprint.id &&
 												"ring-2 ring-primary/40 bg-primary/5 text-primary",
 										)}
@@ -1192,6 +1503,111 @@ function ProjectInteractionsSection({
 								</SidebarMenuItem>
 							);
 						})}
+						{/* Planned sprints (collapsible) */}
+						{plannedSprints.length > 0 && (
+							<>
+								<SidebarMenuItem>
+									<SidebarMenuButton
+										tooltip={t("interactions.plannedSprints")}
+										onClick={togglePlannedSprints}
+										className={NAV_ITEM_INACTIVE_CLASS}
+									>
+										<ChevronRight
+											className={cn(
+												"size-3.5 shrink-0 transition-transform duration-200 text-sidebar-foreground/40",
+												!plannedSprintsCollapsed && "rotate-90",
+											)}
+										/>
+										<span className="flex-1 truncate text-xs font-medium">
+											{t("interactions.plannedSprints")}
+										</span>
+										<span className="rounded-full bg-sidebar-accent/60 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums">
+											{plannedSprints.length}
+										</span>
+									</SidebarMenuButton>
+								</SidebarMenuItem>
+								{!plannedSprintsCollapsed &&
+									plannedSprints.map((sprint) => {
+										const sprintHref = `/projects/${projectId}/interactions/sprints/${sprint.id}`;
+										const isActive = location.startsWith(sprintHref);
+										return (
+											<SidebarMenuItem
+												key={sprint.id}
+												onDragOver={(e) =>
+													handleInteractionDragOver(e, sprint.id)
+												}
+												onDragLeave={handleInteractionDragLeave}
+												onDrop={(e) => handleInteractionDrop(e, sprint.id)}
+											>
+												<SidebarMenuButton
+													isActive={isActive}
+													tooltip={sprint.name}
+													render={<Link to={sprintHref} />}
+													className={cn(
+														"relative transition-all duration-150",
+														isActive
+															? "bg-primary/10 text-primary font-medium before:absolute before:left-0 before:inset-y-2 before:w-0.75 before:rounded-full before:bg-primary"
+															: NAV_ITEM_INACTIVE_CLASS,
+														dragOverInteractionId === sprint.id &&
+															"ring-2 ring-primary/40 bg-primary/5 text-primary",
+													)}
+												>
+													<Clock className="size-4" />
+													<span className="flex-1 truncate">{sprint.name}</span>
+												</SidebarMenuButton>
+											</SidebarMenuItem>
+										);
+									})}
+							</>
+						)}
+						{/* Closed sprints (collapsible) */}
+						{completedSprints.length > 0 && (
+							<>
+								<SidebarMenuItem>
+									<SidebarMenuButton
+										tooltip={t("interactions.completedSprints")}
+										onClick={toggleCompletedSprints}
+										className={NAV_ITEM_INACTIVE_CLASS}
+									>
+										<ChevronRight
+											className={cn(
+												"size-3.5 shrink-0 transition-transform duration-200 text-sidebar-foreground/40",
+												!completedSprintsCollapsed && "rotate-90",
+											)}
+										/>
+										<span className="flex-1 truncate text-xs font-medium">
+											{t("interactions.completedSprints")}
+										</span>
+										<span className="rounded-full bg-sidebar-accent/60 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums">
+											{completedSprints.length}
+										</span>
+									</SidebarMenuButton>
+								</SidebarMenuItem>
+								{!completedSprintsCollapsed &&
+									completedSprints.map((sprint) => {
+										const sprintHref = `/projects/${projectId}/interactions/sprints/${sprint.id}`;
+										const isActive = location.startsWith(sprintHref);
+										return (
+											<SidebarMenuItem key={sprint.id}>
+												<SidebarMenuButton
+													isActive={isActive}
+													tooltip={sprint.name}
+													render={<Link to={sprintHref} />}
+													className={cn(
+														"relative transition-all duration-150",
+														isActive
+															? "bg-primary/10 text-primary font-medium before:absolute before:left-0 before:inset-y-2 before:w-0.75 before:rounded-full before:bg-primary"
+															: NAV_ITEM_INACTIVE_CLASS,
+													)}
+												>
+													<CheckCircle2 className="size-4" />
+													<span className="flex-1 truncate">{sprint.name}</span>
+												</SidebarMenuButton>
+											</SidebarMenuItem>
+										);
+									})}
+							</>
+						)}
 					</SidebarMenu>
 				</SidebarGroupContent>
 			)}
@@ -1261,7 +1677,11 @@ export function AppSidebar() {
 	const { hasPermission } = usePermissions();
 	const { resolvedMode } = useThemeMode();
 	const { projectId } = useParams({ strict: false });
-	const { data: user } = useQuery(currentUserOptionalQueryOptions);
+	const { data: user } = useQuery(currentUserQueryOptions);
+	const { getNavItems } = usePluginRegistry();
+	const branding = useBranding();
+	const logoUrl = branding?.logo_thumb_url ?? branding?.logo_url;
+	const brandName = branding?.brand_name;
 
 	const canAccessGlobalRoles =
 		hasPermission("global_roles.read") || hasPermission("global_roles.write");
@@ -1269,12 +1689,46 @@ export function AppSidebar() {
 	const canAccessUsers =
 		hasPermission("users.read") || hasPermission("users.write");
 
-	const canAccessPlugins = hasPermission("users.write");
+	const canAccessGlobalAgents =
+		hasPermission("agents.read") || hasPermission("agents.write");
+
+	// plugins.write replaced users.write as a rough "is this someone
+	// important" proxy once it got its own dedicated permission — see authz.
+	// PermissionPluginsRead's doc comment on the Go side. This nav-link
+	// check was never updated when that happened.
+	const canAccessPlugins = hasPermission("plugins.write");
+
+	const canAccessSettings =
+		hasPermission("settings.write") || hasPermission("settings.sso.write");
 
 	const canCreateProject = hasPermission("projects.create");
 
+	// A plugin admin nav item's own declared `requiredPermission` no longer
+	// hides it from the sidebar — the page it routes to renders a
+	// no-permission state instead (see AdminPluginPage), matching how core
+	// admin pages (Users, Global Roles) already behave: reachable by anyone
+	// who can already see the Administration section, with the page itself
+	// enforcing the finer-grained check.
+	const adminPluginNavItems = getNavItems("admin");
+
+	// Deliberately does NOT include `adminPluginNavItems.length > 0`: unlike
+	// before, an item's permission can no longer be satisfied just by
+	// hiding it, so a plugin with an admin page must not be able to
+	// single-handedly reveal the "Administration" heading to a user with
+	// zero admin permissions of any kind — that would surface an entire
+	// nav section to people who have no reason to ever open it.
 	const showAdminSection =
-		canAccessGlobalRoles || canAccessUsers || canAccessPlugins;
+		canAccessGlobalRoles ||
+		canAccessUsers ||
+		canAccessGlobalAgents ||
+		canAccessPlugins ||
+		canAccessSettings;
+	// Plugin-contributed admin pages get their own sidebar section, separate
+	// from core workspace administration — the "Plugins" management link
+	// itself (canAccessPlugins) stays in Administration. Gated on
+	// showAdminSection for the same reason as above: only shown to someone
+	// who can already see Administration for another reason.
+	const showPluginsSection = showAdminSection && adminPluginNavItems.length > 0;
 	const isProjectContext = !!projectId;
 	const isAnonymous = !user;
 
@@ -1287,9 +1741,10 @@ export function AppSidebar() {
 						<Link to="/home">
 							<img
 								src={
-									resolvedMode === "dark"
+									logoUrl ??
+									(resolvedMode === "dark"
 										? "/paca-logo-dark.svg"
-										: "/paca-logo.svg"
+										: "/paca-logo.svg")
 								}
 								alt={t("brand.logoAlt")}
 								className="size-8 shrink-0"
@@ -1298,16 +1753,17 @@ export function AppSidebar() {
 					) : (
 						<img
 							src={
-								resolvedMode === "dark"
+								logoUrl ??
+								(resolvedMode === "dark"
 									? "/paca-logo-dark.svg"
-									: "/paca-logo.svg"
+									: "/paca-logo.svg")
 							}
 							alt={t("brand.logoAlt")}
 							className="size-8 shrink-0"
 						/>
 					)}
 					<span className="font-[Syne] font-bold text-base tracking-tight text-sidebar-foreground group-data-[collapsible=icon]:hidden">
-						paca
+						{brandName ?? "paca"}
 					</span>
 				</div>
 				<div className="group-data-[collapsible=icon]:hidden">
@@ -1338,6 +1794,7 @@ export function AppSidebar() {
 							componentProps={{ projectId }}
 						/>
 						<SidebarSeparator />
+						<PluginProjectPages projectId={projectId} />
 						<ProjectNavItems projectId={projectId} isAnonymous={isAnonymous} />
 					</>
 				) : (
@@ -1347,6 +1804,11 @@ export function AppSidebar() {
 								<SidebarGroupContent>
 									<SidebarMenu>
 										<NavItem to="/home" icon={Home} label={t("nav.home")} />
+										<NavItem
+											to="/conversations"
+											icon={MessageSquare}
+											label={t("nav.conversations")}
+										/>
 									</SidebarMenu>
 								</SidebarGroupContent>
 							</SidebarGroup>
@@ -1377,13 +1839,48 @@ export function AppSidebar() {
 													label={t("nav.users")}
 												/>
 											) : null}
+											{canAccessGlobalAgents ? (
+												<NavItem
+													to="/admin/agents"
+													icon={Bot}
+													label={t("nav.agents")}
+												/>
+											) : null}
 											{canAccessPlugins ? (
 												<NavItem
 													to="/admin/plugins"
 													icon={Puzzle}
 													label={t("nav.plugins")}
+													exact
 												/>
 											) : null}
+											{canAccessSettings ? (
+												<NavItem
+													to="/admin/settings"
+													icon={Settings}
+													label={t("nav.settings")}
+												/>
+											) : null}
+											<NavItem
+												to="/admin/changelog"
+												icon={Sparkles}
+												label={t("nav.changelog")}
+											/>
+										</SidebarMenu>
+									</SidebarGroupContent>
+								</SidebarGroup>
+							</>
+						) : null}
+						{/* Plugin-contributed admin pages get their own sidebar section,
+						   separate from core workspace administration. */}
+						{showPluginsSection ? (
+							<>
+								<SidebarSeparator />
+								<SidebarGroup>
+									<SidebarGroupLabel>{t("nav.plugins")}</SidebarGroupLabel>
+									<SidebarGroupContent>
+										<SidebarMenu>
+											<PluginAdminPages navItems={adminPluginNavItems} />
 										</SidebarMenu>
 									</SidebarGroupContent>
 								</SidebarGroup>

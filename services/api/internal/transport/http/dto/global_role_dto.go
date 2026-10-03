@@ -3,8 +3,9 @@ package dto
 import (
 	"time"
 
-	globalroledom "github.com/Paca-AI/api/internal/domain/globalrole"
 	"github.com/google/uuid"
+
+	globalroledom "github.com/Paca-AI/api/internal/domain/globalrole"
 )
 
 // CreateGlobalRoleRequest is the body for POST /admin/global-roles.
@@ -29,8 +30,10 @@ type GlobalRoleResponse struct {
 	ID          uuid.UUID      `json:"id"`
 	Name        string         `json:"name"`
 	Permissions map[string]any `json:"permissions"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
+	// IsDefault marks the role a new user (and a new global agent) starts with.
+	IsDefault bool      `json:"is_default"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // GlobalRoleFromEntity maps a domain role to a response DTO.
@@ -43,6 +46,7 @@ func GlobalRoleFromEntity(role *globalroledom.GlobalRole) GlobalRoleResponse {
 		ID:          role.ID,
 		Name:        role.Name,
 		Permissions: permissions,
+		IsDefault:   role.IsDefault,
 		CreatedAt:   role.CreatedAt,
 		UpdatedAt:   role.UpdatedAt,
 	}

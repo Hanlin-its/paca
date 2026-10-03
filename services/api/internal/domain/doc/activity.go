@@ -42,11 +42,15 @@ type Activity struct {
 	ActorID       *uuid.UUID // nil when the actor account has been removed
 	ActorName     string     // denormalised full name (populated on read)
 	ActorUsername string     // denormalised username   (populated on read)
-	ActivityType  ActivityType
-	Content       json.RawMessage
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
-	DeletedAt     *time.Time // non-nil for soft-deleted comments
+	// ActorAvatarKey/ActorAvatarThumbKey are the actor's avatar object-storage
+	// keys (populated on read). Both nil when the actor has no avatar.
+	ActorAvatarKey      *string
+	ActorAvatarThumbKey *string
+	ActivityType        ActivityType
+	Content             json.RawMessage
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+	DeletedAt           *time.Time // non-nil for soft-deleted comments
 }
 
 // FieldChange records a single before/after value for doc.updated events.
@@ -56,32 +60,25 @@ type FieldChange struct {
 	New   any    `json:"new"`
 }
 
-// ActivityRepository defines persistence for doc activities.
-type ActivityRepository interface {
-	// ListActivities returns all non-deleted activities for a document, oldest first.
-	ListActivities(ctx context.Context, documentID uuid.UUID) ([]*Activity, error)
-	// FindActivityByID returns a single activity entry (including soft-deleted).
-	FindActivityByID(ctx context.Context, id uuid.UUID) (*Activity, error)
-	// CreateActivity persists a new activity entry.
-	CreateActivity(ctx context.Context, a *Activity) error
-	// UpdateActivity persists mutable changes to an existing activity.
-	UpdateActivity(ctx context.Context, a *Activity) error
-	// DeleteActivity soft-deletes the activity (sets deleted_at).
-	DeleteActivity(ctx context.Context, id uuid.UUID) error
-}
-
 // ActivityService defines use-cases for doc activity and comments.
 type ActivityService interface {
 	ActivityRecorder
 	// ListActivities returns all activities (system + comments) for a document.
-	ListActivities(ctx context.Context, documentID uuid.UUID) ([]*Activity, error)
+	// projectID is used to verify the document belongs to the expected project.
+	ListActivities(ctx context.Context, projectID, documentID uuid.UUID) ([]*Activity, error)
 	// AddComment creates a new user comment on the document.
+	// in.ProjectID is used to verify the document belongs to the expected
+	// project, in addition to resolving the actor to a project member.
 	AddComment(ctx context.Context, in AddCommentInput) (*Activity, error)
 	// UpdateComment edits the content of an existing comment.
-	// Returns ErrActivityForbidden when actorID != comment's author.
+	// projectID is used to verify the comment's document belongs to the
+	// expected project, in addition to resolving the actor to a project
+	// member. Returns ErrActivityForbidden when actorID != comment's author.
 	UpdateComment(ctx context.Context, id uuid.UUID, projectID uuid.UUID, actorID uuid.UUID, agentID *uuid.UUID, content json.RawMessage) (*Activity, error)
 	// DeleteComment soft-deletes a comment.
-	// Returns ErrActivityForbidden when actorID != comment's author.
+	// projectID is used to verify the comment's document belongs to the
+	// expected project, in addition to resolving the actor to a project
+	// member. Returns ErrActivityForbidden when actorID != comment's author.
 	DeleteComment(ctx context.Context, id uuid.UUID, projectID uuid.UUID, actorID uuid.UUID, agentID *uuid.UUID) error
 }
 

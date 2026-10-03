@@ -9,6 +9,13 @@ import (
 // MemberRepository defines persistence operations for project members.
 type MemberRepository interface {
 	ListMembers(ctx context.Context, projectID uuid.UUID) ([]*ProjectMember, error)
+	// CountDistinctAgentsByProjects returns the number of distinct agents
+	// with an active membership across all of projectIDs, in a single query
+	// — used by the home page's workspace stats widget so an invited global
+	// agent belonging to several projects is counted once, not once per
+	// project. Human team-member counts come from userdom.Service.CountUsers
+	// instead: they aren't project-scoped, so they don't need this table.
+	CountDistinctAgentsByProjects(ctx context.Context, projectIDs []uuid.UUID) (int64, error)
 	FindMember(ctx context.Context, projectID, userID uuid.UUID) (*ProjectMember, error)
 	// FindMemberByAgent returns the active member record for an agent in a
 	// project. Used to resolve an agent UUID to a member UUID.
@@ -29,6 +36,9 @@ type MemberRepository interface {
 	RemoveMember(ctx context.Context, projectID, userID uuid.UUID) error
 	// UpdateMemberRoleByMemberID changes the role of a member by their membership record ID.
 	UpdateMemberRoleByMemberID(ctx context.Context, memberID, roleID uuid.UUID) error
+	// UpdateMemberDescription changes a member's Jev-facing description by
+	// their membership record ID — see ProjectMember.Description.
+	UpdateMemberDescription(ctx context.Context, memberID uuid.UUID, description string) error
 	// RemoveMemberByMemberID removes a member by their membership record ID.
 	RemoveMemberByMemberID(ctx context.Context, memberID uuid.UUID) error
 	// AddAgentMember inserts an agent as a project member with the given role.

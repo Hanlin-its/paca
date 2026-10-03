@@ -16,11 +16,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	projectdom "github.com/Paca-AI/api/internal/domain/project"
 	sprintdom "github.com/Paca-AI/api/internal/domain/sprint"
 	taskdom "github.com/Paca-AI/api/internal/domain/task"
+	userdom "github.com/Paca-AI/api/internal/domain/user"
 	"github.com/Paca-AI/api/internal/platform/authz"
 	jwttoken "github.com/Paca-AI/api/internal/platform/token"
+	activitysvc "github.com/Paca-AI/api/internal/service/activity"
 	authsvc "github.com/Paca-AI/api/internal/service/auth"
 	projectsvc "github.com/Paca-AI/api/internal/service/project"
 	sprintsvc "github.com/Paca-AI/api/internal/service/sprint"
@@ -28,7 +32,6 @@ import (
 	usersvc "github.com/Paca-AI/api/internal/service/user"
 	"github.com/Paca-AI/api/internal/transport/http/handler"
 	"github.com/Paca-AI/api/internal/transport/http/router"
-	"github.com/google/uuid"
 )
 
 // ---------------------------------------------------------------------------
@@ -283,7 +286,7 @@ func (r *fakeTaskRepo) ListTasks(_ context.Context, projectID uuid.UUID, filter 
 		if filter.StatusID != nil && (t.StatusID == nil || *t.StatusID != *filter.StatusID) {
 			continue
 		}
-		if filter.AssigneeID != nil && (t.AssigneeID == nil || *t.AssigneeID != *filter.AssigneeID) {
+		if filter.AssigneeID != nil && !slices.Contains(t.AssigneeIDs, *filter.AssigneeID) {
 			continue
 		}
 		if !taskMatchesSearch(t, filter) {
@@ -350,7 +353,7 @@ func (r *fakeTaskRepo) CountTasks(_ context.Context, projectID uuid.UUID, filter
 		if filter.StatusID != nil && (t.StatusID == nil || *t.StatusID != *filter.StatusID) {
 			continue
 		}
-		if filter.AssigneeID != nil && (t.AssigneeID == nil || *t.AssigneeID != *filter.AssigneeID) {
+		if filter.AssigneeID != nil && !slices.Contains(t.AssigneeIDs, *filter.AssigneeID) {
 			continue
 		}
 		if !taskMatchesSearch(t, filter) {
@@ -442,6 +445,26 @@ func (r *fakeTaskRepo) UpdateTask(_ context.Context, t *taskdom.Task) error {
 	cp := *t
 	r.tasks[t.ID] = &cp
 	return nil
+}
+
+func (r *fakeTaskRepo) UpdateTaskAtomic(_ context.Context, id uuid.UUID, decide func(current *taskdom.Task) (*taskdom.Task, error)) (*taskdom.Task, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t, ok := r.tasks[id]
+	if !ok || t.DeletedAt != nil {
+		return nil, taskdom.ErrTaskNotFound
+	}
+	cp := *t
+	next, err := decide(&cp)
+	if err != nil {
+		return nil, err
+	}
+	if next == nil {
+		return &cp, nil
+	}
+	nc := *next
+	r.tasks[id] = &nc
+	return next, nil
 }
 
 func (r *fakeTaskRepo) DeleteTask(_ context.Context, id uuid.UUID) error {
@@ -616,81 +639,45 @@ func (r *fakeTaskRepo) DeleteTaskLink(_ context.Context, _ uuid.UUID) error {
 	return nil
 }
 
+func (r *fakeTaskRepo) ListAssignedTasks(_ context.Context, _ []uuid.UUID, _ int, _ *string) ([]*taskdom.Task, bool, error) {
+	return nil, false, nil
+}
+
+func (r *fakeTaskRepo) CountOpenTasksByProjects(_ context.Context, _ []uuid.UUID) (int64, error) {
+	return 0, nil
+}
+
+func (r *fakeTaskRepo) ListDistinctTags(_ context.Context, _ uuid.UUID) ([]string, error) {
+	return nil, nil
+}
+
 // ---------------------------------------------------------------------------
 // In-memory fake activity repository
 // ---------------------------------------------------------------------------
 
-type fakeTaskActivityRepo struct {
-	mu         sync.RWMutex
-	activities map[uuid.UUID]*taskdom.Activity
-}
+// fakeTaskActivityRepo is the shared in-memory activity log.
+type fakeTaskActivityRepo = activitysvc.MemoryRepository
 
 func newFakeTaskActivityRepo() *fakeTaskActivityRepo {
-	return &fakeTaskActivityRepo{activities: make(map[uuid.UUID]*taskdom.Activity)}
-}
-
-func (r *fakeTaskActivityRepo) ListActivities(_ context.Context, taskID uuid.UUID) ([]*taskdom.Activity, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	var out []*taskdom.Activity
-	for _, a := range r.activities {
-		if a.TaskID == taskID && a.DeletedAt == nil {
-			cp := *a
-			out = append(out, &cp)
-		}
-	}
-	return out, nil
-}
-
-func (r *fakeTaskActivityRepo) FindActivityByID(_ context.Context, id uuid.UUID) (*taskdom.Activity, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	a, ok := r.activities[id]
-	if !ok {
-		return nil, taskdom.ErrActivityNotFound
-	}
-	cp := *a
-	return &cp, nil
-}
-
-func (r *fakeTaskActivityRepo) CreateActivity(_ context.Context, a *taskdom.Activity) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.activities[a.ID] = a
-	return nil
-}
-
-func (r *fakeTaskActivityRepo) UpdateActivity(_ context.Context, a *taskdom.Activity) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, ok := r.activities[a.ID]; !ok {
-		return taskdom.ErrActivityNotFound
-	}
-	r.activities[a.ID] = a
-	return nil
-}
-
-func (r *fakeTaskActivityRepo) DeleteActivity(_ context.Context, id uuid.UUID) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	a, ok := r.activities[id]
-	if !ok {
-		return taskdom.ErrActivityNotFound
-	}
-	now := time.Now()
-	a.DeletedAt = &now
-	return nil
+	return activitysvc.NewMemoryRepository()
 }
 
 // fakeActivityMemberRepo is a minimal memberLookup stub that resolves any
 // actor to a synthetic ProjectMember using the agent ID (when present) or the
 // user UUID as the member UUID. This lets comment operations in integration
 // tests pass actor-resolution without a real project_members store.
+//
+// The one deliberate exception mirrors production: userdom.SystemActorUserID
+// with no agentID (the shared agent API key used without X-Agent-ID) never
+// resolves, since that identity is never itself a project member.
 type fakeActivityMemberRepo struct{}
 
 func (r *fakeActivityMemberRepo) FindMemberByActor(_ context.Context, _, actorID uuid.UUID, agentID *uuid.UUID) (*projectdom.ProjectMember, error) {
 	if agentID != nil {
 		return &projectdom.ProjectMember{ID: *agentID}, nil
+	}
+	if actorID == userdom.SystemActorUserID {
+		return nil, projectdom.ErrMemberNotFound
 	}
 	return &projectdom.ProjectMember{ID: actorID}, nil
 }
@@ -714,12 +701,12 @@ func buildTaskTestRouterWithSprints(taskRepo *fakeTaskRepo, sprintRepo *fakeSpri
 	authService := authsvc.New(userRepo, tm, refreshStore, 168*time.Hour, 24*time.Hour)
 	userService := usersvc.New(userRepo)
 	projectRepo := newFakeProjectRepo()
-	projectService := projectsvc.New(projectRepo, taskRepo)
+	projectService := projectsvc.New(projectRepo, taskRepo, nil)
 	taskService := tasksvc.New(taskRepo)
-	sprintService := sprintsvc.New(sprintRepo, taskRepo)
-	viewService := sprintsvc.NewViewService(viewRepo)
+	sprintService := sprintsvc.New(sprintRepo, taskRepo, nil)
+	viewService := sprintsvc.NewViewService(viewRepo, sprintRepo, taskRepo, nil)
 	activityRepo := newFakeTaskActivityRepo()
-	activityService := tasksvc.NewActivityService(activityRepo, &fakeActivityMemberRepo{}, nil)
+	activityService := tasksvc.NewActivityService(activitysvc.New(activityRepo, &fakeActivityMemberRepo{}, nil), taskRepo, &fakeActivityMemberRepo{})
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
 	return router.New(router.Deps{
@@ -813,7 +800,7 @@ func TestIntegrationTaskTypes_CRUD(t *testing.T) {
 	projectID := uuid.New()
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionTasksRead, authz.PermissionTasksWrite},
+			projectID: {authz.PermissionTasksRead, authz.PermissionProjectSettingsTaskTypesWrite},
 		},
 	}
 	r := buildTaskTestRouter(taskRepo, store)
@@ -866,7 +853,7 @@ func TestIntegrationTaskTypes_InvalidNameReturns400(t *testing.T) {
 	projectID := uuid.New()
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionTasksWrite},
+			projectID: {authz.PermissionProjectSettingsTaskTypesWrite},
 		},
 	}
 	r := buildTaskTestRouter(taskRepo, store)
@@ -887,7 +874,7 @@ func TestIntegrationTaskTypes_DeleteNotFoundReturns404(t *testing.T) {
 	projectID := uuid.New()
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionTasksWrite},
+			projectID: {authz.PermissionProjectSettingsTaskTypesWrite},
 		},
 	}
 	r := buildTaskTestRouter(taskRepo, store)
@@ -912,7 +899,7 @@ func TestIntegrationTaskTypes_SetDefault(t *testing.T) {
 	projectID := uuid.New()
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionTasksRead, authz.PermissionTasksWrite},
+			projectID: {authz.PermissionTasksRead, authz.PermissionProjectSettingsTaskTypesWrite},
 		},
 	}
 	r := buildTaskTestRouter(taskRepo, store)
@@ -981,7 +968,7 @@ func TestIntegrationTaskTypes_SetDefault_NotFound(t *testing.T) {
 	projectID := uuid.New()
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionTasksWrite},
+			projectID: {authz.PermissionProjectSettingsTaskTypesWrite},
 		},
 	}
 	r := buildTaskTestRouter(taskRepo, store)
@@ -999,7 +986,7 @@ func TestIntegrationTaskTypes_SystemTypeCannotBeUpdated(t *testing.T) {
 	projectID := uuid.New()
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionTasksRead, authz.PermissionTasksWrite},
+			projectID: {authz.PermissionTasksRead, authz.PermissionProjectSettingsTaskTypesWrite},
 		},
 	}
 	r := buildTaskTestRouter(taskRepo, store)
@@ -1034,7 +1021,7 @@ func TestIntegrationTaskTypes_SystemTypeCannotBeDeleted(t *testing.T) {
 	projectID := uuid.New()
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionTasksWrite},
+			projectID: {authz.PermissionProjectSettingsTaskTypesWrite},
 		},
 	}
 	r := buildTaskTestRouter(taskRepo, store)
@@ -1065,7 +1052,7 @@ func TestIntegrationTaskTypes_ReservedNameRejected(t *testing.T) {
 	projectID := uuid.New()
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionTasksWrite},
+			projectID: {authz.PermissionProjectSettingsTaskTypesWrite},
 		},
 	}
 	r := buildTaskTestRouter(taskRepo, store)
@@ -1092,7 +1079,7 @@ func TestIntegrationTaskStatuses_CRUD(t *testing.T) {
 	projectID := uuid.New()
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionTasksRead, authz.PermissionTasksWrite},
+			projectID: {authz.PermissionTasksRead, authz.PermissionProjectSettingsTaskStatusesWrite},
 		},
 	}
 	r := buildTaskTestRouter(taskRepo, store)
@@ -1171,7 +1158,7 @@ func TestIntegrationTaskStatuses_Reorder(t *testing.T) {
 	projectID := uuid.New()
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionTasksRead, authz.PermissionTasksWrite},
+			projectID: {authz.PermissionTasksRead, authz.PermissionProjectSettingsTaskStatusesWrite},
 		},
 	}
 	r := buildTaskTestRouter(taskRepo, store)
@@ -1227,7 +1214,7 @@ func TestIntegrationTaskStatuses_ReorderInvalidSetReturns400(t *testing.T) {
 	projectID := uuid.New()
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionTasksWrite},
+			projectID: {authz.PermissionProjectSettingsTaskStatusesWrite},
 		},
 	}
 	r := buildTaskTestRouter(taskRepo, store)
@@ -1259,7 +1246,7 @@ func TestIntegrationTaskStatuses_InvalidCategoryReturns400(t *testing.T) {
 	projectID := uuid.New()
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionTasksWrite},
+			projectID: {authz.PermissionProjectSettingsTaskStatusesWrite},
 		},
 	}
 	r := buildTaskTestRouter(taskRepo, store)
@@ -2386,7 +2373,7 @@ func TestIntegrationCustomFields_CRUD(t *testing.T) {
 	projectID := uuid.New()
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionTasksRead, authz.PermissionTasksWrite},
+			projectID: {authz.PermissionTasksRead, authz.PermissionProjectSettingsCustomFieldsWrite},
 		},
 	}
 	r := buildTaskTestRouter(taskRepo, store)
@@ -2447,7 +2434,7 @@ func TestIntegrationCustomFields_SelectTypeWithOptions(t *testing.T) {
 	projectID := uuid.New()
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionTasksRead, authz.PermissionTasksWrite},
+			projectID: {authz.PermissionTasksRead, authz.PermissionProjectSettingsCustomFieldsWrite},
 		},
 	}
 	r := buildTaskTestRouter(taskRepo, store)
@@ -2458,8 +2445,12 @@ func TestIntegrationCustomFields_SelectTypeWithOptions(t *testing.T) {
 		"field_key":    "priority",
 		"display_name": "Priority",
 		"field_type":   "select",
-		"options":      []string{"low", "medium", "high"},
-		"is_required":  true,
+		"options": []map[string]any{
+			{"value": "low"},
+			{"value": "medium"},
+			{"value": "high"},
+		},
+		"is_required": true,
 	}))
 	if createW.Code != http.StatusCreated {
 		t.Fatalf("create select field: expected 201, got %d (%s)", createW.Code, createW.Body.String())
@@ -2482,7 +2473,7 @@ func TestIntegrationCustomFields_DuplicateKeyReturns409(t *testing.T) {
 	projectID := uuid.New()
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionTasksWrite},
+			projectID: {authz.PermissionProjectSettingsCustomFieldsWrite},
 		},
 	}
 	r := buildTaskTestRouter(taskRepo, store)
@@ -2513,7 +2504,7 @@ func TestIntegrationCustomFields_InvalidTypeReturns400(t *testing.T) {
 	projectID := uuid.New()
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionTasksWrite},
+			projectID: {authz.PermissionProjectSettingsCustomFieldsWrite},
 		},
 	}
 	r := buildTaskTestRouter(taskRepo, store)
@@ -2559,7 +2550,7 @@ func TestIntegrationCustomFields_EmptyKeyReturns400(t *testing.T) {
 	projectID := uuid.New()
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionTasksWrite},
+			projectID: {authz.PermissionProjectSettingsCustomFieldsWrite},
 		},
 	}
 	r := buildTaskTestRouter(taskRepo, store)
@@ -3087,13 +3078,23 @@ func TestActivities_ListEmpty(t *testing.T) {
 	projectID := uuid.New()
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionTasksRead},
+			projectID: {authz.PermissionTasksRead, authz.PermissionTasksWrite},
 		},
 	}
 	r := buildTaskTestRouter(taskRepo, store)
 	tok := issueTaskToken(t, uuid.NewString())
 
-	taskID := uuid.New()
+	// A task must actually exist (and belong to projectID) for ListActivities
+	// to return an empty list rather than 404 — see GHSA-xwmv-9c7h-g947.
+	createW := serve(r, authedJSONReq(t.Context(), http.MethodPost,
+		fmt.Sprintf("/api/v1/projects/%s/tasks", projectID), tok,
+		map[string]any{"title": "No Activities Yet"},
+	))
+	if createW.Code != http.StatusCreated {
+		t.Fatalf("create task: expected 201, got %d: %s", createW.Code, createW.Body.String())
+	}
+	taskID := taskIDFrom(t, "task", createW.Body.Bytes())
+
 	w := serve(r, authedJSONReq(t.Context(), http.MethodGet,
 		fmt.Sprintf("/api/v1/projects/%s/tasks/%s/activities", projectID, taskID), tok, nil,
 	))

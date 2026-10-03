@@ -1,11 +1,18 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { ChevronsUpDown, Key, Languages, LogOut, User } from "lucide-react";
+import {
+	ChevronsUpDown,
+	Key,
+	Keyboard,
+	Languages,
+	LogOut,
+	User,
+} from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { LocaleRadioGroup } from "@/components/LocaleRadioGroup";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -24,25 +31,19 @@ import {
 	SidebarMenuItem,
 } from "@/components/ui/sidebar";
 import { useLocale } from "@/hooks/use-locale";
-import { currentUserOptionalQueryOptions, logout } from "@/lib/auth-api";
-
-function getInitials(name: string): string {
-	return name
-		.split(" ")
-		.filter(Boolean)
-		.map((n) => n[0])
-		.join("")
-		.toUpperCase()
-		.slice(0, 2);
-}
+import { currentUserQueryOptions, logout } from "@/lib/auth-api";
+import { useShortcutHelpStore } from "@/lib/shortcuts/help-dialog-store";
+import { getInitials } from "@/lib/utils";
 
 export function UserMenu() {
 	const { t } = useTranslation("appShell");
+	const { t: tShortcuts } = useTranslation("shortcuts");
 	const navigate = useNavigate();
 	const queryClient = useQueryClient();
-	const { data: user } = useQuery(currentUserOptionalQueryOptions);
+	const { data: user } = useQuery(currentUserQueryOptions);
 	const [isLoggingOut, setIsLoggingOut] = useState(false);
 	const { locale, set: setLocale } = useLocale();
+	const openShortcutHelp = useShortcutHelpStore((s) => s.setOpen);
 
 	if (!user) {
 		return (
@@ -95,14 +96,17 @@ export function UserMenu() {
 						}
 					>
 						<Avatar size="sm" className="rounded-lg">
+							{user.avatar_thumb_url ? (
+								<AvatarImage src={user.avatar_thumb_url} />
+							) : null}
 							<AvatarFallback className="rounded-lg bg-primary text-primary-foreground text-xs font-semibold">
 								{initials}
 							</AvatarFallback>
 						</Avatar>
 						<div className="grid flex-1 text-left text-sm leading-tight group-data-[collapsible=icon]:hidden">
 							<span className="truncate font-semibold">{displayName}</span>
-							<span className="truncate text-xs text-muted-foreground capitalize">
-								{user.role.toLowerCase()}
+							<span className="truncate text-xs text-muted-foreground">
+								{user.role}
 							</span>
 						</div>
 						<ChevronsUpDown className="ml-auto size-4 shrink-0 opacity-50 group-data-[collapsible=icon]:hidden" />
@@ -133,6 +137,10 @@ export function UserMenu() {
 						>
 							<Key className="size-4" />
 							{t("userMenu.apiKeys")}
+						</DropdownMenuItem>
+						<DropdownMenuItem onClick={() => openShortcutHelp(true)}>
+							<Keyboard className="size-4" />
+							{tShortcuts("dialog.menuLabel")}
 						</DropdownMenuItem>
 						<DropdownMenuSeparator />
 						<DropdownMenuSub>

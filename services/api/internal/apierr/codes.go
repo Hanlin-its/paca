@@ -21,6 +21,8 @@ const (
 	CodeUserNotFound Code = "USER_NOT_FOUND"
 	// CodeUsernameTaken represents a username that is already taken.
 	CodeUsernameTaken Code = "USER_USERNAME_TAKEN"
+	// CodeEmailTaken represents an email that is already taken.
+	CodeEmailTaken Code = "USER_EMAIL_TAKEN"
 	// CodeForbidden represents a forbidden action.
 	CodeForbidden Code = "FORBIDDEN"
 	// CodeGlobalRoleNotFound represents a global role that was not found.
@@ -33,8 +35,16 @@ const (
 	// CodeGlobalRoleHasUsers indicates the role cannot be deleted because it
 	// still has assigned users.
 	CodeGlobalRoleHasUsers Code = "GLOBAL_ROLE_HAS_ASSIGNED_USERS"
+	// CodeGlobalRoleIsDefault indicates the role cannot be deleted because it
+	// is the default role new users and agents start with.
+	CodeGlobalRoleIsDefault Code = "GLOBAL_ROLE_IS_DEFAULT"
+	// CodeGlobalRoleNoDefault indicates no global role is marked as the
+	// default, so a new user has no role to start with.
+	CodeGlobalRoleNoDefault Code = "GLOBAL_ROLE_NO_DEFAULT"
 	// CodeBadRequest represents a bad request.
 	CodeBadRequest Code = "BAD_REQUEST"
+	// CodeTooManyRequests indicates the client exceeded a rate limit.
+	CodeTooManyRequests Code = "TOO_MANY_REQUESTS"
 	// CodeInternalError represents an internal server error.
 	CodeInternalError Code = "INTERNAL_ERROR"
 	// CodePasswordChangeRequired indicates the user must change their password
@@ -42,6 +52,19 @@ const (
 	CodePasswordChangeRequired Code = "AUTH_PASSWORD_CHANGE_REQUIRED"
 	// CodeInvalidCurrentPassword indicates the supplied current password is wrong.
 	CodeInvalidCurrentPassword Code = "USER_INVALID_CURRENT_PASSWORD"
+	// CodePasswordSetTokenInvalid indicates the password-set token is
+	// unknown, expired, or already used.
+	CodePasswordSetTokenInvalid Code = "USER_PASSWORD_SET_TOKEN_INVALID"
+
+	// CodeSSOProviderNotFound indicates no (enabled) SSO provider matches.
+	CodeSSOProviderNotFound Code = "SSO_PROVIDER_NOT_FOUND"
+	// CodeSSOProviderSlugTaken indicates another SSO provider uses the slug.
+	CodeSSOProviderSlugTaken Code = "SSO_PROVIDER_SLUG_TAKEN"
+	// CodeSSOProviderInvalid indicates an invalid SSO provider configuration.
+	CodeSSOProviderInvalid Code = "SSO_PROVIDER_INVALID"
+	// CodeSSODiscoveryFailed indicates the issuer's OIDC discovery document
+	// could not be fetched.
+	CodeSSODiscoveryFailed Code = "SSO_DISCOVERY_FAILED"
 
 	// CodeProjectNotFound indicates the requested project does not exist.
 	CodeProjectNotFound Code = "PROJECT_NOT_FOUND"
@@ -76,6 +99,8 @@ const (
 	CodeTaskCannotBeOwnParent Code = "TASK_CANNOT_BE_OWN_PARENT"
 	// CodeTaskParentCycleDetected indicates the requested parent assignment would create a cycle.
 	CodeTaskParentCycleDetected Code = "TASK_PARENT_CYCLE_DETECTED"
+	// CodeTaskAssignmentModeInvalid indicates an invalid assignment_mode value.
+	CodeTaskAssignmentModeInvalid Code = "TASK_ASSIGNMENT_MODE_INVALID"
 
 	// CodeTaskTypeNotFound indicates the requested task type does not exist.
 	CodeTaskTypeNotFound Code = "TASK_TYPE_NOT_FOUND"
@@ -85,6 +110,8 @@ const (
 	CodeTaskTypeIsSystem Code = "TASK_TYPE_IS_SYSTEM"
 	// CodeTaskTypeNameReserved indicates an attempt to use a reserved system type name.
 	CodeTaskTypeNameReserved Code = "TASK_TYPE_NAME_RESERVED"
+	// CodeTaskTypeIsDefault indicates an attempt to delete the project's default task type.
+	CodeTaskTypeIsDefault Code = "TASK_TYPE_IS_DEFAULT"
 
 	// CodeTaskStatusNotFound indicates the requested task status does not exist.
 	CodeTaskStatusNotFound Code = "TASK_STATUS_NOT_FOUND"
@@ -94,6 +121,10 @@ const (
 	CodeTaskStatusCategoryInvalid Code = "TASK_STATUS_CATEGORY_INVALID"
 	// CodeTaskStatusReorderInvalid indicates the provided status IDs do not match the project's statuses.
 	CodeTaskStatusReorderInvalid Code = "TASK_STATUS_REORDER_INVALID"
+	// CodeTaskStatusInUseByAutomation indicates the status is still referenced by an automation.
+	CodeTaskStatusInUseByAutomation Code = "TASK_STATUS_IN_USE_BY_AUTOMATION"
+	// CodeTaskStatusIsDefault indicates an attempt to delete the project's default task status.
+	CodeTaskStatusIsDefault Code = "TASK_STATUS_IS_DEFAULT"
 
 	// CodeSprintNotFound indicates the requested sprint does not exist.
 	CodeSprintNotFound Code = "SPRINT_NOT_FOUND"
@@ -114,6 +145,8 @@ const (
 	CodeViewIsLastView Code = "VIEW_IS_LAST_VIEW"
 	// CodeViewReorderInvalid indicates the provided view IDs do not match the interaction's views.
 	CodeViewReorderInvalid Code = "VIEW_REORDER_INVALID"
+	// CodeViewPluginConfigRequired indicates a view_type "plugin" was saved without a plugin_id/plugin_component pair.
+	CodeViewPluginConfigRequired Code = "VIEW_PLUGIN_CONFIG_REQUIRED"
 
 	// CodeCustomFieldNotFound indicates the requested custom field definition does not exist.
 	CodeCustomFieldNotFound Code = "CUSTOM_FIELD_NOT_FOUND"
@@ -134,6 +167,8 @@ const (
 	CodeUploadNotPending Code = "ATTACHMENT_UPLOAD_NOT_PENDING"
 	// CodeAttachmentInvalid indicates invalid input for creating an attachment.
 	CodeAttachmentInvalid Code = "ATTACHMENT_INVALID"
+	// CodeAttachmentTooLarge indicates the attachment exceeds the size that can be read inline.
+	CodeAttachmentTooLarge Code = "ATTACHMENT_TOO_LARGE"
 	// CodeMultipartUploadIDRequired indicates that a multipart upload_id was not provided.
 	CodeMultipartUploadIDRequired Code = "ATTACHMENT_MULTIPART_UPLOAD_ID_REQUIRED"
 	// CodeNotMultipartUpload indicates that an upload_id was provided for a non-multipart file.
@@ -151,6 +186,10 @@ const (
 	CodeActivityNotAComment Code = "ACTIVITY_NOT_A_COMMENT"
 	// CodeCommentContentInvalid indicates an empty or invalid comment content.
 	CodeCommentContentInvalid Code = "ACTIVITY_COMMENT_CONTENT_INVALID"
+	// CodeCommentActorUnidentified indicates the caller authenticated with the
+	// shared agent API key but did not supply an X-Agent-ID header, so there is
+	// no project member identity to attribute the comment to.
+	CodeCommentActorUnidentified Code = "ACTIVITY_COMMENT_ACTOR_UNIDENTIFIED"
 
 	// --- Task link errors ------------------------------------------------
 
@@ -187,10 +226,16 @@ const (
 	CodeDocActivityNotAComment Code = "DOC_ACTIVITY_NOT_A_COMMENT"
 	// CodeDocCommentContentInvalid indicates an empty or invalid comment content.
 	CodeDocCommentContentInvalid Code = "DOC_COMMENT_CONTENT_INVALID"
+	// CodeDocCommentActorUnidentified indicates the caller authenticated with
+	// the shared agent API key but did not supply an X-Agent-ID header, so
+	// there is no project member identity to attribute the comment to.
+	CodeDocCommentActorUnidentified Code = "DOC_COMMENT_ACTOR_UNIDENTIFIED"
 
 	// CodeNotificationNotFound indicates the requested notification does not exist
 	// or does not belong to the authenticated user.
 	CodeNotificationNotFound Code = "NOTIFICATION_NOT_FOUND"
+	// CodeNotificationInvalidCursor indicates a client-supplied pagination cursor failed to decode.
+	CodeNotificationInvalidCursor Code = "NOTIFICATION_INVALID_CURSOR"
 
 	// CodeGitHubIntegrationNotFound indicates the project has no GitHub integration configured.
 	CodeGitHubIntegrationNotFound Code = "GITHUB_INTEGRATION_NOT_FOUND"
@@ -243,6 +288,9 @@ const (
 	CodePluginAlreadyUpToDate Code = "PLUGIN_ALREADY_UP_TO_DATE"
 	// CodePluginDowngradeNotAllowed indicates the marketplace version is older than the installed version.
 	CodePluginDowngradeNotAllowed Code = "PLUGIN_DOWNGRADE_NOT_ALLOWED"
+	// CodePluginIncompatibleHostVersion indicates the plugin manifest's
+	// minCoreVersion is newer than the running Paca build.
+	CodePluginIncompatibleHostVersion Code = "PLUGIN_INCOMPATIBLE_HOST_VERSION"
 	// CodePayloadTooLarge indicates the request body exceeds the server's size limit.
 	CodePayloadTooLarge Code = "PAYLOAD_TOO_LARGE"
 
@@ -258,16 +306,55 @@ const (
 	CodeAgentNameInvalid Code = "AGENT_NAME_INVALID"
 	// CodeAgentTypeNotFound indicates the requested agent type does not exist.
 	CodeAgentTypeNotFound Code = "AGENT_TYPE_NOT_FOUND"
+	// CodeAgentTypeInvalid indicates agent_type is not one of the supported values.
+	CodeAgentTypeInvalid Code = "AGENT_TYPE_INVALID"
+	// CodeAgentACPProviderInvalid indicates acp_provider is not one of the supported values.
+	CodeAgentACPProviderInvalid Code = "AGENT_ACP_PROVIDER_INVALID"
+	// CodeAgentACPCommandRequired indicates acp_command is required for the given acp_provider.
+	CodeAgentACPCommandRequired Code = "AGENT_ACP_COMMAND_REQUIRED"
 	// CodeAgentMCPServerNotFound indicates the requested MCP server does not exist.
 	CodeAgentMCPServerNotFound Code = "AGENT_MCP_SERVER_NOT_FOUND"
 	// CodeAgentSkillNotFound indicates the requested skill does not exist.
 	CodeAgentSkillNotFound Code = "AGENT_SKILL_NOT_FOUND"
+	// CodeAgentSkillNameReserved indicates the skill name collides with a name reserved for internal agent scaffolding.
+	CodeAgentSkillNameReserved Code = "AGENT_SKILL_NAME_RESERVED"
+	// CodeAgentSkillNameInvalid indicates the skill name is empty, ".", "..", or
+	// contains a path separator — any of which could escape the on-disk
+	// directory a skill's SKILL.md is written under.
+	CodeAgentSkillNameInvalid Code = "AGENT_SKILL_NAME_INVALID"
+	// CodeAgentNotSupportedForACPAgent indicates an MCP server/skill/env var operation was attempted on an ACP-type agent.
+	CodeAgentNotSupportedForACPAgent Code = "AGENT_NOT_SUPPORTED_FOR_ACP_AGENT"
 	// CodeAgentConversationNotFound indicates the requested conversation does not exist.
 	CodeAgentConversationNotFound Code = "AGENT_CONVERSATION_NOT_FOUND"
 	// CodeAgentConversationNotRunning indicates the conversation is not in a runnable state.
 	CodeAgentConversationNotRunning Code = "AGENT_CONVERSATION_NOT_RUNNING"
 	// CodeAgentConversationAlreadyStopped indicates the conversation is already stopped/finished.
 	CodeAgentConversationAlreadyStopped Code = "AGENT_CONVERSATION_ALREADY_STOPPED"
+	// CodeAgentConversationBusy indicates a chat reply was sent while the agent is still responding to the previous one.
+	CodeAgentConversationBusy Code = "AGENT_CONVERSATION_BUSY"
+	// CodeAgentParallelismLimitReached indicates a new chat message would
+	// exceed the agent's parallelism_limit of simultaneously running
+	// conversations. Carries Details["running"]/["limit"] (see
+	// apierr.NewWithDetails) so the client can show the current counts and
+	// offer to queue the message or send it anyway (on_busy=queue|force).
+	CodeAgentParallelismLimitReached Code = "AGENT_PARALLELISM_LIMIT_REACHED"
+	// CodeAgentEnvironmentFolderBusy indicates a new chat message would
+	// start a conversation in an environment folder another conversation
+	// (from any agent) is already running in. Carries
+	// Details["environment_id"] (see apierr.NewWithDetails) so the client
+	// can offer to queue the message or send it anyway
+	// (on_busy=queue|force) — same contract as CodeAgentParallelismLimitReached,
+	// just a different reason for being busy.
+	CodeAgentEnvironmentFolderBusy Code = "AGENT_ENVIRONMENT_FOLDER_BUSY"
+	// CodeAgentOnBusyInvalid indicates on_busy was set to something other
+	// than "", "queue", or "force".
+	CodeAgentOnBusyInvalid Code = "AGENT_ON_BUSY_INVALID"
+	// CodeAgentConversationInvalidCursor indicates a client-supplied pagination cursor failed to decode.
+	CodeAgentConversationInvalidCursor Code = "AGENT_CONVERSATION_INVALID_CURSOR"
+	// CodeAgentActivityInvalidCursor indicates a client-supplied activity feed pagination cursor failed to decode.
+	CodeAgentActivityInvalidCursor Code = "AGENT_ACTIVITY_INVALID_CURSOR"
+	// CodeAgentConversationEventInvalidCursor indicates a client-supplied conversation-events window cursor failed to decode.
+	CodeAgentConversationEventInvalidCursor Code = "AGENT_CONVERSATION_EVENT_INVALID_CURSOR"
 	// CodeAgentChatSessionNotFound indicates the requested chat session does not exist.
 	CodeAgentChatSessionNotFound Code = "AGENT_CHAT_SESSION_NOT_FOUND"
 	// CodeAgentEnvVarNotFound indicates the requested environment variable does not exist.
@@ -278,6 +365,158 @@ const (
 	CodeAgentEnvVarKeyInvalid Code = "AGENT_ENV_VAR_KEY_INVALID"
 	// CodeAgentEnvVarKeyReserved indicates the environment variable key collides with an internal sandbox variable.
 	CodeAgentEnvVarKeyReserved Code = "AGENT_ENV_VAR_KEY_RESERVED"
+	// CodeAgentDefaultEnvironmentInvalid indicates default_environment_id does not
+	// resolve to a static environment in the agent's own project, or was set on a
+	// global-scope agent (which has no single project to default from).
+	CodeAgentDefaultEnvironmentInvalid Code = "AGENT_DEFAULT_ENVIRONMENT_INVALID"
+	// CodeAgentDefaultFolderInvalid indicates default_folder_id does not
+	// resolve to a folder belonging to the agent's own
+	// default_environment_id, was set without a default_environment_id
+	// also set, or was set on a global-scope agent.
+	CodeAgentDefaultFolderInvalid Code = "AGENT_DEFAULT_FOLDER_INVALID"
+	// CodeAgentParallelismLimitUnsupported indicates parallelism_limit > 1
+	// was requested for an agent that can't safely run more than one
+	// conversation at once (an ACP-type agent, or one attached to a shared
+	// default_environment_id) — see agentdom.ErrParallelismLimitRequiresIsolatedSandbox.
+	CodeAgentParallelismLimitUnsupported Code = "AGENT_PARALLELISM_LIMIT_UNSUPPORTED"
+	// CodeAgentCLIProviderInvalid indicates cli_provider is not one of the supported values.
+	CodeAgentCLIProviderInvalid Code = "AGENT_CLI_PROVIDER_INVALID"
+	// CodeAgentCLIAuthModeInvalid indicates cli_auth_mode is not one of the supported values.
+	CodeAgentCLIAuthModeInvalid Code = "AGENT_CLI_AUTH_MODE_INVALID"
+	// CodeAgentCLIProviderNoAPIKeyAuth indicates cli_auth_mode=api_key was requested for a
+	// cli_provider with no known non-interactive API-key auth path.
+	CodeAgentCLIProviderNoAPIKeyAuth Code = "AGENT_CLI_PROVIDER_NO_API_KEY_AUTH"
+	// CodeAgentDefaultEnvironmentRequiredForCLIProvider indicates a provider_cli agent was
+	// created/updated, or a conversation started for one, without a default_environment_id
+	// resolving to a real environment.
+	CodeAgentDefaultEnvironmentRequiredForCLIProvider Code = "AGENT_DEFAULT_ENVIRONMENT_REQUIRED_FOR_CLI_PROVIDER"
+	// CodeAgentCLIProviderNotSupportedForGlobalAgents indicates agent_type=provider_cli was
+	// requested for a global-scope agent.
+	CodeAgentCLIProviderNotSupportedForGlobalAgents Code = "AGENT_CLI_PROVIDER_NOT_SUPPORTED_FOR_GLOBAL_AGENTS"
+	// CodeAgentNotProviderCLI indicates VerifyCLILogin (or another provider_cli-only
+	// operation) was called on an agent whose agent_type isn't provider_cli.
+	CodeAgentNotProviderCLI Code = "AGENT_NOT_PROVIDER_CLI"
+	// CodeAgentAccessModeInvalid indicates access_mode is not "open" or "restricted".
+	CodeAgentAccessModeInvalid Code = "AGENT_ACCESS_MODE_INVALID"
+	// CodeAgentAccessGrantExists indicates the target member already has an
+	// access grant for this agent.
+	CodeAgentAccessGrantExists Code = "AGENT_ACCESS_GRANT_EXISTS"
+	// CodeAgentAccessRestricted indicates the agent is access_mode=restricted
+	// and the caller holds no grant for it — a usage action (starting/
+	// driving a conversation) was attempted, not a configuration one, which
+	// stays gated purely on agents.write regardless of access_mode.
+	CodeAgentAccessRestricted Code = "AGENT_ACCESS_RESTRICTED"
+
+	// --- Environment errors (static environments — see
+	// docs/ai-agent/environment-management.md) --------------------------------
+
+	// CodeEnvironmentNotFound indicates the requested environment does not exist.
+	CodeEnvironmentNotFound Code = "ENVIRONMENT_NOT_FOUND"
+	// CodeEnvironmentSlugTaken indicates the environment slug is already in use in this project.
+	CodeEnvironmentSlugTaken Code = "ENVIRONMENT_SLUG_TAKEN"
+	// CodeEnvironmentNameInvalid indicates the environment name is empty or invalid.
+	CodeEnvironmentNameInvalid Code = "ENVIRONMENT_NAME_INVALID"
+	// CodeEnvironmentNotRunning indicates an operation that requires a live
+	// container (exec, terminal, heartbeat) targeted an environment that isn't
+	// currently running.
+	CodeEnvironmentNotRunning Code = "ENVIRONMENT_NOT_RUNNING"
+	// CodeEnvironmentBusy indicates a start/stop/delete was requested while the
+	// environment is already mid-transition.
+	CodeEnvironmentBusy Code = "ENVIRONMENT_BUSY"
+	// CodeEnvironmentCPULimitInvalid indicates the requested cpu_limit override
+	// is unparseable or below the minimum (100m).
+	CodeEnvironmentCPULimitInvalid Code = "ENVIRONMENT_CPU_LIMIT_INVALID"
+	// CodeEnvironmentMemoryLimitInvalid indicates the requested memory_limit
+	// override is unparseable or below the minimum (256Mi).
+	CodeEnvironmentMemoryLimitInvalid Code = "ENVIRONMENT_MEMORY_LIMIT_INVALID"
+	// CodeEnvironmentFolderNotFound indicates the requested environment folder does not exist.
+	CodeEnvironmentFolderNotFound Code = "ENVIRONMENT_FOLDER_NOT_FOUND"
+	// CodeEnvironmentFolderPathTaken indicates a folder with this path already exists in this environment.
+	CodeEnvironmentFolderPathTaken Code = "ENVIRONMENT_FOLDER_PATH_TAKEN"
+	// CodeEnvironmentFolderPathInvalid indicates the folder path is not an absolute path.
+	CodeEnvironmentFolderPathInvalid Code = "ENVIRONMENT_FOLDER_PATH_INVALID"
+	// CodeEnvironmentSSHKeyNotFound indicates the requested SSH key does not exist.
+	CodeEnvironmentSSHKeyNotFound Code = "ENVIRONMENT_SSH_KEY_NOT_FOUND"
+	// CodeEnvironmentSSHKeyInvalid indicates the supplied public key is not a valid SSH public key.
+	CodeEnvironmentSSHKeyInvalid Code = "ENVIRONMENT_SSH_KEY_INVALID"
+	// CodeEnvironmentSSHKeyFingerprintTaken indicates this public key is already registered on this environment.
+	CodeEnvironmentSSHKeyFingerprintTaken Code = "ENVIRONMENT_SSH_KEY_FINGERPRINT_TAKEN"
+	// CodeEnvironmentPortForwardNotFound indicates the requested port forward does not exist.
+	CodeEnvironmentPortForwardNotFound Code = "ENVIRONMENT_PORT_FORWARD_NOT_FOUND"
+	// CodeEnvironmentPortForwardContainerPortInvalid indicates the container port is not between 1 and 65535.
+	CodeEnvironmentPortForwardContainerPortInvalid Code = "ENVIRONMENT_PORT_FORWARD_CONTAINER_PORT_INVALID"
+	// CodeEnvironmentPortForwardContainerPortTaken indicates a port forward for this container port already exists on this environment.
+	CodeEnvironmentPortForwardContainerPortTaken Code = "ENVIRONMENT_PORT_FORWARD_CONTAINER_PORT_TAKEN"
+	// CodeEnvironmentAccessModeInvalid indicates access_mode is not "open" or "restricted".
+	CodeEnvironmentAccessModeInvalid Code = "ENVIRONMENT_ACCESS_MODE_INVALID"
+	// CodeEnvironmentAccessGrantExists indicates the target member already
+	// has an access grant for this environment.
+	CodeEnvironmentAccessGrantExists Code = "ENVIRONMENT_ACCESS_GRANT_EXISTS"
+	// CodeEnvironmentAccessRestricted indicates the environment is
+	// access_mode=restricted and the caller holds no grant for it — a usage
+	// action (browse, SSH keys, port forwards, terminal) was attempted, not
+	// a configuration one, which stays gated purely on environments.write
+	// regardless of access_mode.
+	CodeEnvironmentAccessRestricted Code = "ENVIRONMENT_ACCESS_RESTRICTED"
+
+	// --- Automation errors -----------------------------------------------------
+
+	// CodeAutomationNotFound indicates the requested automation does not exist.
+	CodeAutomationNotFound Code = "AUTOMATION_NOT_FOUND"
+	// CodeAutomationNameInvalid indicates an empty or invalid automation name.
+	CodeAutomationNameInvalid Code = "AUTOMATION_NAME_INVALID"
+	// CodeAutomationNodeNotFound indicates the requested node does not exist.
+	CodeAutomationNodeNotFound Code = "AUTOMATION_NODE_NOT_FOUND"
+	// CodeAutomationNodeInvalidKind indicates the node kind is not trigger/condition/action.
+	CodeAutomationNodeInvalidKind Code = "AUTOMATION_NODE_INVALID_KIND"
+	// CodeAutomationNodeInvalidType indicates the node type is not recognized for its kind.
+	CodeAutomationNodeInvalidType Code = "AUTOMATION_NODE_INVALID_TYPE"
+	// CodeAutomationNodeConfigInvalid indicates the node's config failed validation.
+	CodeAutomationNodeConfigInvalid Code = "AUTOMATION_NODE_CONFIG_INVALID"
+	// CodeAutomationNodeCrossProject indicates the node config references an entity outside the automation's project.
+	CodeAutomationNodeCrossProject Code = "AUTOMATION_NODE_CROSS_PROJECT"
+	// CodeAutomationEdgeNotFound indicates the requested edge does not exist.
+	CodeAutomationEdgeNotFound Code = "AUTOMATION_EDGE_NOT_FOUND"
+	// CodeAutomationRunNotFound indicates the requested run does not exist.
+	CodeAutomationRunNotFound Code = "AUTOMATION_RUN_NOT_FOUND"
+	// CodeAutomationEdgeSelfLoop indicates an attempt to link a node to itself.
+	CodeAutomationEdgeSelfLoop Code = "AUTOMATION_EDGE_SELF_LOOP"
+	// CodeAutomationEdgeCrossAutomation indicates source and target nodes belong to different automations.
+	CodeAutomationEdgeCrossAutomation Code = "AUTOMATION_EDGE_CROSS_AUTOMATION"
+	// CodeAutomationEdgeCycle indicates the edge would create a cycle in the graph.
+	CodeAutomationEdgeCycle Code = "AUTOMATION_EDGE_CYCLE"
+	// CodeAutomationEdgeIntoTrigger indicates an edge would target a trigger node.
+	CodeAutomationEdgeIntoTrigger Code = "AUTOMATION_EDGE_INTO_TRIGGER"
+	// CodeAutomationEdgeDuplicate indicates the edge already exists.
+	CodeAutomationEdgeDuplicate Code = "AUTOMATION_EDGE_DUPLICATE"
+	// CodeAutomationEdgeRequiresTargetTask indicates a task-less trigger (no
+	// target_task_id) would reach a node that needs a task to run.
+	CodeAutomationEdgeRequiresTargetTask Code = "AUTOMATION_EDGE_REQUIRES_TARGET_TASK"
+	// CodeAutomationEdgeHandleRequired indicates an edge from a condition node is missing its branch handle.
+	CodeAutomationEdgeHandleRequired Code = "AUTOMATION_EDGE_HANDLE_REQUIRED"
+	// CodeAutomationEdgeHandleNotAllowed indicates an edge from a trigger/action node specified a branch handle.
+	CodeAutomationEdgeHandleNotAllowed Code = "AUTOMATION_EDGE_HANDLE_NOT_ALLOWED"
+	// CodeAutomationActivateNoTrigger indicates the automation has no trigger node.
+	CodeAutomationActivateNoTrigger Code = "AUTOMATION_ACTIVATE_NO_TRIGGER"
+	// CodeAutomationActivateNoAction indicates the automation has no action node, so activating it would never do anything.
+	CodeAutomationActivateNoAction Code = "AUTOMATION_ACTIVATE_NO_ACTION"
+	// CodeAutomationWebhookTokenInvalid indicates a webhook trigger POST presented a missing, wrong, or revoked token.
+	CodeAutomationWebhookTokenInvalid Code = "AUTOMATION_WEBHOOK_TOKEN_INVALID"
+
+	// CodeAnnotationNotFound indicates the requested page annotation does not exist.
+	CodeAnnotationNotFound Code = "ANNOTATION_NOT_FOUND"
+	// CodeAnnotationBodyEmpty indicates a comment/reply body was empty.
+	CodeAnnotationBodyEmpty Code = "ANNOTATION_BODY_EMPTY"
+	// CodeAnnotationAlreadyHasTask indicates CreateTaskFromAnnotation was called on an annotation that already has a linked task.
+	CodeAnnotationAlreadyHasTask Code = "ANNOTATION_ALREADY_HAS_TASK"
+	// CodeAnnotationTaskCreationInProgress indicates another (or a very recent) call has already claimed this annotation for task creation.
+	CodeAnnotationTaskCreationInProgress Code = "ANNOTATION_TASK_CREATION_IN_PROGRESS"
+	// CodeAnnotationScreenshotNotUploaded indicates GetScreenshotURL was called on an annotation with no screenshot attached.
+	CodeAnnotationScreenshotNotUploaded Code = "ANNOTATION_SCREENSHOT_NOT_UPLOADED"
+	// CodeAnnotationScreenshotMismatch indicates the referenced file isn't a screenshot the caller uploaded for this annotation.
+	CodeAnnotationScreenshotMismatch Code = "ANNOTATION_SCREENSHOT_MISMATCH"
+	// CodePortForwardNotFound indicates no port forward matches the requested host port for a project the caller belongs to.
+	CodePortForwardNotFound Code = "PORT_FORWARD_NOT_FOUND"
 )
 
 // Error carries a machine-readable Code alongside a human-readable Message.
@@ -286,6 +525,14 @@ const (
 type Error struct {
 	Code    Code
 	Message string
+	// Details carries structured, non-localized values a client needs to
+	// render its own translated message (e.g. version numbers, entity
+	// names) — Message itself is English prose and not localized, so a
+	// client that wants a translated string for its own locale should
+	// prefer interpolating Details into a local string rather than
+	// displaying Message directly. Nil when the code has nothing structured
+	// to add beyond Message.
+	Details map[string]string
 }
 
 func (e *Error) Error() string { return e.Message }
@@ -293,4 +540,10 @@ func (e *Error) Error() string { return e.Message }
 // New returns a new *Error with the given code and message.
 func New(code Code, message string) *Error {
 	return &Error{Code: code, Message: message}
+}
+
+// NewWithDetails returns a new *Error carrying structured Details alongside
+// the given code and message.
+func NewWithDetails(code Code, message string, details map[string]string) *Error {
+	return &Error{Code: code, Message: message, Details: details}
 }

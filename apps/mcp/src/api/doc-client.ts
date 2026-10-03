@@ -1,13 +1,14 @@
 import type {
 	CreateFolderInput,
 	DocumentActivity,
-	DocumentComment,
 	DocumentFolder,
+	DocumentSearchHit,
 	DocumentSnapshot,
 	PacaConfig,
 	SuccessEnvelope,
 	UpdateFolderInput,
 } from "../types/index.js";
+import { formatApiRequestError, markdownToBlocknote } from "../utils/index.js";
 
 /**
  * Extended API client for Document features.
@@ -47,8 +48,12 @@ export class PacaAPIDocClient {
 		if (!response.ok) {
 			const errorText = await response.text();
 			throw new Error(
-				`API request failed: ${response.status} ${response.statusText} - ${errorText}`,
+				formatApiRequestError(response.status, response.statusText, errorText),
 			);
+		}
+
+		if (response.status === 204) {
+			return undefined;
 		}
 
 		const jsonResponse = await response.json();
@@ -165,9 +170,10 @@ export class PacaAPIDocClient {
 		projectId: string,
 		docId: string,
 		content: string,
-	): Promise<DocumentComment> {
+	): Promise<DocumentActivity> {
+		const contentBlocks = content ? markdownToBlocknote(content) : null;
 		return this.post(`/api/v1/projects/${projectId}/docs/${docId}/comments`, {
-			text: content,
+			content: contentBlocks,
 		});
 	}
 
@@ -176,10 +182,11 @@ export class PacaAPIDocClient {
 		docId: string,
 		commentId: string,
 		content: string,
-	): Promise<DocumentComment> {
+	): Promise<DocumentActivity> {
+		const contentBlocks = content ? markdownToBlocknote(content) : null;
 		return this.patch(
 			`/api/v1/projects/${projectId}/docs/${docId}/comments/${commentId}`,
-			{ text: content },
+			{ content: contentBlocks },
 		);
 	}
 
@@ -214,5 +221,21 @@ export class PacaAPIDocClient {
 		await this.delete(
 			`/api/v1/projects/${projectId}/docs/${docId}/files/${fileId}`,
 		);
+	}
+
+	/**
+	 * Searches a project's documents by title or body text
+	 * (GET /docs/search) — the list endpoint only matches titles.
+	 */
+	async searchDocuments(
+		projectId: string,
+		query: string,
+		limit = 20,
+	): Promise<DocumentSearchHit[]> {
+		const response = await this.get(
+			`/api/v1/projects/${projectId}/docs/search?q=${encodeURIComponent(query)}&limit=${limit}`,
+		);
+		if (Array.isArray(response)) return response;
+		return response?.items ?? [];
 	}
 }

@@ -12,7 +12,6 @@ type Repository interface {
 	DocFolderRepository
 	DocumentRepository
 	DocSnapshotRepository
-	ActivityRepository
 }
 
 // DocFolderRepository defines persistence for document folders.
@@ -32,10 +31,28 @@ type DocFolderRepository interface {
 
 // DocumentRepository defines persistence for documents.
 type DocumentRepository interface {
-	// ListDocuments returns all non-deleted documents for a project.
-	// When folderID is non-nil only documents in that folder are returned;
-	// when nil all documents in the project are returned.
-	ListDocuments(ctx context.Context, projectID uuid.UUID, folderID *uuid.UUID) ([]*Document, error)
+	// ListDocuments returns non-deleted documents for a project. folderID
+	// non-nil filters to that folder. search non-nil/non-empty filters to a
+	// case-insensitive title match (see postgres.escapeLikePattern).
+	//
+	// limit nil means "no pagination" — every matching document is returned
+	// (ordered position ASC, title ASC), hasMore is always false, and cursor
+	// is ignored. This is the existing behavior every current caller (the
+	// doc-tree sidebar, the mention picker) relies on.
+	//
+	// limit non-nil switches to keyset pagination ordered title ASC, id ASC
+	// instead — sensible for a search result list, independent of the doc
+	// tree's manual position ordering — fetching one extra row to compute
+	// hasMore and returning at most *limit. cursor, if non-nil, resumes after
+	// the document EncodeDocumentCursor produced for the last row of the
+	// previous page.
+	ListDocuments(ctx context.Context, projectID uuid.UUID, folderID *uuid.UUID, search *string, cursor *string, limit *int) (docs []*Document, hasMore bool, err error)
+	// SearchDocuments returns up to limit non-deleted documents of a project
+	// whose title OR body text contains query (case-insensitive, matched
+	// literally). Body text means the inline "text" nodes of the BlockNote
+	// JSON, not its structural keys. Results include Content so the caller can
+	// build snippets; ordered updated_at DESC, id ASC.
+	SearchDocuments(ctx context.Context, projectID uuid.UUID, query string, limit int) ([]*Document, error)
 	// FindDocumentByID returns a single non-deleted document.
 	FindDocumentByID(ctx context.Context, id uuid.UUID) (*Document, error)
 	// CreateDocument persists a new document.

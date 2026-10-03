@@ -18,10 +18,13 @@
 //
 // Room management
 // ---------------
-// Events are routed through two namespace-scoped rooms per project:
+// Events are routed through namespace-scoped rooms per project:
 //
-//   project:<projectId>:tasks  — all task.* events
-//   project:<projectId>:docs   — all doc.* events
+//   project:<projectId>:tasks        — all task.* events
+//   project:<projectId>:docs         — all doc.* events
+//   project:<projectId>:workflows    — all workflow.* graph events
+//   project:<projectId>:sprints      — all sprint.* events
+//   project:<projectId>:environments — all environment.* events
 //
 // When a client emits "join" with { projectId }, the server fetches the user's
 // project permissions via the API, then joins only the namespace rooms the user
@@ -29,6 +32,14 @@
 // correct room — no per-message permission checks are needed.
 //
 // A "leave" event removes the socket from all namespace rooms for that project.
+//
+// Two more rooms are auto-joined at connect time, keyed purely on the
+// socket's own identity rather than any project permission check:
+//
+//   user:<userId>:notifications  — all notification.* events
+//   user:<userId>:agent-chat     — agent.* events with no project_id, i.e. a
+//                                  conversation with a global agent from the
+//                                  home page / admin pages
 //
 // Client-side example (using socket.io-client):
 //
@@ -43,10 +54,15 @@ import { createServer } from "node:http";
 import type Redis from "ioredis";
 import type { Logger } from "pino";
 import { Server } from "socket.io";
-import { fetchProjectPermissions, verifyTokenWithAPI } from "./api-client.ts";
+import {
+	ApiRequestError,
+	fetchProjectPermissions,
+	verifyTokenWithAPI,
+} from "./api-client.ts";
 import { extractTokenFromCookieHeader } from "./auth.ts";
 import type { Config } from "./config.ts";
 import {
+	agentChatRoomName,
 	type EventNamespace,
 	hasProjectPermission,
 	NAMESPACE_PERMISSIONS,
@@ -161,6 +177,17 @@ export function createSocketServer(
 			"joined user notification room",
 		);
 
+		// Auto-join the user's personal global-agent-chat room, same reasoning
+		// as notifications above: a global agent conversation (home page /
+		// admin pages, no project) has no project room to place the socket in
+		// via the permission-gated "join" flow below, so this is keyed purely
+		// on the user's own identity instead.
+		socket.join(agentChatRoomName(userId));
+		logger.debug(
+			{ userId, room: agentChatRoomName(userId) },
+			"joined user agent-chat room",
+		);
+
 		// Join namespace-scoped rooms for a project.  Fetches project permissions
 		// once and joins only the rooms the user is allowed to see:
 		//   project:<projectId>:tasks  (if user has tasks.read)
@@ -202,6 +229,19 @@ export function createSocketServer(
 				);
 			} catch (err) {
 				logger.warn({ userId, projectId, err }, "project join failed");
+				// socket.data.rawToken is captured once at connect time and reused
+				// for every "join" on this socket for as long as the WebSocket
+				// stays up — unlike a plain HTTP request, it has no natural
+				// expiry that would otherwise force a fresh handshake. Once the
+				// access token expires, every join from then on 401s the same
+				// way and the socket is left in zero rooms with no recovery.
+				// Disconnecting trips socket.io-client's built-in automatic
+				// reconnection, which re-runs this connection's auth handshake
+				// against whatever access_token cookie the browser holds at that
+				// point — fresh, if the client has refreshed it by then.
+				if (err instanceof ApiRequestError && err.status === 401) {
+					socket.disconnect(true);
+				}
 			}
 		});
 

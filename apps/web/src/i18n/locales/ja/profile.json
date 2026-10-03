@@ -6,6 +6,8 @@
 	"fields": {
 		"fullName": "氏名",
 		"fullNamePlaceholder": "氏名を入力してください",
+		"email": "メールアドレス",
+		"emailPlaceholder": "メールアドレスを入力してください",
 		"notSet": "未設定",
 		"username": "ユーザー名"
 	},
@@ -16,7 +18,20 @@
 		"cancel": "キャンセル"
 	},
 	"errors": {
-		"updateFailed": "プロフィールの更新に失敗しました。もう一度お試しください。"
+		"updateFailed": "プロフィールの更新に失敗しました。もう一度お試しください。",
+		"invalidEmail": "有効なメールアドレスを入力してください。",
+		"emailTaken": "このメールアドレスは既に別のアカウントで使用されています。"
+	},
+	"avatar": {
+		"change": "アバターを変更",
+		"remove": "アバターを削除",
+		"uploading": "アップロード中…",
+		"errors": {
+			"invalidType": "PNG、JPEG、WEBP、GIF形式の画像を選択してください。",
+			"tooLarge": "画像は5MB以下にしてください。",
+			"uploadFailed": "アバターのアップロードに失敗しました。もう一度お試しください。",
+			"removeFailed": "アバターの削除に失敗しました。もう一度お試しください。"
+		}
 	},
 	"joinedOn": "{{date}}に参加",
 	"changePassword": {

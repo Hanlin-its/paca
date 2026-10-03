@@ -1,12 +1,4 @@
-import { formatDate as formatDateLocale } from "@/lib/format-date";
-
-export function formatDate(iso: string) {
-	return formatDateLocale(iso, {
-		year: "numeric",
-		month: "short",
-		day: "numeric",
-	});
-}
+import { dedupeGrantedPermissions } from "@/lib/permissions";
 
 export function permissionBadgeClass(key: string): string {
 	const domain = key.split(".")[0];
@@ -19,8 +11,9 @@ export function permissionBadgeClass(key: string): string {
 	return "bg-muted text-muted-foreground border-border";
 }
 
-export function activePermissions(perms: Record<string, boolean>) {
-	return Object.entries(perms)
+export function activePermissions(perms: Record<string, unknown>) {
+	const active = Object.entries(perms)
 		.filter(([, value]) => value)
 		.map(([key]) => key);
+	return dedupeGrantedPermissions(active);
 }

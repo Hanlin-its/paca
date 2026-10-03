@@ -6,6 +6,8 @@
 	"fields": {
 		"fullName": "Nombre completo",
 		"fullNamePlaceholder": "Introduce tu nombre completo",
+		"email": "Correo electrónico",
+		"emailPlaceholder": "Introduce tu correo electrónico",
 		"notSet": "No definido",
 		"username": "Nombre de usuario"
 	},
@@ -16,7 +18,20 @@
 		"cancel": "Cancelar"
 	},
 	"errors": {
-		"updateFailed": "No se pudo actualizar el perfil. Inténtalo de nuevo."
+		"updateFailed": "No se pudo actualizar el perfil. Inténtalo de nuevo.",
+		"invalidEmail": "Introduce una dirección de correo electrónico válida.",
+		"emailTaken": "Este correo electrónico ya está en uso por otra cuenta."
+	},
+	"avatar": {
+		"change": "Cambiar avatar",
+		"remove": "Eliminar avatar",
+		"uploading": "Subiendo…",
+		"errors": {
+			"invalidType": "Elige una imagen PNG, JPEG, WEBP o GIF.",
+			"tooLarge": "La imagen debe pesar 5 MB o menos.",
+			"uploadFailed": "No se pudo subir el avatar. Inténtalo de nuevo.",
+			"removeFailed": "No se pudo eliminar el avatar. Inténtalo de nuevo."
+		}
 	},
 	"joinedOn": "Se unió el {{date}}",
 	"changePassword": {

@@ -4,21 +4,24 @@ import {
 	ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import {
+	PacaAPIAnnotationClient,
+	PacaAPIAutomationClient,
 	PacaAPIClient,
+	PacaAPIConversationClient,
 	PacaAPIDocClient,
 	PacaAPIExtendedClient,
 	PacaAPITaskExtendedClient,
 	PacaAPIViewsClient,
 } from "./api/index.js";
-import { loadPlugins } from "./plugin-loader.js";
+import { loadPlugins, type PluginContextSection } from "./plugin-loader.js";
 import { getAllTools, handleToolCall } from "./tools/index.js";
 import type { PacaConfig } from "./types/index.js";
-import {
-	fetchAgentPermissions,
-	hasPermission,
-	getToolPermission,
-	type PermissionMap,
-} from "./permissions.js";
+
+const REPO_TOOL_NAMES = new Set([
+	"list_repositories",
+	"clone_repository",
+	"push_branch",
+]);
 
 /**
  * Creates and configures the Paca MCP server.
@@ -34,6 +37,13 @@ export async function createServer(config: PacaConfig): Promise<Server> {
 	const viewsClient = new PacaAPIViewsClient(config);
 	const taskExtendedClient = new PacaAPITaskExtendedClient(config);
 	const docClient = new PacaAPIDocClient(config);
+	const automationClient = new PacaAPIAutomationClient(config);
+	const conversationClient = new PacaAPIConversationClient(config);
+	const annotationClient = new PacaAPIAnnotationClient(config);
+
+	// Load plugin MCP modules from the Paca API.
+	// Failures for individual plugins are logged and skipped.
+	const pluginRegistry = await loadPlugins(config);
 
 	const clients = {
 		apiClient,
@@ -41,14 +51,10 @@ export async function createServer(config: PacaConfig): Promise<Server> {
 		viewsClient,
 		taskExtendedClient,
 		docClient,
+		automationClient,
+		conversationClient,
+		annotationClient,
 	};
-
-	// Load plugin MCP modules from the Paca API.
-	// Failures for individual plugins are logged and skipped.
-	const pluginRegistry = await loadPlugins(config);
-
-	// Fetch agent permissions at startup
-	const permissionMap: PermissionMap = await fetchAgentPermissions(config);
 
 	const server = new Server(
 		{
@@ -67,44 +73,30 @@ export async function createServer(config: PacaConfig): Promise<Server> {
 		const allCoreTools = getAllTools();
 		const allPluginTools = pluginRegistry.getAllTools();
 
-		// Filter core tools based on permissions
-		const filteredCoreTools = allCoreTools.filter((tool) => {
-			const toolPerm = getToolPermission(tool.name);
-			if (!toolPerm) {
-				console.error(`[server] Tool ${tool.name} has no permission mapping, allowing by default`);
-				return true;
-			}
+		// All tools are always listed — permissions are enforced by the API
+		// itself (a call the caller isn't allowed to make comes back as a 403,
+		// which formatApiRequestError turns into a "Permission denied: ..."
+		// tool error). The MCP server used to pre-filter this list by fetching
+		// the caller's permissions at startup and hiding tools it predicted
+		// would fail, but that duplicated the backend's own authorization
+		// logic and could drift from it — e.g. an unpinned caller (no
+		// PACA_PROJECT_ID) whose permission fetch returned little or nothing
+		// saw almost no tools at all, even though many of those calls would
+		// have succeeded.
+		//
+		// Repo tools are still hidden entirely when no repository plugin is
+		// configured for this conversation — mirrors executor.py's has_repos
+		// gate, which never attaches these tools to the agent at all rather
+		// than attaching them to fail against an empty plugin list. This isn't
+		// a permission check: without a repo plugin these tools have no
+		// backend to call at all.
+		const hasRepoPlugins = (config.repoPluginIds?.length ?? 0) > 0;
+		const visibleCoreTools = hasRepoPlugins
+			? allCoreTools
+			: allCoreTools.filter((tool) => !REPO_TOOL_NAMES.has(tool.name));
 
-			// For personal API key without project ID, show all tools (backward compatibility)
-			if (!config.agentId && !config.projectId) {
-				console.error(`[server] Personal API key mode, allowing tool ${tool.name}`);
-				return true;
-			}
-
-			if (config.projectId) {
-				const hasPerm = hasPermission(permissionMap, toolPerm.permissionKey, config.projectId);
-				console.error(`[server] Tool ${tool.name} requires ${toolPerm.permissionKey}, granted: ${hasPerm}`);
-				return hasPerm;
-			}
-
-			if (toolPerm.requiresProject) {
-				const hasPerm = Object.keys(permissionMap.projects).some((projectId) =>
-					hasPermission(permissionMap, toolPerm.permissionKey, projectId),
-				);
-				console.error(`[server] Tool ${tool.name} requires project permission ${toolPerm.permissionKey}, granted: ${hasPerm}`);
-				return hasPerm;
-			}
-			const hasPerm = hasPermission(permissionMap, toolPerm.permissionKey);
-			console.error(`[server] Tool ${tool.name} requires global permission ${toolPerm.permissionKey}, granted: ${hasPerm}`);
-			return hasPerm;
-		});
-
-		console.error(`[server] Filtered ${filteredCoreTools.length} tools from ${allCoreTools.length} total tools`);
-
-		// Note: Plugin tools are not filtered by permissions at this level
-		// Permissions are enforced at the API level
 		return {
-			tools: [...filteredCoreTools, ...allPluginTools],
+			tools: [...visibleCoreTools, ...allPluginTools],
 		};
 	});
 
@@ -113,7 +105,12 @@ export async function createServer(config: PacaConfig): Promise<Server> {
 		const { name, arguments: args } = request.params;
 
 		// Validate projectId in single-project mode
-		if (config.projectId && args && typeof args === "object" && "projectId" in args) {
+		if (
+			config.projectId &&
+			args &&
+			typeof args === "object" &&
+			"projectId" in args
+		) {
 			if (args.projectId !== config.projectId) {
 				return {
 					content: [
@@ -140,8 +137,60 @@ export async function createServer(config: PacaConfig): Promise<Server> {
 		}
 
 		// Fall through to core tool handlers
-		return handleToolCall(request, clients);
+		const result = await handleToolCall(
+			request,
+			clients,
+			config.repoPluginIds ?? [],
+		);
+
+		// Let every loaded plugin optionally attach context to this core
+		// tool's response (e.g. linked GitHub branches on get_task). Skipped
+		// for error results so a failure isn't buried under unrelated data.
+		if (!result?.isError) {
+			const sections = await pluginRegistry.getToolContext(
+				name,
+				(args ?? {}) as Record<string, unknown>,
+				config,
+			);
+			if (sections.length > 0) {
+				return mergePluginContext(result, sections);
+			}
+		}
+
+		return result;
 	});
 
 	return server;
+}
+
+/**
+ * Merge plugin-contributed context sections into a core tool's result.
+ *
+ * Merges into the *last* text content block rather than appending a new
+ * content entry: agents reliably read the one continuous text block a core
+ * tool returns, but have been observed treating a separate trailing block
+ * as unrelated/easy to miss — e.g. calling github_list_task_branches right
+ * after get_task despite the branch already being in a second block. Falls
+ * back to appending a new text block when the result has no existing text
+ * block to merge into (e.g. empty content array).
+ *
+ * Exported for testing; `sections` is expected to be non-empty — callers
+ * should skip invoking this when there's nothing to merge.
+ */
+export function mergePluginContext(
+	result: any,
+	sections: PluginContextSection[],
+): any {
+	const extra = sections.map((s) => s.text).join("\n\n");
+	const content = [...result.content];
+	const lastIdx = content.length - 1;
+	if (lastIdx >= 0 && content[lastIdx]?.type === "text") {
+		content[lastIdx] = {
+			...content[lastIdx],
+			text: `${content[lastIdx].text}\n\n${extra}`,
+		};
+	} else {
+		content.push({ type: "text", text: extra });
+	}
+	return { ...result, content };
 }

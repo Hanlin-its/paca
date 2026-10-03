@@ -2,12 +2,12 @@ import {
 	ArrowRight,
 	BookOpen,
 	Check,
-	Clock,
 	ExternalLink,
 	KanbanSquare,
 	Layers,
-	Link2,
+	Loader2,
 	Plus,
+	Search,
 	X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -19,9 +19,17 @@ import {
 	DropdownMenuSeparator,
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { useJevEnabled } from "@/hooks/use-jev-enabled";
 import type { Sprint, Task } from "@/lib/interaction-api";
-import type { ProjectMember, TaskStatus, TaskType } from "@/lib/project-api";
+import {
+	findEpicType,
+	type ProjectMember,
+	type TaskStatus,
+	type TaskType,
+} from "@/lib/project-api";
+import { resolveMemberAvatarUrl } from "@/lib/provider-logos";
 import { getTaskTypeIconComponent } from "../../task-types/task-type-icons";
+import { AssigneePicker } from "../assignee-picker";
 import type { PriorityMeta } from "../priority";
 import {
 	getImportanceBucket,
@@ -30,8 +38,14 @@ import {
 	PRIORITY_LEVELS,
 } from "../priority";
 import { TaskTypeSelector } from "../task-type-selector";
+import { useEpicSearch } from "../use-epic-search";
+import {
+	createEpicScrollHandler,
+	type EpicsPagination,
+	isAutoAssignPending,
+} from "../view-utils";
 import { AddFieldDialog } from "./add-field-dialog";
-import { FieldRow, FieldValue } from "./primitives";
+import { FieldRow } from "./primitives";
 import type { SelectOption, UserOption } from "./property-field";
 import { PropertyField } from "./property-field";
 import { NumberEditor } from "./property-field/number-editor";
@@ -41,7 +55,7 @@ import type { CustomFieldDef } from "./types";
 type UpdatePayload = Partial<{
 	status_id: string | null;
 	task_type_id: string | null;
-	assignee_id: string | null;
+	assignee_ids: string[];
 	reporter_id: string | null;
 	importance: number;
 	story_points: number | null;
@@ -51,6 +65,7 @@ type UpdatePayload = Partial<{
 	sprint_id: string | null;
 	parent_task_id: string | null;
 	custom_fields: Record<string, unknown>;
+	assignment_mode: "manual" | "auto";
 }>;
 
 interface PropertiesPanelProps {
@@ -58,7 +73,6 @@ interface PropertiesPanelProps {
 	status: TaskStatus | undefined;
 	taskType: TaskType | undefined;
 	priority: PriorityMeta;
-	assignee: ProjectMember | undefined;
 	reporter: ProjectMember | undefined;
 	statuses?: TaskStatus[];
 	taskTypes?: TaskType[];
@@ -71,6 +85,8 @@ interface PropertiesPanelProps {
 	taskRole?: "epic" | "normal";
 	/** All epic tasks in the project, for the epic picker on normal tasks */
 	epicTasks?: Task[];
+	/** Load-more state for the epic picker's paginated (20-per-page) query */
+	epicsPagination?: EpicsPagination;
 	/** The resolved parent task object (when parent_task_id is set) */
 	parentTask?: Task;
 	onUpdate?: (payload: UpdatePayload) => void;
@@ -83,14 +99,16 @@ function toUserOption(m: ProjectMember): UserOption {
 		value: m.id,
 		label: m.full_name || m.username,
 		initials: (m.full_name || m.username).slice(0, 1).toUpperCase(),
+		avatarUrl: resolveMemberAvatarUrl(m),
 	};
 }
+
+const SPRINT_GROUP_ORDER = { active: 0, planned: 1, completed: 2 } as const;
 
 export function PropertiesPanel({
 	task,
 	status,
 	taskType,
-	assignee,
 	reporter,
 	statuses = [],
 	taskTypes = [],
@@ -101,14 +119,27 @@ export function PropertiesPanel({
 	canEdit = true,
 	taskRole = "normal",
 	epicTasks = [],
+	epicsPagination,
 	parentTask,
 	onUpdate,
 	onNavigateToTask,
 }: PropertiesPanelProps) {
 	const { t } = useTranslation("projects");
+	const jevEnabled = useJevEnabled(projectId);
+	const isAutoAssign = isAutoAssignPending(task);
 	const [localCustomFields, setLocalCustomFields] =
 		useState<CustomFieldDef[]>(initialCustomFields);
 	const [addFieldOpen, setAddFieldOpen] = useState(false);
+	const [epicMenuOpen, setEpicMenuOpen] = useState(false);
+	const epicTypeId = findEpicType(taskTypes)?.id;
+	const {
+		search: epicSearch,
+		setSearch: setEpicSearch,
+		isSearching: isEpicSearching,
+		results: epicSearchResults,
+		isLoading: epicSearchLoading,
+		pagination: epicSearchPagination,
+	} = useEpicSearch(task.project_id, epicTypeId, epicMenuOpen);
 
 	useEffect(() => {
 		setLocalCustomFields(initialCustomFields);
@@ -120,23 +151,36 @@ export function PropertiesPanel({
 		colorDot: s.color ?? undefined,
 	}));
 
+	const selectableSprints = sprints.filter(
+		(s) => s.status !== "completed" || s.id === task.sprint_id,
+	);
 	const sprintOptions: SelectOption[] = [
 		{
 			value: "__backlog__",
 			label: t("taskDetail.properties.productBacklog"),
 			icon: <BookOpen className="size-3 shrink-0 opacity-60" />,
 		},
-		...sprints.map((s) => ({
-			value: s.id,
-			label: s.name,
-			icon: (
-				<KanbanSquare className="size-3 shrink-0 text-muted-foreground/70" />
-			),
-		})),
+		// Completed sprints can't be assigned to, but keep the task's current
+		// sprint so the select still shows its value. Grouped by status (stable
+		// sort keeps the API order within each group).
+		...[...selectableSprints]
+			.sort(
+				(a, b) => SPRINT_GROUP_ORDER[a.status] - SPRINT_GROUP_ORDER[b.status],
+			)
+			.map((s) => ({
+				value: s.id,
+				label: s.name,
+				group: t(`taskDetail.properties.sprintGroup.${s.status}`),
+				icon: (
+					<KanbanSquare className="size-3 shrink-0 text-muted-foreground/70" />
+				),
+				hint:
+					s.status === "planned"
+						? t("taskDetail.properties.sprintNotStarted")
+						: undefined,
+			})),
 	];
 
-	const memberUserOptions: UserOption[] = members.map(toUserOption);
-	const assigneeUserOption = assignee ? toUserOption(assignee) : null;
 	const reporterUserOption = reporter ? toUserOption(reporter) : null;
 
 	return (
@@ -163,16 +207,6 @@ export function PropertiesPanel({
 					canEdit={canEdit}
 				/>
 
-				<FieldRow label={t("taskDetail.properties.trackTime")}>
-					<button
-						type="button"
-						className="inline-flex items-center gap-1.5 text-sm text-muted-foreground/70 hover:text-foreground transition-colors duration-150 font-medium"
-					>
-						<Clock className="size-3.5 opacity-70" />
-						{t("taskDetail.properties.addTime")}
-					</button>
-				</FieldRow>
-
 				{(taskType || (canEdit && taskTypes.length > 0)) && (
 					<FieldRow label={t("taskDetail.properties.type")}>
 						<TaskTypeSelector
@@ -184,25 +218,18 @@ export function PropertiesPanel({
 					</FieldRow>
 				)}
 
-				<FieldRow label={t("taskDetail.properties.relationships")}>
-					<button
-						type="button"
-						className="inline-flex items-center gap-1.5 text-sm text-muted-foreground/70 hover:text-foreground transition-colors duration-150 font-medium"
-					>
-						<Link2 className="size-3.5 opacity-70" />
-						<FieldValue empty />
-					</button>
+				<FieldRow label={t("taskDetail.properties.assignees")}>
+					<AssigneePicker
+						members={members}
+						assigneeIds={task.assignee_ids ?? []}
+						isAutoAssign={isAutoAssign}
+						autoEnabled={jevEnabled}
+						canEdit={canEdit}
+						size="md"
+						showNames
+						onChange={(patch) => onUpdate?.(patch)}
+					/>
 				</FieldRow>
-
-				<PropertyField
-					label={t("taskDetail.properties.assignees")}
-					mode="user"
-					userValue={assigneeUserOption}
-					users={memberUserOptions}
-					onUserChange={(v) => onUpdate?.({ assignee_id: v })}
-					canEdit={canEdit && members.length > 0}
-					showUnassigned
-				/>
 
 				<FieldRow label={t("taskDetail.properties.importance")}>
 					{canEdit ? (
@@ -327,25 +354,42 @@ export function PropertiesPanel({
 								v === "__backlog__" ? null : typeof v === "string" ? v : null,
 						})
 					}
-					canEdit={canEdit && sprints.length > 0}
-					hidden={!task.sprint_id && !(canEdit && sprints.length > 0)}
+					canEdit={canEdit && selectableSprints.length > 0}
+					hidden={!task.sprint_id && !(canEdit && selectableSprints.length > 0)}
 				/>
 
 				{/* Epic field – normal tasks only */}
 				{taskRole === "normal" &&
 					(epicTasks.length > 0 || task.parent_task_id) &&
 					(() => {
+						// epicTasks is paginated 20-per-page, so a task's own epic may
+						// not be loaded into it yet — fall back to parentTask (fetched
+						// directly for this task regardless of pagination) when it's
+						// actually Epic-typed, so the field doesn't render as unset.
 						const epic = task.parent_task_id
-							? epicTasks.find((e) => e.id === task.parent_task_id)
+							? (epicTasks.find((e) => e.id === task.parent_task_id) ??
+								(parentTask?.id === task.parent_task_id &&
+								parentTask.task_type_id === epicTypeId
+									? parentTask
+									: undefined))
 							: undefined;
 						const otherEpics = epicTasks.filter(
 							(e) => e.id !== task.parent_task_id,
 						);
+						const displayedEpics = isEpicSearching
+							? epicSearchResults.filter((e) => e.id !== task.parent_task_id)
+							: otherEpics;
+						const activeEpicsPagination = isEpicSearching
+							? epicSearchPagination
+							: epicsPagination;
 						const hasActions =
 							(epic && onNavigateToTask) || (!!task.parent_task_id && canEdit);
 						return (
 							<FieldRow label={t("taskDetail.properties.epic")}>
-								<DropdownMenu>
+								<DropdownMenu
+									open={epicMenuOpen}
+									onOpenChange={setEpicMenuOpen}
+								>
 									<DropdownMenuTrigger className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-sm font-medium hover:bg-muted/50 transition-colors duration-150 cursor-pointer -ml-2 max-w-52 truncate">
 										{epic ? (
 											<>
@@ -378,28 +422,75 @@ export function PropertiesPanel({
 												{t("taskDetail.properties.removeEpic")}
 											</DropdownMenuItem>
 										)}
-										{hasActions && otherEpics.length > 0 && (
-											<DropdownMenuSeparator />
-										)}
-										{otherEpics.map((e) => (
-											<DropdownMenuItem
-												key={e.id}
-												onClick={() => onUpdate?.({ parent_task_id: e.id })}
-											>
-												<Layers className="size-3.5 mr-2 shrink-0 text-violet-500/80" />
-												<span className="truncate">{e.title}</span>
-											</DropdownMenuItem>
-										))}
+										{hasActions && <DropdownMenuSeparator />}
+										<div className="px-1 pb-1">
+											<div className="relative">
+												<Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground/50" />
+												<input
+													type="text"
+													value={epicSearch}
+													onChange={(e) => setEpicSearch(e.target.value)}
+													onKeyDown={(e) => {
+														// Let Escape still close the menu; swallow everything
+														// else so typing doesn't trigger the menu's own arrow-key
+														// navigation / type-ahead item selection.
+														if (e.key !== "Escape") e.stopPropagation();
+													}}
+													placeholder={t("epicPicker.searchPlaceholder")}
+													className="w-full rounded-lg border border-border/30 bg-muted/25 py-1.5 pr-2 pl-8 text-sm placeholder:text-muted-foreground/50 transition-all duration-150 focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/20"
+												/>
+											</div>
+										</div>
+										<div
+											className="max-h-56 overflow-y-auto"
+											onScroll={createEpicScrollHandler(activeEpicsPagination)}
+										>
+											{isEpicSearching && epicSearchLoading ? (
+												<div className="flex items-center justify-center py-4">
+													<Loader2 className="size-4 animate-spin text-muted-foreground/50" />
+												</div>
+											) : (
+												<>
+													{displayedEpics.map((e) => (
+														<DropdownMenuItem
+															key={e.id}
+															onClick={() =>
+																onUpdate?.({ parent_task_id: e.id })
+															}
+														>
+															<Layers className="size-3.5 mr-2 shrink-0 text-violet-500/80" />
+															<span className="truncate">{e.title}</span>
+														</DropdownMenuItem>
+													))}
+													{displayedEpics.length === 0 && (
+														<p className="px-2 py-4 text-center text-xs text-muted-foreground/50">
+															{isEpicSearching
+																? t("epicPicker.noEpicsFound")
+																: t("epicPicker.noEpicsYet")}
+														</p>
+													)}
+												</>
+											)}
+											{activeEpicsPagination?.isLoadingMore && (
+												<div className="flex items-center justify-center gap-1.5 py-2 text-xs text-muted-foreground/50">
+													<Loader2 className="size-3 animate-spin" />
+													{t("epicPicker.loadingMore")}
+												</div>
+											)}
+										</div>
 									</DropdownMenuContent>
 								</DropdownMenu>
 							</FieldRow>
 						);
 					})()}
-				{/* Parent field – shown when the parent task is not an epic (story/task/bug nesting) */}
+				{/* Parent field – shown when the parent task is not an epic (story/task/bug nesting).
+				 * Checked against parentTask's own type rather than epicTasks membership —
+				 * epicTasks is paginated, so an actual epic parent can be legitimately
+				 * absent from it without meaning "this parent isn't an epic". */}
 				{taskRole === "normal" &&
 					task.parent_task_id &&
 					parentTask &&
-					!epicTasks.find((e) => e.id === task.parent_task_id) && (
+					parentTask.task_type_id !== epicTypeId && (
 						<FieldRow label={t("taskDetail.properties.parent")}>
 							{(() => {
 								const parentType = taskTypes.find(

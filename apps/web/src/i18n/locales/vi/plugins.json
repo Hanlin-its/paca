@@ -17,7 +17,17 @@
 				"backend": "Backend",
 				"frontend": "Frontend",
 				"migrations": "Migrations",
-				"mcp": "MCP"
+				"mcp": "MCP",
+				"skills": "Kỹ năng"
+			},
+			"errors": {
+				"incompatibleHostVersion": "Plugin này yêu cầu Paca {{required}} trở lên. Bạn đang chạy phiên bản {{current}}.",
+				"incompatibleHostVersionGeneric": "Plugin này yêu cầu phiên bản Paca mới hơn phiên bản bạn đang chạy.",
+				"alreadyUpToDate": "Plugin này đã là phiên bản mới nhất.",
+				"downgradeNotAllowed": "Không thể cài đặt phiên bản cũ hơn phiên bản đã cài đặt.",
+				"notFound": "Plugin này không còn khả dụng trong chợ plugin.",
+				"nameTaken": "Đã có plugin với tên này được cài đặt.",
+				"generic": "Đã xảy ra lỗi. Vui lòng thử lại."
 			}
 		}
 	},
@@ -32,7 +42,10 @@
 			"sidebarProject": "Thanh bên — Dự án",
 			"taskDetail": "Chi tiết nhiệm vụ",
 			"projectSettingsTab": "Tab cài đặt dự án",
-			"customView": "Chế độ xem tùy chỉnh"
+			"customView": "Chế độ xem tùy chỉnh",
+			"projectPage": "Trang dự án",
+			"adminPage": "Trang quản trị",
+			"userSettingsTab": "Tab cài đặt người dùng"
 		}
 	}
 }

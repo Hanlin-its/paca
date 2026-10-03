@@ -113,6 +113,19 @@ export function TaskActivityPane({
 				}
 				case "task.link.removed":
 					return t("taskDetail.activity.removedTaskLink");
+				case "task.auto_assign.skipped": {
+					const cc = c as Record<string, unknown>;
+					const confidence = cc.confidence as number | null | undefined;
+					if (
+						cc.reason === "low_confidence" &&
+						typeof confidence === "number"
+					) {
+						return t("taskDetail.activity.autoAssignSkippedLowConfidence", {
+							confidence: Math.round(confidence * 100),
+						});
+					}
+					return t("taskDetail.activity.autoAssignSkipped");
+				}
 				case "agent.session.started": {
 					const convId = (c as Record<string, unknown>).conversation_id as
 						| string
@@ -193,8 +206,9 @@ export function TaskActivityPane({
 						if (typeof oldVal === "number") payload.importance = oldVal;
 						break;
 					case "assignee":
-						payload.assignee_id =
-							typeof oldVal === "string" && oldVal ? oldVal : null;
+						payload.assignee_ids = Array.isArray(oldVal)
+							? oldVal.filter((v): v is string => typeof v === "string")
+							: [];
 						break;
 					case "reporter":
 						payload.reporter_id =

@@ -1,10 +1,25 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../../utils/index.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../utils/index.js")>();
+	return {
+		...actual,
+		markdownToBlocknote: vi.fn((md: string) => [
+			{ type: "paragraph", content: [{ type: "text", text: md }] },
+		]),
+	};
+});
+
 import { PacaAPIDocClient } from "../../api/doc-client.js";
 
 const CONFIG = { baseURL: "https://api.example.com", apiKey: "key123" };
 
 function okEnvelope(data: any) {
-	return { ok: true, json: async () => ({ success: true, data }), text: async () => "" };
+	return {
+		ok: true,
+		json: async () => ({ success: true, data }),
+		text: async () => "",
+	};
 }
 
 function rawOk(data: any) {
@@ -12,7 +27,24 @@ function rawOk(data: any) {
 }
 
 function errorResponse(status = 400, body = "Bad Request") {
-	return { ok: false, status, statusText: body, text: async () => body, json: async () => ({}) };
+	return {
+		ok: false,
+		status,
+		statusText: body,
+		text: async () => body,
+		json: async () => ({}),
+	};
+}
+
+function noContentResponse() {
+	return {
+		ok: true,
+		status: 204,
+		text: async () => "",
+		json: async () => {
+			throw new SyntaxError("Unexpected end of JSON input");
+		},
+	};
 }
 
 describe("PacaAPIDocClient", () => {
@@ -25,6 +57,19 @@ describe("PacaAPIDocClient", () => {
 
 	afterEach(() => {
 		vi.unstubAllGlobals();
+	});
+
+	it("searchDocuments hits /docs/search with an encoded query and limit", async () => {
+		fetchMock.mockResolvedValue(okEnvelope({ items: [{ id: "d1" }] }));
+		const hits = await new PacaAPIDocClient(CONFIG).searchDocuments(
+			"p1",
+			"a&b c",
+			5,
+		);
+		expect(fetchMock.mock.calls[0][0]).toBe(
+			"https://api.example.com/api/v1/projects/p1/docs/search?q=a%26b%20c&limit=5",
+		);
+		expect(hits).toEqual([{ id: "d1" }]);
 	});
 
 	// ---------------------------------------------------------------------------
@@ -41,6 +86,12 @@ describe("PacaAPIDocClient", () => {
 		fetchMock.mockResolvedValue(errorResponse(503, "Service Unavailable"));
 		const client = new PacaAPIDocClient(CONFIG);
 		await expect(client.listFolders("p1")).rejects.toThrow("503");
+	});
+
+	it("resolves on 204 No Content without parsing JSON", async () => {
+		fetchMock.mockResolvedValue(noContentResponse());
+		const client = new PacaAPIDocClient(CONFIG);
+		await expect(client.deleteFolder("p1", "f1")).resolves.toBeUndefined();
 	});
 
 	it("returns raw JSON when not a SuccessEnvelope", async () => {
@@ -173,24 +224,30 @@ describe("PacaAPIDocClient", () => {
 	// ---------------------------------------------------------------------------
 
 	describe("addDocumentComment", () => {
-		it("calls POST /api/v1/projects/:id/docs/:docId/comments with text field", async () => {
+		it("calls POST /api/v1/projects/:id/docs/:docId/comments with content converted to blocknote blocks", async () => {
 			const client = new PacaAPIDocClient(CONFIG);
 			fetchMock.mockResolvedValue(okEnvelope({ id: "c1" }));
 			await client.addDocumentComment("p1", "doc1", "Hello world");
 			expect(fetchMock.mock.calls[0][0]).toContain("/docs/doc1/comments");
 			expect(fetchMock.mock.calls[0][1].method).toBe("POST");
 			const body = JSON.parse(fetchMock.mock.calls[0][1].body);
-			expect(body.text).toBe("Hello world");
+			expect(body.content).toEqual([
+				{ type: "paragraph", content: [{ type: "text", text: "Hello world" }] },
+			]);
 		});
 	});
 
 	describe("updateDocumentComment", () => {
-		it("calls PATCH /api/v1/projects/:id/docs/:docId/comments/:commentId", async () => {
+		it("calls PATCH /api/v1/projects/:id/docs/:docId/comments/:commentId with content converted to blocknote blocks", async () => {
 			const client = new PacaAPIDocClient(CONFIG);
 			fetchMock.mockResolvedValue(okEnvelope({ id: "c1" }));
 			await client.updateDocumentComment("p1", "doc1", "c1", "Updated");
 			expect(fetchMock.mock.calls[0][0]).toContain("/comments/c1");
 			expect(fetchMock.mock.calls[0][1].method).toBe("PATCH");
+			const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+			expect(body.content).toEqual([
+				{ type: "paragraph", content: [{ type: "text", text: "Updated" }] },
+			]);
 		});
 	});
 
@@ -211,14 +268,18 @@ describe("PacaAPIDocClient", () => {
 	describe("getDocFileDownloadURL", () => {
 		it("returns .url from response", async () => {
 			const client = new PacaAPIDocClient(CONFIG);
-			fetchMock.mockResolvedValue(okEnvelope({ url: "https://cdn.example.com/doc.pdf" }));
+			fetchMock.mockResolvedValue(
+				okEnvelope({ url: "https://cdn.example.com/doc.pdf" }),
+			);
 			const result = await client.getDocFileDownloadURL("p1", "doc1", "file1");
 			expect(result).toBe("https://cdn.example.com/doc.pdf");
 		});
 
 		it("returns .downloadUrl as fallback", async () => {
 			const client = new PacaAPIDocClient(CONFIG);
-			fetchMock.mockResolvedValue(okEnvelope({ downloadUrl: "https://cdn.example.com/doc2.pdf" }));
+			fetchMock.mockResolvedValue(
+				okEnvelope({ downloadUrl: "https://cdn.example.com/doc2.pdf" }),
+			);
 			const result = await client.getDocFileDownloadURL("p1", "doc1", "file1");
 			expect(result).toBe("https://cdn.example.com/doc2.pdf");
 		});

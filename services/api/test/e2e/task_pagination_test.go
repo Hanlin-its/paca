@@ -1,6 +1,7 @@
 package e2e_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -60,6 +61,7 @@ func itemIDs(data map[string]any) []string {
 // ---------------------------------------------------------------------------
 
 func TestE2EListTaskPagination_CursorBased(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "cursor-pag-user", "cursorpagpass1")
 	client, token := taskMemberLogin(t, env, "cursor-pag-user", "cursorpagpass1")
@@ -167,18 +169,26 @@ func TestE2EListTaskPagination_CursorBased(t *testing.T) {
 		}
 	})
 
-	t.Run("page_size_zero_is_clamped_to_default", func(t *testing.T) {
-		data := listTasksPage(t, env, client, token, projID, url.Values{"page_size": {"0"}})
-		if ps, _ := data["page_size"].(float64); ps != 20 {
-			t.Errorf("expected page_size=20 when 0 requested (out-of-range clamped), got %v", ps)
-		}
+	t.Run("page_size_zero_is_rejected", func(t *testing.T) {
+		q := url.Values{"page_size": {"0"}}
+		reqURL := fmt.Sprintf("%s/api/v1/projects/%s/tasks?%s", env.base, projID, q.Encode())
+		req := mustRequest(env.ctx, t, http.MethodGet, reqURL, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp := mustDo(t, client, req)
+		defer func() { _ = resp.Body.Close() }()
+		assertStatus(t, resp, http.StatusBadRequest)
+		assertErrorCode(t, resp, "BAD_REQUEST")
 	})
 
-	t.Run("page_size_over_max_is_clamped_to_default", func(t *testing.T) {
-		data := listTasksPage(t, env, client, token, projID, url.Values{"page_size": {"201"}})
-		if ps, _ := data["page_size"].(float64); ps != 20 {
-			t.Errorf("expected page_size=20 when 201 requested (over max, clamped), got %v", ps)
-		}
+	t.Run("page_size_over_max_is_rejected", func(t *testing.T) {
+		q := url.Values{"page_size": {"201"}}
+		reqURL := fmt.Sprintf("%s/api/v1/projects/%s/tasks?%s", env.base, projID, q.Encode())
+		req := mustRequest(env.ctx, t, http.MethodGet, reqURL, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp := mustDo(t, client, req)
+		defer func() { _ = resp.Body.Close() }()
+		assertStatus(t, resp, http.StatusBadRequest)
+		assertErrorCode(t, resp, "BAD_REQUEST")
 	})
 
 	t.Run("invalid_cursor_returns_error", func(t *testing.T) {
@@ -201,6 +211,7 @@ func TestE2EListTaskPagination_CursorBased(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestE2EListTaskPagination_CursorWithSprintFilter(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "cursor-sprint-filter-user", "cursorsprintfilterpass1")
 	client, token := taskMemberLogin(t, env, "cursor-sprint-filter-user", "cursorsprintfilterpass1")
@@ -295,6 +306,7 @@ func TestE2EListTaskPagination_CursorWithSprintFilter(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestE2EListTaskPagination_CursorWithBacklogFilter(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "cursor-backlog-filter-user", "cursorbacklogfilterpass1")
 	client, token := taskMemberLogin(t, env, "cursor-backlog-filter-user", "cursorbacklogfilterpass1")
@@ -385,6 +397,7 @@ func TestE2EListTaskPagination_CursorWithBacklogFilter(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestE2EListTaskTotalCount_NoFilter(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "total-count-basic-user", "totalcountpass1")
 	client, token := taskMemberLogin(t, env, "total-count-basic-user", "totalcountpass1")
@@ -408,6 +421,7 @@ func TestE2EListTaskTotalCount_NoFilter(t *testing.T) {
 }
 
 func TestE2EListTaskTotalCount_SprintFilter(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "total-count-sprint-user", "totalcountpass2")
 	client, token := taskMemberLogin(t, env, "total-count-sprint-user", "totalcountpass2")
@@ -449,6 +463,7 @@ func TestE2EListTaskTotalCount_SprintFilter(t *testing.T) {
 }
 
 func TestE2EListTaskTotalCount_BacklogFilter(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "total-count-backlog-user", "totalcountpass3")
 	client, token := taskMemberLogin(t, env, "total-count-backlog-user", "totalcountpass3")
@@ -490,6 +505,7 @@ func TestE2EListTaskTotalCount_BacklogFilter(t *testing.T) {
 }
 
 func TestE2EListTaskTotalCount_ExcludesDeleted(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "total-count-delete-user", "totalcountpass4")
 	client, token := taskMemberLogin(t, env, "total-count-delete-user", "totalcountpass4")
@@ -531,6 +547,7 @@ func TestE2EListTaskTotalCount_ExcludesDeleted(t *testing.T) {
 }
 
 func TestE2EListTaskTotalCount_CursorDoesNotAffectCount(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "total-count-cursor-user", "totalcountpass5")
 	client, token := taskMemberLogin(t, env, "total-count-cursor-user", "totalcountpass5")
@@ -601,6 +618,7 @@ func createTaskWithCustomFieldViaAPI(t *testing.T, env *e2eEnv, client *http.Cli
 // ---------------------------------------------------------------------------
 
 func TestE2EFieldSum_CustomField_BasicSum(t *testing.T) {
+	t.Parallel()
 	// Verifies that sum_field=<custom_key> returns the correct aggregate sum
 	// across all matching tasks in the project.
 	env := newE2EEnv(t)
@@ -632,6 +650,7 @@ func TestE2EFieldSum_CustomField_BasicSum(t *testing.T) {
 }
 
 func TestE2EFieldSum_CustomField_FilterBySprint(t *testing.T) {
+	t.Parallel()
 	// Verifies that sum_field=<custom_key> respects sprint_id filter.
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "sum-field-sprint-user", "sumfieldpass2")
@@ -681,6 +700,7 @@ func TestE2EFieldSum_CustomField_FilterBySprint(t *testing.T) {
 }
 
 func TestE2EFieldSum_CustomField_BacklogOnly(t *testing.T) {
+	t.Parallel()
 	// Verifies that sum_field=<custom_key> respects sprint_id=null (backlog) filter.
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "sum-field-backlog-user", "sumfieldpass3")
@@ -729,6 +749,7 @@ func TestE2EFieldSum_CustomField_BacklogOnly(t *testing.T) {
 }
 
 func TestE2EFieldSum_CustomField_IgnoresCursor(t *testing.T) {
+	t.Parallel()
 	// Verifies that sum_field reflects all matching tasks regardless of cursor pagination.
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "sum-field-cursor-user", "sumfieldpass4")
@@ -780,6 +801,7 @@ func TestE2EFieldSum_CustomField_IgnoresCursor(t *testing.T) {
 }
 
 func TestE2EFieldSum_CustomField_AbsentWhenNotRequested(t *testing.T) {
+	t.Parallel()
 	// Verifies that field_sum is null when sum_field query param is not provided.
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "sum-field-absent-user", "sumfieldpass5")
@@ -803,6 +825,7 @@ func TestE2EFieldSum_CustomField_AbsentWhenNotRequested(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestE2EListTaskPagination_ViewPositionSort(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "view-pos-sort-user", "viewpossort1")
 	client, token := taskMemberLogin(t, env, "view-pos-sort-user", "viewpossort1")
@@ -991,4 +1014,109 @@ func TestE2EListTaskPagination_ViewPositionSort(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestE2ECustomFieldFilters_FieldKeyReuseAfterDeleteDoesNotCrash is a
+// regression test: deleting a custom field definition used to leave its
+// stray values behind under that key in every task's custom_fields JSONB
+// column. If a new field definition was then created reusing the same
+// field_key but an incompatible type (e.g. the original field was "select"
+// and the new one is "date"), filtering by the new field crashed the whole
+// query with a Postgres cast error (SQLSTATE 22007: invalid input syntax for
+// type date) on the leftover value, instead of just excluding that task.
+func TestE2ECustomFieldFilters_FieldKeyReuseAfterDeleteDoesNotCrash(t *testing.T) {
+	t.Parallel()
+	env := newE2EEnv(t)
+	seedTaskMemberUser(t, env, "cf-reuse-user", "cfreusepass1")
+	client, token := taskMemberLogin(t, env, "cf-reuse-user", "cfreusepass1")
+	projID := createProjectForTasksViaAPI(t, env, client, token)
+
+	selectFieldID := createCustomFieldViaAPI(t, env, client, token, projID, map[string]any{
+		"field_key":    "custom_1",
+		"display_name": "Custom 1",
+		"field_type":   "select",
+		"options":      customFieldOptions("Test 3", "Other"),
+	})
+	createTaskWithCustomFieldViaAPI(t, env, client, token, projID, "Stale select value",
+		map[string]any{"custom_1": "Test 3"})
+
+	delReq := mustRequest(env.ctx, t, http.MethodDelete,
+		fmt.Sprintf("%s/api/v1/projects/%s/custom-fields/%s", env.base, projID, selectFieldID), nil)
+	delReq.Header.Set("Authorization", "Bearer "+token)
+	delResp := mustDo(t, client, delReq)
+	_ = delResp.Body.Close()
+	assertStatus(t, delResp, http.StatusOK)
+
+	// Recreate a field with the same field_key but an incompatible type.
+	createCustomFieldViaAPI(t, env, client, token, projID, map[string]any{
+		"field_key":    "custom_1",
+		"display_name": "Custom 1 (date)",
+		"field_type":   "date",
+	})
+	createTaskWithCustomFieldViaAPI(t, env, client, token, projID, "Valid date value",
+		map[string]any{"custom_1": "2024-03-15"})
+
+	filters, err := json.Marshal(map[string]any{
+		"custom_1": map[string]any{"after": "2024-01-01", "before": "2024-12-31"},
+	})
+	if err != nil {
+		t.Fatalf("marshal filters: %v", err)
+	}
+
+	data := listTasksPage(t, env, client, token, projID, url.Values{
+		"custom_field_filters": {string(filters)},
+	})
+	ids := itemIDs(data)
+	if len(ids) != 1 {
+		t.Fatalf("expected exactly 1 matching task (the valid date; the stale select value must be excluded, not crash the query), got %d: %v", len(ids), ids)
+	}
+}
+
+// TestE2ECustomFieldFilters_InvalidStoredValueDoesNotCrash is a regression
+// test for the more general case underlying the same bug class: custom_fields
+// has no write-time type validation (task creation/update accepts any JSON
+// value regardless of the field's declared type), so a task can end up with
+// a value that doesn't match its field's type through any write path, not
+// just field deletion + key reuse. Filtering or sorting by that field must
+// exclude the invalid row instead of crashing the whole query.
+func TestE2ECustomFieldFilters_InvalidStoredValueDoesNotCrash(t *testing.T) {
+	t.Parallel()
+	env := newE2EEnv(t)
+	seedTaskMemberUser(t, env, "cf-invalid-user", "cfinvalidpass1")
+	client, token := taskMemberLogin(t, env, "cf-invalid-user", "cfinvalidpass1")
+	projID := createProjectForTasksViaAPI(t, env, client, token)
+
+	createCustomFieldViaAPI(t, env, client, token, projID, map[string]any{
+		"field_key":    "due",
+		"display_name": "Due",
+		"field_type":   "date",
+	})
+	// No write-time type validation exists today, so this succeeds despite
+	// "not-a-date" being an invalid value for a "date" field.
+	createTaskWithCustomFieldViaAPI(t, env, client, token, projID, "Bad value",
+		map[string]any{"due": "not-a-date"})
+	createTaskWithCustomFieldViaAPI(t, env, client, token, projID, "Good value",
+		map[string]any{"due": "2024-03-15"})
+
+	filters, err := json.Marshal(map[string]any{
+		"due": map[string]any{"after": "2024-01-01", "before": "2024-12-31"},
+	})
+	if err != nil {
+		t.Fatalf("marshal filters: %v", err)
+	}
+
+	data := listTasksPage(t, env, client, token, projID, url.Values{
+		"custom_field_filters": {string(filters)},
+	})
+	ids := itemIDs(data)
+	if len(ids) != 1 {
+		t.Fatalf("expected exactly 1 matching task (invalid date value must be excluded, not crash the query), got %d: %v", len(ids), ids)
+	}
+
+	// Sorting by the same field must not crash either — it hits the same
+	// unguarded-cast bug class in buildCFOrderBy.
+	sortData := listTasksPage(t, env, client, token, projID, url.Values{"sort_by": {"due"}})
+	if got := len(itemIDs(sortData)); got != 2 {
+		t.Fatalf("expected sort_by=due to return both tasks without crashing, got %d: %v", got, itemIDs(sortData))
+	}
 }

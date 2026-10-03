@@ -150,14 +150,33 @@ type FilterConfig struct {
 	Items map[string]FilterEntry `json:"items,omitempty"`
 }
 
+// CustomFieldFilter is a per-custom-field filter selector stored inside a
+// view's ViewFilters, keyed by the target custom field's FieldKey.  Which
+// members are meaningful depends on the field's type (resolved against the
+// project's CustomFieldDefinition at read time, not stored here):
+//   - select / multi_select / boolean → Selector (matches ANY of the
+//     resolved option values, same recursive semantics as FilterConfig)
+//   - number → Min / Max (inclusive range; either may be nil)
+//   - date → After / Before (inclusive range, "YYYY-MM-DD"; either may be nil)
+//   - text / url → Contains (case-insensitive substring match)
+type CustomFieldFilter struct {
+	Selector *FilterConfig `json:"selector,omitempty"`
+	Min      *float64      `json:"min,omitempty"`
+	Max      *float64      `json:"max,omitempty"`
+	After    *string       `json:"after,omitempty"`
+	Before   *string       `json:"before,omitempty"`
+	Contains *string       `json:"contains,omitempty"`
+}
+
 // ViewFilters holds the saved per-view filter configuration.
 // Each dimension is an optional FilterConfig selector.  A nil dimension means
 // no filter is applied for that dimension (i.e. include everything).
 type ViewFilters struct {
-	TaskTypes *FilterConfig `json:"task_types,omitempty"`
-	Statuses  *FilterConfig `json:"statuses,omitempty"`
-	Assignees *FilterConfig `json:"assignees,omitempty"`
-	Sprints   *FilterConfig `json:"sprints,omitempty"`
+	TaskTypes    *FilterConfig                 `json:"task_types,omitempty"`
+	Statuses     *FilterConfig                 `json:"statuses,omitempty"`
+	Assignees    *FilterConfig                 `json:"assignees,omitempty"`
+	Sprints      *FilterConfig                 `json:"sprints,omitempty"`
+	CustomFields map[string]*CustomFieldFilter `json:"custom_fields,omitempty"`
 }
 
 // ViewConfig holds the display settings for a sprint view.
@@ -201,6 +220,22 @@ type SprintView struct {
 	ViewContext ViewContext
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+
+	// HasPersonalConfig is set in-memory by ViewService.OverlayUserConfigs to
+	// indicate whether Config reflects the caller's personal override rather
+	// than the shared default. It has no database column — repository code
+	// must never populate it — and is false on any SprintView obtained
+	// without going through OverlayUserConfigs.
+	HasPersonalConfig bool
+
+	// SharedConfig is the project-shared default, set alongside
+	// HasPersonalConfig whenever it is true (i.e. whenever Config has been
+	// overwritten with a merged/override value) so callers can still see
+	// what a personalized view falls back to — e.g. a "reset to team
+	// default" UI action. When HasPersonalConfig is false, Config already
+	// IS the shared value, so SharedConfig is left unset; read it via
+	// Config in that case instead.
+	SharedConfig ViewConfig
 }
 
 // ViewTaskPosition records the manual ordering of a task within a specific

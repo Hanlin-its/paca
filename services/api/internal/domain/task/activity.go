@@ -47,6 +47,24 @@ const (
 	// ActivityTypeAgentSessionStarted is recorded when an AI agent begins a
 	// conversation session triggered by a task assignment.
 	ActivityTypeAgentSessionStarted ActivityType = "agent.session.started"
+
+	// --- Automation events -----------------------------------------------------
+
+	// ActivityTypeAutomationApplied is recorded when the automation graph
+	// engine mutates a task via an Action node. Content carries
+	// {automation_name, ...action-specific fields} so the activity feed can
+	// attribute the change to the automation instead of a human actor.
+	ActivityTypeAutomationApplied ActivityType = "automation.applied"
+
+	// --- Auto-assign events -----------------------------------------------------
+
+	// ActivityTypeAutoAssignSkipped is recorded when TaskAutoAssignConsumer
+	// declines to assign a task it was asked to auto-assign — e.g. Jev's
+	// pick fell below assigneeConfidenceThreshold. The task is (and stays)
+	// unassigned; this activity is the only visible trace that auto-assign
+	// even ran, since the alternative is total silence from the user's
+	// point of view. Content carries {reason, ...reason-specific fields}.
+	ActivityTypeAutoAssignSkipped ActivityType = "task.auto_assign.skipped"
 )
 
 // Activity is a single entry in a task's activity log.  It represents either
@@ -57,11 +75,15 @@ type Activity struct {
 	ActorID       *uuid.UUID // nil when the actor account has been deleted
 	ActorName     string     // denormalised full name (populated on read)
 	ActorUsername string     // denormalised username   (populated on read)
-	ActivityType  ActivityType
-	Content       json.RawMessage
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
-	DeletedAt     *time.Time // non-nil for soft-deleted comments
+	// ActorAvatarKey/ActorAvatarThumbKey are the actor's avatar object-storage
+	// keys (populated on read). Both nil when the actor has no avatar.
+	ActorAvatarKey      *string
+	ActorAvatarThumbKey *string
+	ActivityType        ActivityType
+	Content             json.RawMessage
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+	DeletedAt           *time.Time // non-nil for soft-deleted comments
 }
 
 // FieldChange records a single before/after value for task.updated events.
@@ -71,19 +93,45 @@ type FieldChange struct {
 	New   any    `json:"new"`
 }
 
-// ActivityRepository defines persistence for task activities.
-type ActivityRepository interface {
-	// ListActivities returns all non-deleted activity entries for a task
-	// ordered by created_at ascending.
-	ListActivities(ctx context.Context, taskID uuid.UUID) ([]*Activity, error)
-	// FindActivityByID returns a single activity (including soft-deleted).
-	FindActivityByID(ctx context.Context, id uuid.UUID) (*Activity, error)
-	// CreateActivity persists a new activity entry.
-	CreateActivity(ctx context.Context, a *Activity) error
-	// UpdateActivity persists mutable changes to an existing activity.
-	UpdateActivity(ctx context.Context, a *Activity) error
-	// DeleteActivity soft-deletes the activity (sets deleted_at).
-	DeleteActivity(ctx context.Context, id uuid.UUID) error
+// Origin identifies what caused an activity, independently of the actor.
+//
+// It exists because ActorID/ActorAgentID are both nil for every system-driven
+// change, so they cannot distinguish "the automation engine did this" from
+// "Jev autofill did this" — and that distinction is load-bearing: the
+// automation consumer matches triggers off task.updated events, so an event
+// the automation engine itself caused must be distinguishable from one a
+// human caused, or a status_changed automation that sets a status re-triggers
+// itself indefinitely. See OriginAutomation.
+type Origin string
+
+// Origin values. "user" and "agent" describe a human or agent acting through
+// the API; the rest are system paths.
+const (
+	// OriginUser is a human acting through the HTTP API.
+	OriginUser Origin = "user"
+	// OriginAgent is an AI agent acting through the API.
+	OriginAgent Origin = "agent"
+	// OriginAutomation is the automation graph engine applying an action.
+	// The automation consumer skips events carrying this origin — that guard
+	// is what keeps a walk from re-triggering on its own writes, and it means
+	// automations intentionally do not chain into one another.
+	OriginAutomation Origin = "automation"
+	// OriginJev is a Jev-backed flow (task autofill, task auto-assign).
+	OriginJev Origin = "jev"
+	// OriginAnnotation is work started from a page annotation.
+	OriginAnnotation Origin = "annotation"
+	// OriginSystem is any other system path, and the default when Origin is
+	// left unset.
+	OriginSystem Origin = "system"
+)
+
+// OrSystem returns the origin itself, or OriginSystem when unset, so callers
+// never have to special-case the empty string.
+func (o Origin) OrSystem() Origin {
+	if o == "" {
+		return OriginSystem
+	}
+	return o
 }
 
 // ActivityService defines use-cases for task activity and comments.
@@ -92,13 +140,20 @@ type ActivityRepository interface {
 type ActivityService interface {
 	ActivityRecorder
 	// ListActivities returns all activities (system + comments) for a task.
-	ListActivities(ctx context.Context, taskID uuid.UUID) ([]*Activity, error)
+	// projectID is used to verify the task belongs to the expected project.
+	ListActivities(ctx context.Context, projectID, taskID uuid.UUID) ([]*Activity, error)
 	// AddComment creates a new user comment on the task.
+	// in.ProjectID is used to verify the task belongs to the expected
+	// project, in addition to resolving the actor to a project member.
 	AddComment(ctx context.Context, in AddCommentInput) (*Activity, error)
 	// UpdateComment edits the content of an existing comment.
+	// projectID is used to verify the comment's task belongs to the expected
+	// project, in addition to resolving the actor to a project member.
 	// Returns ErrActivityForbidden when actorID != comment's author.
 	UpdateComment(ctx context.Context, id uuid.UUID, projectID uuid.UUID, actorID uuid.UUID, agentID *uuid.UUID, content json.RawMessage) (*Activity, error)
 	// DeleteComment soft-deletes a comment.
+	// projectID is used to verify the comment's task belongs to the expected
+	// project, in addition to resolving the actor to a project member.
 	// Returns ErrActivityForbidden when actorID != comment's author.
 	DeleteComment(ctx context.Context, id uuid.UUID, projectID uuid.UUID, actorID uuid.UUID, agentID *uuid.UUID) error
 }
@@ -127,4 +182,9 @@ type RecordActivityInput struct {
 	ActorAgentID *uuid.UUID // agent UUID when the actor is an agent (takes priority over ActorID for resolution)
 	ActivityType ActivityType
 	Content      json.RawMessage
+	// Origin identifies what caused this activity. Left unset it is treated
+	// as OriginSystem. It travels as a stream envelope field, is stored in
+	// activities.origin, and drives the automation engine's self-trigger
+	// guard.
+	Origin Origin
 }

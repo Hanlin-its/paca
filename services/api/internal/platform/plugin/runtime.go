@@ -4,23 +4,35 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	plugindom "github.com/Paca-AI/api/internal/domain/plugin"
-	"github.com/Paca-AI/api/internal/events"
 	"github.com/google/uuid"
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
+
+	plugindom "github.com/Paca-AI/api/internal/domain/plugin"
+	"github.com/Paca-AI/api/internal/events"
+	"github.com/Paca-AI/api/internal/platform/authz"
+	"github.com/Paca-AI/api/internal/platform/cache"
+	"github.com/Paca-AI/api/internal/platform/netguard"
 )
+
+// ErrPayloadTooLarge is wrapped into the error callExport returns when a
+// payload exceeds MaxRequestBodyBytes, so HTTP transport code can map it to
+// a proper "payload too large" response instead of a generic internal error.
+var ErrPayloadTooLarge = errors.New("plugin: payload exceeds limit")
 
 // ResourceLimits controls per-plugin execution constraints.
 type ResourceLimits struct {
@@ -46,8 +58,8 @@ type ResourceLimits struct {
 func DefaultResourceLimits() ResourceLimits {
 	return ResourceLimits{
 		MaxCallDuration:     5 * time.Second,
-		MaxMemoryPages:      1024,             // 64 MiB
-		MaxRequestBodyBytes: 10 * 1024 * 1024, // 10 MiB
+		MaxMemoryPages:      1024,            // 64 MiB
+		MaxRequestBodyBytes: 1 * 1024 * 1024, // 1 MiB — keep in sync with plugin-sdk-go's mallocBuffer size
 	}
 }
 
@@ -68,12 +80,59 @@ type HostServices struct {
 	// AllowedOutboundDomains is the allowlist for paca.http_request outbound
 	// calls.  When empty, all outbound HTTP is blocked.
 	AllowedOutboundDomains []string
+	// Authorizer resolves effective permissions (built-in and plugin-declared
+	// custom permissions alike, since both are stored in the same permission
+	// map) for the paca.permission_check host function. May be nil, in which
+	// case permission_check always returns false.
+	Authorizer *authz.Authorizer
+	// Cache backs the paca.cache_get/cache_set/cache_delete host functions
+	// with the host's shared Valkey/Redis instance. May be nil, in which case
+	// cache_get always misses and cache_set/cache_delete are no-ops — a
+	// plugin's Cache is meant for recomputable data, so a missing cache
+	// backend degrades to "always recompute" rather than failing calls.
+	Cache *cache.Store
+	// SettingsReader backs the paca.settings_get host function with the
+	// workspace's public branding (the same data GET /branding exposes). May
+	// be nil, in which case settings_get always returns an error.
+	SettingsReader SettingsReader
+	// PasswordSetTokenIssuer backs the paca.password_set_token_issue host
+	// function. May be nil, in which case password_set_token_issue always
+	// returns an error.
+	PasswordSetTokenIssuer PasswordSetTokenIssuer
+}
+
+// SettingsReader resolves the workspace's current public branding for the
+// paca.settings_get host function.
+type SettingsReader interface {
+	GetBranding(ctx context.Context) (BrandingSnapshot, error)
+}
+
+// SettingsReaderFunc adapts a plain function to SettingsReader, so bootstrap
+// wiring can close over its existing settings/avatar services without a
+// dedicated adapter type or extra imports.
+type SettingsReaderFunc func(ctx context.Context) (BrandingSnapshot, error)
+
+// GetBranding calls f.
+func (f SettingsReaderFunc) GetBranding(ctx context.Context) (BrandingSnapshot, error) {
+	return f(ctx)
+}
+
+// BrandingSnapshot is the JSON shape returned to a plugin calling
+// paca.settings_get — deliberately the same field set as the public
+// GET /branding response. Empty fields mean the admin hasn't customized that
+// value; callers should fall back to their own defaults.
+type BrandingSnapshot struct {
+	LogoURL           string `json:"logo_url"`
+	BrandName         string `json:"brand_name"`
+	PrimaryColorLight string `json:"primary_color_light"`
+	PrimaryColorDark  string `json:"primary_color_dark"`
 }
 
 // EventPublisher abstracts the messaging.Publisher to avoid a circular import.
 type EventPublisher interface {
 	Publish(ctx context.Context, channel string, payload any) error
 	Append(ctx context.Context, stream, eventType string, payload any) error
+	AppendFlat(ctx context.Context, stream string, fields map[string]any) error
 }
 
 // pluginInstance wraps a compiled wazero module for a single installed plugin.
@@ -93,6 +152,28 @@ type Runtime struct {
 
 	mu      sync.RWMutex
 	plugins map[string]*pluginInstance // keyed by plugin.Name
+
+	// automationIndex maps a plugin-contributed automation node type
+	// (already reverse-DNS namespaced, so globally unique) to the plugin
+	// name that owns it, populated at Load time and pruned at Unload time.
+	// Consulted by the automation engine's dispatch switches (action
+	// executor, condition evaluator, trigger-topic matcher) as a fallback
+	// after their built-in cases.
+	automationIndex map[string]automationIndexEntry
+}
+
+type automationKind int
+
+const (
+	automationKindTrigger automationKind = iota
+	automationKindCondition
+	automationKindAction
+)
+
+type automationIndexEntry struct {
+	pluginName string
+	kind       automationKind
+	manifest   plugindom.AutomationNodeManifest
 }
 
 // Keep fetch response cap aligned with existing plugin artifact per-file limit.
@@ -125,11 +206,12 @@ var disallowedFetchHeaders = map[string]struct{}{
 // NewRuntime creates a Runtime wired to the given store and host services.
 func NewRuntime(store *Store, services HostServices, limits ResourceLimits, log *slog.Logger) *Runtime {
 	return &Runtime{
-		store:    store,
-		limits:   limits,
-		services: services,
-		log:      log,
-		plugins:  make(map[string]*pluginInstance),
+		store:           store,
+		limits:          limits,
+		services:        services,
+		log:             log,
+		plugins:         make(map[string]*pluginInstance),
+		automationIndex: make(map[string]automationIndexEntry),
 	}
 }
 
@@ -138,6 +220,33 @@ func NewRuntime(store *Store, services HostServices, limits ResourceLimits, log 
 // plugin's WASM memory.  0 means "no limit".
 func (r *Runtime) MaxRequestBodyBytes() int64 {
 	return r.limits.MaxRequestBodyBytes
+}
+
+// MaxHTTPBodyBytes returns the largest raw HTTP request body that is
+// guaranteed to still fit under MaxRequestBodyBytes once base64-encoded and
+// wrapped in the JSON envelope passed to a plugin's HandleRequest export.
+// knownOverheadBytes is the exact marshaled size of that envelope with an
+// empty body (method, path, query, headers, ids, and the JSON field syntax
+// itself) for this specific request — callers must measure it per-request
+// rather than guessing, since headers/query/path size varies a lot in
+// practice. Base64 inflates the body by ~4/3, so the result is strictly
+// smaller than MaxRequestBodyBytes-knownOverheadBytes.
+//
+// Returns 0 when the configured limit is disabled (<=0) — the only case
+// where 0 means "no limit". Returns -1 when knownOverheadBytes alone already
+// consumes the whole limit, meaning no body — not even an empty one — can
+// fit; callers must reject the request outright rather than treating -1 as
+// "no limit".
+func (r *Runtime) MaxHTTPBodyBytes(knownOverheadBytes int64) int64 {
+	max := r.limits.MaxRequestBodyBytes
+	if max <= 0 {
+		return 0
+	}
+	remaining := max - knownOverheadBytes
+	if remaining <= 0 {
+		return -1
+	}
+	return remaining * 3 / 4
 }
 
 // LoadAll instantiates wazero modules for every enabled plugin in the list.
@@ -157,7 +266,16 @@ func (r *Runtime) LoadAll(ctx context.Context, plugins []*plugindom.Plugin) erro
 
 // Load compiles and instantiates a single plugin module.
 // If a module with the same name is already loaded it is unloaded first.
+//
+// A plugin whose manifest has no backend section (frontend-only, MCP-only,
+// skills-only, ...) has no WASM module to run, so there is nothing to
+// instantiate: any previously loaded instance is dropped and Load succeeds.
 func (r *Runtime) Load(ctx context.Context, p plugindom.Plugin) error {
+	if p.Manifest.Backend == nil {
+		r.Unload(ctx, p.Name)
+		r.log.Info("plugin has no backend; nothing to load", "name", p.Name, "version", p.Version)
+		return nil
+	}
 	wasmBytes, err := r.store.LoadWASM(ctx, p.Name)
 	if err != nil {
 		return fmt.Errorf("runtime load %q: %w", p.Name, err)
@@ -188,8 +306,16 @@ func (r *Runtime) Load(ctx context.Context, p plugindom.Plugin) error {
 		_ = wasmRT.Close(ctx)
 		return fmt.Errorf("runtime load %q: compile: %w", p.Name, err)
 	}
-	// For WASI reactor builds, _initialize must be called before exported functions
-	mod, err := wasmRT.InstantiateModule(ctx, compiled, wazero.NewModuleConfig().WithName(p.Name).WithStartFunctions("_initialize"))
+	// For WASI reactor builds, _initialize must be called before exported functions.
+	// WithSysWalltime/WithSysNanotime wire the module's clock to the real OS
+	// clock; without them wazero silently falls back to a fake clock frozen at
+	// 1970-01-01 (nanotime) / 2022-01-01 (walltime), which is what plugins would
+	// otherwise observe from time.Now() — see issue #339.
+	mod, err := wasmRT.InstantiateModule(ctx, compiled, wazero.NewModuleConfig().
+		WithName(p.Name).
+		WithStartFunctions("_initialize").
+		WithSysWalltime().
+		WithSysNanotime())
 	if err != nil {
 		_ = wasmRT.Close(ctx)
 		return fmt.Errorf("runtime load %q: instantiate: %w", p.Name, err)
@@ -219,10 +345,39 @@ func (r *Runtime) Load(ctx context.Context, p plugindom.Plugin) error {
 		r.unloadLocked(ctx, existing)
 	}
 	r.plugins[p.Name] = inst
+	r.registerAutomationNodesLocked(p)
 	r.mu.Unlock()
 
 	r.log.Info("plugin loaded", "name", p.Name, "version", p.Version)
 	return nil
+}
+
+// registerAutomationNodesLocked adds p's manifest.Automation entries to the
+// automation index. Caller must hold r.mu.
+func (r *Runtime) registerAutomationNodesLocked(p plugindom.Plugin) {
+	auto := p.Manifest.Automation
+	if auto == nil {
+		return
+	}
+	for _, t := range auto.Triggers {
+		r.automationIndex[t.Type] = automationIndexEntry{pluginName: p.Name, kind: automationKindTrigger, manifest: t}
+	}
+	for _, c := range auto.Conditions {
+		r.automationIndex[c.Type] = automationIndexEntry{pluginName: p.Name, kind: automationKindCondition, manifest: c}
+	}
+	for _, act := range auto.Actions {
+		r.automationIndex[act.Type] = automationIndexEntry{pluginName: p.Name, kind: automationKindAction, manifest: act}
+	}
+}
+
+// unregisterAutomationNodesLocked removes every automation index entry
+// belonging to pluginName. Caller must hold r.mu.
+func (r *Runtime) unregisterAutomationNodesLocked(pluginName string) {
+	for nodeType, entry := range r.automationIndex {
+		if entry.pluginName == pluginName {
+			delete(r.automationIndex, nodeType)
+		}
+	}
 }
 
 // Unload shuts down and removes the plugin with the given name.
@@ -232,6 +387,7 @@ func (r *Runtime) Unload(ctx context.Context, name string) {
 	if inst, ok := r.plugins[name]; ok {
 		r.unloadLocked(ctx, inst)
 		delete(r.plugins, name)
+		r.unregisterAutomationNodesLocked(name)
 	}
 }
 
@@ -250,6 +406,37 @@ func (r *Runtime) unloadLocked(ctx context.Context, inst *pluginInstance) {
 // HandleRequest dispatches an HTTP request payload to the named plugin's
 // HandleRequest export, returning the serialised response bytes.
 func (r *Runtime) HandleRequest(ctx context.Context, pluginName string, reqPayload []byte) ([]byte, error) {
+	return r.callExport(ctx, pluginName, "HandleRequest", reqPayload)
+}
+
+// EvaluateCondition dispatches a plugin-contributed automation Condition
+// node's evaluation to the named plugin's EvaluateCondition export. payload
+// is the node's config plus enough task context for the plugin to decide;
+// the plugin returns JSON such as {"matched": true}. Uses the exact same
+// calling convention as HandleRequest — same memory protocol, same
+// per-instance mutex, same timeout, same allocator reset — so a
+// plugin-contributed Condition node inherits the same trust/resource
+// boundary as everything else a plugin already does.
+func (r *Runtime) EvaluateCondition(ctx context.Context, pluginName string, payload []byte) ([]byte, error) {
+	return r.callExport(ctx, pluginName, "EvaluateCondition", payload)
+}
+
+// RunAction dispatches a plugin-contributed automation Action node's
+// execution to the named plugin's RunAction export. payload is the node's
+// config plus enough task context (and a stable idempotency key — the
+// automation_run_step id — since a plugin action isn't automatically
+// idempotent the way built-in actions are); the plugin returns JSON such as
+// {"applied": true} or {"applied": false, "error": "..."}. Same calling
+// convention as HandleRequest.
+func (r *Runtime) RunAction(ctx context.Context, pluginName string, payload []byte) ([]byte, error) {
+	return r.callExport(ctx, pluginName, "RunAction", payload)
+}
+
+// callExport is the shared dispatch used by HandleRequest, EvaluateCondition,
+// and RunAction: write payload into the plugin's linear memory, call the
+// named export with (ptr, len), decode its packed (ptr<<32)|len result, read
+// the response back out, and best-effort reset the plugin's bump allocator.
+func (r *Runtime) callExport(ctx context.Context, pluginName, exportName string, payload []byte) ([]byte, error) {
 	r.mu.RLock()
 	inst, ok := r.plugins[pluginName]
 	r.mu.RUnlock()
@@ -257,13 +444,13 @@ func (r *Runtime) HandleRequest(ctx context.Context, pluginName string, reqPaylo
 		return nil, fmt.Errorf("plugin %q not loaded", pluginName)
 	}
 
-	if maxBytes := r.limits.MaxRequestBodyBytes; maxBytes > 0 && int64(len(reqPayload)) > maxBytes {
-		return nil, fmt.Errorf("plugin %q: request payload of %d bytes exceeds limit of %d bytes", pluginName, len(reqPayload), maxBytes)
+	if maxBytes := r.limits.MaxRequestBodyBytes; maxBytes > 0 && int64(len(payload)) > maxBytes {
+		return nil, fmt.Errorf("%w: plugin %q: %s payload of %d bytes exceeds limit of %d bytes", ErrPayloadTooLarge, pluginName, exportName, len(payload), maxBytes)
 	}
 
-	fn := inst.mod.ExportedFunction("HandleRequest")
+	fn := inst.mod.ExportedFunction(exportName)
 	if fn == nil {
-		return nil, fmt.Errorf("plugin %q: HandleRequest not exported", pluginName)
+		return nil, fmt.Errorf("plugin %q: %s not exported", pluginName, exportName)
 	}
 
 	// Hold the per-instance lock for the entire interaction, including the
@@ -292,9 +479,9 @@ func (r *Runtime) HandleRequest(ctx context.Context, pluginName string, reqPaylo
 	}()
 
 	// Write the request payload into the plugin's linear memory.
-	ptrLen, err := writeToMemory(inst.mod, reqPayload)
+	ptrLen, err := writeToMemory(inst.mod, payload)
 	if err != nil {
-		return nil, fmt.Errorf("plugin %q: write request: %w", pluginName, err)
+		return nil, fmt.Errorf("plugin %q: write %s payload: %w", pluginName, exportName, err)
 	}
 
 	callCtx, cancel := context.WithTimeout(ctx, r.limits.MaxCallDuration)
@@ -302,10 +489,10 @@ func (r *Runtime) HandleRequest(ctx context.Context, pluginName string, reqPaylo
 	cancel()
 
 	if callErr != nil {
-		return nil, fmt.Errorf("plugin %q: HandleRequest: %w", pluginName, callErr)
+		return nil, fmt.Errorf("plugin %q: %s: %w", pluginName, exportName, callErr)
 	}
 	if len(results) < 1 {
-		return nil, fmt.Errorf("plugin %q: HandleRequest returned wrong number of values", pluginName)
+		return nil, fmt.Errorf("plugin %q: %s returned wrong number of values", pluginName, exportName)
 	}
 
 	combined := results[0]
@@ -320,7 +507,12 @@ func (r *Runtime) HandleRequest(ctx context.Context, pluginName string, reqPaylo
 }
 
 // EmitEvent serialises the event payload and dispatches it to every loaded
-// plugin that has subscribed to the topic.
+// plugin that has subscribed to the topic. Event payloads only ever carry
+// non-sensitive, denormalized data (IDs, names, etc.) — a value like a
+// password-set token that would let the holder act as another user is never
+// included here; see paca.password_set_token_issue (registerPasswordSetTokenFunction)
+// for how a plugin instead fetches that kind of value on demand, gated by
+// its own manifest permission, only once it has decided it needs it.
 func (r *Runtime) EmitEvent(ctx context.Context, topic string, payload any) {
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -331,6 +523,10 @@ func (r *Runtime) EmitEvent(ctx context.Context, topic string, payload any) {
 	r.mu.RLock()
 	instances := make([]*pluginInstance, 0, len(r.plugins))
 	for _, inst := range r.plugins {
+		// Frontend-only plugins have no backend section and no subscriptions.
+		if inst.plugin.Manifest.Backend == nil {
+			continue
+		}
 		for _, sub := range inst.plugin.Manifest.Backend.EventSubscriptions {
 			if sub == topic {
 				instances = append(instances, inst)
@@ -403,6 +599,94 @@ func (r *Runtime) PluginRoutes(name string) []plugindom.PluginRoute {
 	return inst.plugin.Manifest.Backend.Routes
 }
 
+// AutomationNodeTypes returns every plugin-contributed automation node type
+// currently loaded, grouped by kind — the node palette's data source for
+// merging plugin nodes alongside the built-in ones.
+func (r *Runtime) AutomationNodeTypes() (triggers, conditions, actions []plugindom.AutomationNodeManifest) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, entry := range r.automationIndex {
+		switch entry.kind {
+		case automationKindTrigger:
+			triggers = append(triggers, entry.manifest)
+		case automationKindCondition:
+			conditions = append(conditions, entry.manifest)
+		case automationKindAction:
+			actions = append(actions, entry.manifest)
+		}
+	}
+	return triggers, conditions, actions
+}
+
+// IsPluginTrigger reports whether nodeType is a plugin-registered Trigger
+// type. Satisfies automationdom.PluginNodeResolver.
+func (r *Runtime) IsPluginTrigger(nodeType string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	entry, ok := r.automationIndex[nodeType]
+	return ok && entry.kind == automationKindTrigger
+}
+
+// IsPluginCondition reports whether nodeType is a plugin-registered
+// Condition type. Satisfies automationdom.PluginNodeResolver.
+func (r *Runtime) IsPluginCondition(nodeType string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	entry, ok := r.automationIndex[nodeType]
+	return ok && entry.kind == automationKindCondition
+}
+
+// IsPluginAction reports whether nodeType is a plugin-registered Action
+// type. Satisfies automationdom.PluginNodeResolver.
+func (r *Runtime) IsPluginAction(nodeType string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	entry, ok := r.automationIndex[nodeType]
+	return ok && entry.kind == automationKindAction
+}
+
+// ResolveAutomationCondition returns the plugin name that owns nodeType, if
+// any plugin registered it as a Condition node — consulted by the automation
+// engine's condition leaf evaluator as a fallback after its built-in fields.
+func (r *Runtime) ResolveAutomationCondition(nodeType string) (pluginName string, ok bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	entry, found := r.automationIndex[nodeType]
+	if !found || entry.kind != automationKindCondition {
+		return "", false
+	}
+	return entry.pluginName, true
+}
+
+// ResolveAutomationAction returns the plugin name that owns nodeType, if any
+// plugin registered it as an Action node — consulted by the automation
+// engine's action executor as a fallback after its built-in switch.
+func (r *Runtime) ResolveAutomationAction(nodeType string) (pluginName string, ok bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	entry, found := r.automationIndex[nodeType]
+	if !found || entry.kind != automationKindAction {
+		return "", false
+	}
+	return entry.pluginName, true
+}
+
+// TriggersForTopic returns every plugin-contributed Trigger node whose
+// declared EventTopic matches topic — consulted when a plugin-sourced event
+// arrives, to find which automations should be considered for a matching
+// run, exactly like a built-in trigger's topic-based matching.
+func (r *Runtime) TriggersForTopic(topic string) []plugindom.AutomationNodeManifest {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []plugindom.AutomationNodeManifest
+	for _, entry := range r.automationIndex {
+		if entry.kind == automationKindTrigger && entry.manifest.EventTopic == topic {
+			out = append(out, entry.manifest)
+		}
+	}
+	return out
+}
+
 // LoadedNames returns the names of all currently loaded plugins.
 func (r *Runtime) LoadedNames() []string {
 	r.mu.RLock()
@@ -426,6 +710,9 @@ func (r *Runtime) registerHostModule(ctx context.Context, rt wazero.Runtime, p p
 	// --- DB host functions (PLUG-BE-04) ------------------------------------
 	r.registerDBFunctions(builder, p)
 
+	// --- Cache host functions (Valkey/Redis-backed, TTL) --------------------
+	r.registerCacheFunctions(builder, p)
+
 	// --- Core read-only functions (PLUG-BE-05) -----------------------------
 	r.registerCoreFunctions(builder, p)
 
@@ -437,6 +724,15 @@ func (r *Runtime) registerHostModule(ctx context.Context, rt wazero.Runtime, p p
 
 	// --- Event and utility functions (PLUG-BE-07) --------------------------
 	r.registerEventFunctions(builder, p)
+
+	// --- Workspace branding read-only function -------------------------------
+	r.registerSettingsFunction(builder, p)
+
+	// --- Outbound SMTP send function (permission-gated) ---------------------
+	r.registerEmailFunction(builder, p)
+
+	// --- Password-set token issuance (permission-gated) ----------------------
+	r.registerPasswordSetTokenFunction(builder, p)
 
 	_, err := builder.Instantiate(ctx)
 	return err
@@ -452,14 +748,24 @@ type dbQueryResult struct {
 	Rows    [][]any  `json:"rows"`
 }
 
-// registerDBFunctions adds paca.db_query, paca.db_exec, paca.db_tx_begin,
-// paca.db_tx_commit, paca.db_tx_rollback, paca.storage_get, paca.storage_set,
-// paca.storage_delete to the host module builder.
+// registerDBFunctions adds paca.db_query, paca.db_query2, paca.db_exec,
+// paca.storage_get, paca.storage_set, paca.storage_delete to the host
+// module builder.
 //
-// Project-scope isolation is enforced on all queries by prefixing the table
-// search path with the plugin's schema.  Plugins must declare a `project_id`
-// parameter in their queries; the host validates it matches the authorised
-// project before execution.
+// SET LOCAL search_path only changes how *unqualified* identifiers resolve.
+// PostgreSQL always honors an explicit schema-qualified reference (e.g.
+// "public.users") regardless of search_path, and an unqualified reference
+// falls through to public too once the plugin's own schema doesn't have a
+// matching table — so search_path enforces no isolation by itself. The
+// actual boundary is column redaction on read (sensitiveColumnsForQuery)
+// and whole-statement rejection on write (checkWriteAllowed), both keyed
+// off coreSensitiveFields / a plugin's own declared SensitiveFields, plus
+// an unconditional deny for identity/authorization tables
+// (alwaysBlockedWriteTables). There is no project_id or tenant validation
+// of plugin-authored SQL — a previous version of this comment claimed one
+// existed; it never did (GHSA-g6mx-8g92-w9v5). Callers that need real
+// project scoping should use the fixed, host-written queries in
+// registerCoreFunctions instead of raw SQL.
 func (r *Runtime) registerDBFunctions(b wazero.HostModuleBuilder, p plugindom.Plugin) {
 	schema := schemaName(p.Name)
 
@@ -477,7 +783,7 @@ func (r *Runtime) registerDBFunctions(b wazero.HostModuleBuilder, p plugindom.Pl
 				return
 			}
 
-			result, err := r.execQuery(ctx, schema, sqlStr, paramsJSON)
+			result, err := r.execQuery(ctx, p, schema, sqlStr, paramsJSON)
 			if err != nil {
 				r.log.Error("paca.db_query: exec", "plugin", p.Name, "error", err)
 				return
@@ -488,6 +794,51 @@ func (r *Runtime) registerDBFunctions(b wazero.HostModuleBuilder, p plugindom.Pl
 		}), []api.ValueType{api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64},
 			nil).
 		Export("db_query")
+
+	// paca.db_query2(sqlPtr, sqlLen, paramsPtr, paramsLen, resultPtrPtr, resultLenPtr, errPtrPtr, errLenPtr)
+	// Same as db_query but also reports execution errors back to the plugin.
+	// db_query's signature has no error channel, so a query that fails to
+	// execute (e.g. references a column that doesn't exist) silently looks
+	// like a zero-row success to the plugin — see the `return` with no
+	// output write in the error branch above. Exposed as a separate export
+	// rather than changing db_query in place: WASM import/export signatures
+	// are matched exactly at instantiation time, so widening db_query would
+	// break every already-compiled plugin binary that still imports the old
+	// 6-arg form. New/rebuilt plugins should call this one instead.
+	b.NewFunctionBuilder().
+		WithGoModuleFunction(api.GoModuleFunc(func(ctx context.Context, m api.Module, stack []uint64) {
+			sqlStr, err := readString(m, stack[0], stack[1])
+			if err != nil {
+				r.log.Error("paca.db_query2: read sql", "plugin", p.Name, "error", err)
+				return
+			}
+			paramsJSON, err := readString(m, stack[2], stack[3])
+			if err != nil {
+				r.log.Error("paca.db_query2: read params", "plugin", p.Name, "error", err)
+				return
+			}
+
+			result, err := r.execQuery(ctx, p, schema, sqlStr, paramsJSON)
+			if err != nil {
+				errPtrLen, writeErr := writeToMemory(m, []byte(err.Error()))
+				if writeErr != nil {
+					r.log.Error("paca.db_query2: write error", "plugin", p.Name, "error", writeErr)
+					errPtrLen = []uint64{0, 0}
+				}
+				m.Memory().WriteUint32Le(uint32(stack[4]), 0)
+				m.Memory().WriteUint32Le(uint32(stack[5]), 0)
+				m.Memory().WriteUint32Le(uint32(stack[6]), uint32(errPtrLen[0]))
+				m.Memory().WriteUint32Le(uint32(stack[7]), uint32(errPtrLen[1]))
+				return
+			}
+			resultPtrLen := writeJSONResult(m, result)
+			m.Memory().WriteUint32Le(uint32(stack[4]), uint32(resultPtrLen[0]))
+			m.Memory().WriteUint32Le(uint32(stack[5]), uint32(resultPtrLen[1]))
+			m.Memory().WriteUint32Le(uint32(stack[6]), 0)
+			m.Memory().WriteUint32Le(uint32(stack[7]), 0)
+		}), []api.ValueType{api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64},
+			nil).
+		Export("db_query2")
 
 	// paca.db_exec(sqlPtr, sqlLen, paramsPtr, paramsLen, rowsAffectedPtr, errPtrPtr, errLenPtr)
 	b.NewFunctionBuilder().
@@ -501,7 +852,7 @@ func (r *Runtime) registerDBFunctions(b wazero.HostModuleBuilder, p plugindom.Pl
 				return
 			}
 
-			rows, err := r.execStatement(ctx, schema, sqlStr, paramsJSON)
+			rows, err := r.execStatement(ctx, p, schema, sqlStr, paramsJSON)
 			if err != nil {
 				errBytes := []byte(err.Error())
 				ptrLen, _ := writeToMemory(m, errBytes)
@@ -536,7 +887,12 @@ func (r *Runtime) registerDBFunctions(b wazero.HostModuleBuilder, p plugindom.Pl
 				}
 				return
 			}
-			ptrLen, _ := writeToMemory(m, []byte(value))
+			ptrLen, err := writeToMemory(m, []byte(value))
+			if err != nil {
+				m.Memory().WriteUint32Le(uint32(stack[2]), 0)
+				m.Memory().WriteUint32Le(uint32(stack[3]), 0)
+				return
+			}
 			m.Memory().WriteUint32Le(uint32(stack[2]), uint32(ptrLen[0]))
 			m.Memory().WriteUint32Le(uint32(stack[3]), uint32(ptrLen[1]))
 		}), []api.ValueType{api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64},
@@ -578,14 +934,139 @@ func (r *Runtime) registerDBFunctions(b wazero.HostModuleBuilder, p plugindom.Pl
 		Export("storage_delete")
 }
 
+// cacheKeyPrefix namespaces a plugin's cache entries within the shared
+// Valkey/Redis instance so two plugins can use the same logical key (e.g.
+// "view:abc123") without colliding. Unlike the DB/KV bridge, which gets
+// physical isolation for free from each plugin's own Postgres schema, Cache
+// has no per-plugin storage of its own — this prefix is the only thing
+// standing in for that. p.Name is the caller identity fixed at host-module
+// registration time (one module per plugin instance), never plugin-supplied,
+// so a plugin cannot forge another plugin's prefix.
+//
+// The name is embedded length-prefixed ("plugin:<len>:<name>:") rather than
+// as a bare "plugin:<name>:" so that decoding is unambiguous even if a
+// plugin name itself contains a colon: the length tells a reader exactly
+// how many bytes to consume for the name, so "plugin:3:a:b:x" (name "a:b",
+// key "x") can never collide with "plugin:1:a:b:x" (name "a", key "b:x") —
+// the two encode to different strings even though a naive "plugin:"+name+":"
+// scheme would make them collide.
+func cacheKeyPrefix(pluginName string) string {
+	return "plugin:" + strconv.Itoa(len(pluginName)) + ":" + pluginName + ":"
+}
+
+// registerCacheFunctions adds paca.cache_get, paca.cache_set, and
+// paca.cache_delete to the host module builder — a TTL-based cache backed by
+// the host's shared Valkey/Redis instance (see HostServices.Cache), as
+// opposed to storage_get/set/delete above which persist durably to the
+// plugin's own Postgres schema with no expiry. Intended for recomputable
+// data (e.g. expensive query results) that can tolerate being briefly stale;
+// callers must treat a miss as "not cached" rather than "does not exist".
+func (r *Runtime) registerCacheFunctions(b wazero.HostModuleBuilder, p plugindom.Plugin) {
+	prefix := cacheKeyPrefix(p.Name)
+
+	// paca.cache_get(keyPtr, keyLen, valuePtrPtr, valueLenPtr)
+	b.NewFunctionBuilder().
+		WithGoModuleFunction(api.GoModuleFunc(func(ctx context.Context, m api.Module, stack []uint64) {
+			key, err := readString(m, stack[0], stack[1])
+			if err != nil || key == "" || r.services.Cache == nil {
+				m.Memory().WriteUint32Le(uint32(stack[2]), 0)
+				m.Memory().WriteUint32Le(uint32(stack[3]), 0)
+				return
+			}
+
+			var value string
+			hit, err := r.services.Cache.Get(ctx, prefix+key, &value)
+			if err != nil {
+				r.log.Error("paca.cache_get", "plugin", p.Name, "error", err)
+			}
+			if !hit {
+				m.Memory().WriteUint32Le(uint32(stack[2]), 0)
+				m.Memory().WriteUint32Le(uint32(stack[3]), 0)
+				return
+			}
+			ptrLen, err := writeToMemory(m, []byte(value))
+			if err != nil {
+				m.Memory().WriteUint32Le(uint32(stack[2]), 0)
+				m.Memory().WriteUint32Le(uint32(stack[3]), 0)
+				return
+			}
+			m.Memory().WriteUint32Le(uint32(stack[2]), uint32(ptrLen[0]))
+			m.Memory().WriteUint32Le(uint32(stack[3]), uint32(ptrLen[1]))
+		}), []api.ValueType{api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64},
+			nil).
+		Export("cache_get")
+
+	// paca.cache_set(keyPtr, keyLen, valuePtr, valueLen, ttlSeconds i32) -> (ok i32)
+	// A ttlSeconds of 0 stores the value without expiry. A negative
+	// ttlSeconds is rejected (ok=0) rather than forwarded to Redis, which
+	// would otherwise reject it as an invalid expire time.
+	b.NewFunctionBuilder().
+		WithGoModuleFunction(api.GoModuleFunc(func(ctx context.Context, m api.Module, stack []uint64) {
+			key, _ := readString(m, stack[0], stack[1])
+			value, _ := readString(m, stack[2], stack[3])
+			ttlSeconds := int32(stack[4])
+			if key == "" || r.services.Cache == nil || ttlSeconds < 0 {
+				stack[0] = 0
+				return
+			}
+
+			ttl := time.Duration(ttlSeconds) * time.Second
+			if err := r.services.Cache.Set(ctx, prefix+key, value, ttl); err != nil {
+				r.log.Error("paca.cache_set", "plugin", p.Name, "error", err)
+				stack[0] = 0
+				return
+			}
+			stack[0] = 1
+		}), []api.ValueType{api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI32},
+			[]api.ValueType{api.ValueTypeI32}).
+		Export("cache_set")
+
+	// paca.cache_delete(keyPtr, keyLen) -> (ok i32)
+	b.NewFunctionBuilder().
+		WithGoModuleFunction(api.GoModuleFunc(func(ctx context.Context, m api.Module, stack []uint64) {
+			key, _ := readString(m, stack[0], stack[1])
+			if key == "" || r.services.Cache == nil {
+				stack[0] = 0
+				return
+			}
+			if err := r.services.Cache.Delete(ctx, prefix+key); err != nil {
+				r.log.Error("paca.cache_delete", "plugin", p.Name, "error", err)
+				stack[0] = 0
+				return
+			}
+			stack[0] = 1
+		}), []api.ValueType{api.ValueTypeI64, api.ValueTypeI64},
+			[]api.ValueType{api.ValueTypeI32}).
+		Export("cache_delete")
+}
+
 // execQuery runs a SELECT statement scoped to the plugin schema and returns a
-// dbQueryResult JSON-encoded result.
-func (r *Runtime) execQuery(ctx context.Context, schema, sqlStr, paramsJSON string) (*dbQueryResult, error) {
+// dbQueryResult JSON-encoded result. caller is the requesting plugin, used to
+// redact sensitive columns (core, or declared by other plugins) the query
+// reaches, and to gate DML-with-RETURNING writes to sensitive tables (see
+// sensitiveColumnsForQuery and checkWriteAllowed).
+func (r *Runtime) execQuery(ctx context.Context, caller plugindom.Plugin, schema, sqlStr, paramsJSON string) (*dbQueryResult, error) {
 	// Allow SELECT and DML statements that use RETURNING.
-	trimmed := strings.TrimSpace(strings.ToUpper(sqlStr))
-	isDML := strings.HasPrefix(trimmed, "INSERT") || strings.HasPrefix(trimmed, "UPDATE") || strings.HasPrefix(trimmed, "DELETE")
-	if !strings.HasPrefix(trimmed, "SELECT") && (!isDML || !strings.Contains(trimmed, "RETURNING")) {
-		return nil, fmt.Errorf("paca.db_query: only SELECT and DML with RETURNING statements are allowed")
+	verb, err := validatePluginSQL(sqlStr, sqlModeQuery)
+	if err != nil {
+		return nil, fmt.Errorf("paca.db_query: %w", err)
+	}
+	isDML := verb != "select"
+	if isDML {
+		if err := r.checkWriteAllowed(caller, sqlStr, "paca.db_query"); err != nil {
+			return nil, err
+		}
+	}
+
+	// Redaction below masks result columns by output name only, so a SELECT
+	// that reaches a sensitive table must keep every sensitive value under a
+	// recognisable name (see checkSensitiveReadShape).
+	var aliases []string
+	if tables, cols := r.sensitiveReadTables(caller, sqlStr); len(tables) > 0 {
+		aliases, err = checkSensitiveReadShape(sqlStr, cols, tables)
+		if err != nil {
+			return nil, fmt.Errorf("paca.db_query: %w", err)
+		}
 	}
 
 	var queryParams []any
@@ -651,16 +1132,362 @@ func (r *Runtime) execQuery(ctx context.Context, schema, sqlStr, paramsJSON stri
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("paca.db_query: commit: %w", err)
 	}
+
+	if sensitive := r.sensitiveColumnsForQuery(caller, sqlStr); len(sensitive) > 0 {
+		for _, a := range aliases {
+			sensitive[strings.ToLower(a)] = struct{}{}
+		}
+		redactColumns(result.Columns, result.Rows, sensitive)
+	}
+
 	return result, nil
 }
 
-// execStatement runs a non-SELECT DML statement scoped to the plugin schema.
-func (r *Runtime) execStatement(ctx context.Context, schema, sqlStr, paramsJSON string) (int64, error) {
-	trimmed := strings.TrimSpace(strings.ToUpper(sqlStr))
-	for _, banned := range []string{"DROP", "TRUNCATE", "ALTER", "CREATE", "GRANT", "REVOKE"} {
-		if strings.HasPrefix(trimmed, banned) {
-			return 0, fmt.Errorf("paca.db_exec: DDL/DCL statements are not allowed")
+// coreSensitiveFields lists platform database columns that
+// db_query/db_query2/db_exec must always treat as sensitive, regardless of
+// which schema a plugin's search_path resolves them through. Nobody "owns"
+// this data the way a plugin owns its own schema (declared via
+// BackendManifest.SensitiveFields) — a plugin may only read or write it if
+// it explicitly lists the field in its own manifest's
+// RequestedSensitiveFields, which must be surfaced to admins in the plugin
+// marketplace before install so the request is visible, not silently
+// granted.
+//
+// github_integrations/github_repositories used to live here too (they
+// predate the per-plugin schema model and lived in core `public`), but
+// migrations/000007_remove_github_tables.sql dropped them from public and
+// paca-plugin-github/backend/migrations/0001_create_github_tables.sql
+// recreates them under its own plugin_data_com_paca_github schema — so
+// they're now an ordinary plugin-owned-schema case, protected via that
+// plugin's own BackendManifest.SensitiveFields instead of this registry.
+var coreSensitiveFields = map[string][]string{
+	"users":                       {"password_hash"},
+	"api_keys":                    {"key_hash"},
+	"agents":                      {"llm_api_key_secret", "acp_bridge_token_hash"},
+	"agent_mcp_servers":           {"env"},
+	"agent_environment_variables": {"encrypted_value"},
+}
+
+// alwaysBlockedWriteTables lists core tables that define identity and
+// authorization — who a user is, what a role or project membership grants,
+// how a password gets reset — which no plugin may ever write to, no matter
+// what it declares in RequestedSensitiveFields. coreSensitiveFields above
+// governs secret *values* and can be unlocked column by column; these
+// tables are different in kind, because the write itself is the attack:
+// "UPDATE users SET role_id = <super-admin role>" or
+// "INSERT INTO project_members ..." hands the writer a different
+// principal's privileges rather than exposing a value, and for a
+// single-sensitive-column table (users, api_keys) requesting that one
+// column would otherwise unlock unrestricted writes to the whole table
+// under the coreSensitiveFields model. checkWriteAllowed rejects any DML
+// statement referencing one of these outright, before it ever consults
+// RequestedSensitiveFields. Reads are unaffected: SELECTing role/membership
+// metadata (e.g. for paca.members_list-style dashboards) is still governed
+// by coreSensitiveFields as before — these tables have no sensitive value
+// column to redact, so an ordinary SELECT already returns everything.
+var alwaysBlockedWriteTables = map[string]struct{}{
+	"global_roles":        {},
+	"project_roles":       {},
+	"project_members":     {},
+	"users":               {},
+	"api_keys":            {},
+	"password_set_tokens": {},
+}
+
+// isAlwaysBlockedWriteTable reports whether ref resolves to a core table in
+// alwaysBlockedWriteTables: unqualified, or explicitly "public"-qualified —
+// the same resolution sensitiveTableColumns applies for reads. A reference
+// explicitly qualified with any other schema name (including a plugin's own)
+// never matches, the same fail-safe-toward-core-only rule used there.
+func isAlwaysBlockedWriteTable(ref tableRef) bool {
+	if ref.schema != "" && !strings.EqualFold(ref.schema, "public") {
+		return false
+	}
+	_, blocked := alwaysBlockedWriteTables[ref.table]
+	return blocked
+}
+
+// sqlCommentRe matches SQL line comments (-- ...) and block comments
+// (/* ... */, including ones spanning multiple lines). PostgreSQL treats a
+// comment as equivalent to whitespace during tokenization — e.g.
+// "FROM/*x*/table" parses identically to "FROM table" — so comments must be
+// stripped (replaced with a space, to keep tokens from merging) before
+// running the table-reference regexes below. Otherwise a plugin could
+// trivially defeat both read redaction and write blocking by inserting a
+// comment between a keyword and the table name it introduces.
+var sqlCommentRe = regexp.MustCompile(`(?s)/\*.*?\*/|--[^\n]*`)
+
+func stripSQLComments(sqlStr string) string {
+	return sqlCommentRe.ReplaceAllString(sqlStr, " ")
+}
+
+// tableRefRe extracts (schema, table) pairs referenced after FROM, JOIN,
+// INTO, or USING anywhere in a query's SQL text — covering SELECT/DELETE's
+// FROM, JOIN, INSERT's INTO, the source side of UPDATE ... FROM ..., and
+// DELETE ... USING .... It is intentionally unanchored (not tied to
+// statement start or type), so it also matches table references nested
+// inside WITH-CTE bodies and INSERT ... SELECT ... FROM subqueries. The
+// optional ONLY keyword (e.g. "DELETE FROM ONLY users") is skipped so it
+// isn't mistaken for the table name itself.
+//
+// Like paca-plugin-dashboard's own query guard, this is a lightweight
+// pattern match rather than a full SQL parser: adequate as a
+// defense-in-depth signal over plugin-authored SQL, not a guarantee for
+// arbitrarily obfuscated queries. Callers must run stripSQLComments on
+// sqlStr first.
+var tableRefRe = regexp.MustCompile(`(?i)\b(?:from|join|into|using)\s+(?:only\s+)?"?([A-Za-z_][A-Za-z0-9_]*)"?(?:\s*\.\s*"?([A-Za-z_][A-Za-z0-9_]*)"?)?`)
+
+// updateTargetRe extracts the (schema, table) pair immediately following
+// UPDATE — the write target of an UPDATE statement, which (unlike INSERT
+// and DELETE) isn't introduced by FROM/INTO/USING.
+var updateTargetRe = regexp.MustCompile(`(?i)\bupdate\s+(?:only\s+)?"?([A-Za-z_][A-Za-z0-9_]*)"?(?:\s*\.\s*"?([A-Za-z_][A-Za-z0-9_]*)"?)?`)
+
+// tableShorthandRe extracts the (schema, table) pair from PostgreSQL's
+// "TABLE name" shorthand for "SELECT * FROM name", which can appear as a
+// full statement or nested in a FROM clause (e.g. "FROM (TABLE users) u").
+var tableShorthandRe = regexp.MustCompile(`(?i)\btable\s+"?([A-Za-z_][A-Za-z0-9_]*)"?(?:\s*\.\s*"?([A-Za-z_][A-Za-z0-9_]*)"?)?`)
+
+// fromClauseRe captures the full comma-separated table list following a
+// FROM keyword, stopping at the next clause keyword that can legally follow
+// one (or a closing paren/semicolon/end of string). It exists to catch
+// old-style implicit joins ("FROM a, b, c"), where every table after the
+// first is introduced by a comma rather than by FROM/JOIN/INTO/USING and so
+// wouldn't otherwise be matched by tableRefRe.
+var fromClauseRe = regexp.MustCompile(`(?i)\bfrom\s+(.+?)(?:\s+(?:where|group\s+by|order\s+by|having|limit|offset|on|join|returning|union|except|intersect|window|fetch|for)\b|\)|;|$)`)
+
+// leadingTableRefRe extracts the (schema, table) pair at the start of a
+// single comma-separated FROM-list item, ignoring any trailing alias.
+var leadingTableRefRe = regexp.MustCompile(`(?i)^\s*(?:only\s+)?"?([A-Za-z_][A-Za-z0-9_]*)"?(?:\s*\.\s*"?([A-Za-z_][A-Za-z0-9_]*)"?)?`)
+
+// tableRef is a (possibly schema-qualified) table reference extracted from
+// SQL text. Schema is empty when the reference is unqualified.
+type tableRef struct {
+	schema string
+	table  string
+}
+
+// newTableRef builds a tableRef from a regex match's two capture groups:
+// first is always the leading identifier, second is only non-empty when the
+// reference was schema-qualified (first.second) — in which case first is
+// the schema, not the table.
+func newTableRef(first, second string) tableRef {
+	if second != "" {
+		return tableRef{schema: strings.ToLower(first), table: strings.ToLower(second)}
+	}
+	return tableRef{table: strings.ToLower(first)}
+}
+
+// commaJoinedTables splits a FROM clause's table list on top-level commas
+// (tracking paren depth, so a comma inside a nested subquery doesn't split
+// the list) and extracts the leading table reference from each item,
+// discarding any trailing alias.
+func commaJoinedTables(list string) []tableRef {
+	var refs []tableRef
+	depth, start := 0, 0
+	var items []string
+	for i, ch := range list {
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				items = append(items, list[start:i])
+				start = i + 1
+			}
 		}
+	}
+	items = append(items, list[start:])
+	for _, item := range items {
+		if m := leadingTableRefRe.FindStringSubmatch(item); m != nil {
+			refs = append(refs, newTableRef(m[1], m[2]))
+		}
+	}
+	return refs
+}
+
+// referencedTables extracts every (schema, table) reference in sqlStr —
+// every FROM/JOIN/INTO/USING target, every UPDATE target, every TABLE
+// shorthand reference, and every table in a comma-separated FROM list —
+// regardless of where in the statement it appears. It deliberately
+// over-matches rather than trying to identify a single "primary" table,
+// since a single statement (UPDATE ... FROM, DELETE ... USING,
+// INSERT ... SELECT ... FROM, "FROM a, b, c") can touch more than one table
+// at once; every table it touches is treated the same way by both read
+// redaction and write blocking.
+func referencedTables(sqlStr string) []tableRef {
+	stripped := stripSQLComments(sqlStr)
+	var refs []tableRef
+	for _, m := range tableRefRe.FindAllStringSubmatch(stripped, -1) {
+		refs = append(refs, newTableRef(m[1], m[2]))
+	}
+	for _, m := range updateTargetRe.FindAllStringSubmatch(stripped, -1) {
+		refs = append(refs, newTableRef(m[1], m[2]))
+	}
+	for _, m := range tableShorthandRe.FindAllStringSubmatch(stripped, -1) {
+		refs = append(refs, newTableRef(m[1], m[2]))
+	}
+	for _, m := range fromClauseRe.FindAllStringSubmatch(stripped, -1) {
+		refs = append(refs, commaJoinedTables(m[1])...)
+	}
+	return refs
+}
+
+// sensitiveTableColumns returns the sensitive columns declared for a
+// resolved (schema, table) reference and, when the table belongs to another
+// plugin's own schema rather than being a core table, that plugin's name
+// (owner is "" for core fields, since nobody owns those). callerSchema is
+// the calling plugin's own schema: a reference into it is never sensitive,
+// since a plugin always has full access to its own data.
+//
+// An unqualified table name (schema == "") can only ever resolve to the
+// caller's own schema or the core `public` schema (search_path never
+// reaches another plugin's schema without explicit qualification), so it's
+// checked against the core registry directly. This means a plugin that
+// happens to name one of its own tables identically to a core table (e.g.
+// "users") would have that column over-redacted/write-blocked too — a
+// fail-safe false positive, not a false negative.
+func (r *Runtime) sensitiveTableColumns(callerSchema string, ref tableRef) (owner string, cols []string) {
+	if ref.schema != "" && strings.EqualFold(ref.schema, callerSchema) {
+		return "", nil
+	}
+	if ref.schema == "" || strings.EqualFold(ref.schema, "public") {
+		return "", coreSensitiveFields[ref.table]
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for name, inst := range r.plugins {
+		if !strings.EqualFold(schemaName(name), ref.schema) {
+			continue
+		}
+		if inst.plugin.Manifest.Backend == nil {
+			return name, nil
+		}
+		return name, inst.plugin.Manifest.Backend.SensitiveFields[ref.table]
+	}
+	return "", nil
+}
+
+// isRequestedSensitiveField reports whether caller's own manifest declares
+// wanting access to table.column, where owner is "" for a core field or the
+// owning plugin's ID for a field declared sensitive in that plugin's own
+// SensitiveFields.
+func isRequestedSensitiveField(caller plugindom.Plugin, owner, table, col string) bool {
+	if caller.Manifest.Backend == nil {
+		return false
+	}
+	var key string
+	if owner == "" {
+		key = table + "." + col
+	} else {
+		key = owner + ":" + table + "." + col
+	}
+	for _, f := range caller.Manifest.Backend.RequestedSensitiveFields {
+		if strings.EqualFold(f, key) {
+			return true
+		}
+	}
+	return false
+}
+
+// sensitiveColumnAliasRe finds "<col> AS <alias>" for a specific sensitive
+// column name — built per-column since the name is interpolated into the
+// pattern — so that redaction can key on the result column's alias, not
+// just its un-aliased name. redactColumns only ever sees the query's output
+// column names, so "SELECT password_hash AS ph FROM users" would otherwise
+// return "ph" unredacted even though sensitiveColumnsForQuery correctly
+// identified users.password_hash as sensitive: it never connects "ph" back
+// to "password_hash" without this. Requires the explicit AS keyword — an
+// implicit alias ("password_hash ph") isn't distinguishable by pattern
+// match alone from "password_hash FROM ..." (FROM would parse as the
+// "alias") without a real parser, so it isn't covered.
+func sensitiveColumnAliasRe(col string) *regexp.Regexp {
+	return regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(col) + `\s+as\s+"?([A-Za-z_][A-Za-z0-9_]*)"?`)
+}
+
+// sensitiveColumnsForQuery returns the set of lowercased column names that
+// must be redacted in the result of sqlStr run by caller: for every
+// FROM/JOIN table the query references, any sensitive column declared for
+// it (core, or another plugin's own SensitiveFields) that caller hasn't
+// explicitly requested access to via its own RequestedSensitiveFields —
+// plus any "AS alias" the query renames that column to, so the alias is
+// redacted in the result under its own name too (see sensitiveColumnAliasRe).
+func (r *Runtime) sensitiveColumnsForQuery(caller plugindom.Plugin, sqlStr string) map[string]struct{} {
+	callerSchema := schemaName(caller.Name)
+	stripped := stripSQLComments(sqlStr)
+	sensitive := make(map[string]struct{})
+	for _, ref := range referencedTables(sqlStr) {
+		owner, cols := r.sensitiveTableColumns(callerSchema, ref)
+		for _, col := range cols {
+			if isRequestedSensitiveField(caller, owner, ref.table, col) {
+				continue
+			}
+			sensitive[strings.ToLower(col)] = struct{}{}
+			for _, m := range sensitiveColumnAliasRe(col).FindAllStringSubmatch(stripped, -1) {
+				sensitive[strings.ToLower(m[1])] = struct{}{}
+			}
+		}
+	}
+	return sensitive
+}
+
+// checkWriteAllowed rejects an INSERT/UPDATE/DELETE statement outright when
+// any table it references — its write target, or a source table pulled in
+// via UPDATE ... FROM, DELETE ... USING, or INSERT ... SELECT ... FROM —
+// has a declared-sensitive column (core, or another plugin's own
+// SensitiveFields) that caller hasn't requested access to. A table's
+// sensitive columns must *all* be individually requested for that table to
+// be exempted: requesting access to one sensitive column of a table does
+// not grant access to that table's other, unrequested sensitive columns.
+// A table listed in alwaysBlockedWriteTables is rejected unconditionally,
+// before any of that — see that var's doc for why it can't be requested.
+//
+// Unlike reads, sensitivity can't be masked away column-by-column for a
+// write — the value could already have been copied into another column, or
+// into the caller's own schema, by the time the statement finishes — so
+// the whole statement is rejected before it ever reaches Postgres. A table
+// with no declared sensitive columns is unaffected (out of scope, same
+// boundary as read redaction). funcName is used only in the returned error
+// to name the host function that rejected the call.
+func (r *Runtime) checkWriteAllowed(caller plugindom.Plugin, sqlStr, funcName string) error {
+	callerSchema := schemaName(caller.Name)
+	for _, ref := range referencedTables(sqlStr) {
+		if isAlwaysBlockedWriteTable(ref) {
+			return fmt.Errorf("%s: table %q may not be written to by plugins", funcName, ref.table)
+		}
+		owner, cols := r.sensitiveTableColumns(callerSchema, ref)
+		for _, col := range cols {
+			if isRequestedSensitiveField(caller, owner, ref.table, col) {
+				continue
+			}
+			return fmt.Errorf("%s: table %q has sensitive fields this plugin has not requested access to (declare requestedSensitiveFields in plugin.json)", funcName, ref.table)
+		}
+	}
+	return nil
+}
+
+// redactColumns overwrites every row's value with "***" at each column index
+// whose lowercased name is in sensitive.
+func redactColumns(cols []string, rows [][]any, sensitive map[string]struct{}) {
+	for i, col := range cols {
+		if _, ok := sensitive[strings.ToLower(col)]; !ok {
+			continue
+		}
+		for _, row := range rows {
+			row[i] = "***"
+		}
+	}
+}
+
+// execStatement runs a single INSERT/UPDATE/DELETE statement scoped to the plugin schema.
+func (r *Runtime) execStatement(ctx context.Context, caller plugindom.Plugin, schema, sqlStr, paramsJSON string) (int64, error) {
+	if _, err := validatePluginSQL(sqlStr, sqlModeExec); err != nil {
+		return 0, fmt.Errorf("paca.db_exec: %w", err)
+	}
+	if err := r.checkWriteAllowed(caller, sqlStr, "paca.db_exec"); err != nil {
+		return 0, err
 	}
 
 	var queryParams []any
@@ -698,6 +1525,36 @@ func (r *Runtime) execStatement(ctx context.Context, schema, sqlStr, paramsJSON 
 // PLUG-BE-05: Core read-only functions
 // -------------------------------------------------------------------------
 
+// loadTaskAssigneeIDs batch-loads task_assignees for taskIDs, returning a map
+// keyed by task ID (tasks with no assignees are simply absent from the map).
+func (r *Runtime) loadTaskAssigneeIDs(ctx context.Context, taskIDs []uuid.UUID) (map[uuid.UUID][]uuid.UUID, error) {
+	result := make(map[uuid.UUID][]uuid.UUID, len(taskIDs))
+	if len(taskIDs) == 0 {
+		return result, nil
+	}
+	placeholders := make([]string, len(taskIDs))
+	args := make([]any, len(taskIDs))
+	for i, id := range taskIDs {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = id
+	}
+	rows, err := r.services.DB.QueryContext(ctx,
+		`SELECT task_id, member_id FROM task_assignees WHERE task_id IN (`+strings.Join(placeholders, ",")+`) ORDER BY assigned_at ASC`,
+		args...)
+	if err != nil {
+		return nil, fmt.Errorf("load task assignees: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var taskID, memberID uuid.UUID
+		if err := rows.Scan(&taskID, &memberID); err != nil {
+			return nil, fmt.Errorf("load task assignees: scan: %w", err)
+		}
+		result[taskID] = append(result[taskID], memberID)
+	}
+	return result, rows.Err()
+}
+
 // registerCoreFunctions adds paca.tasks_list, paca.task_get,
 // paca.project_get, paca.members_list to the host module builder.
 // All results are scoped to the authorised project extracted from the
@@ -714,28 +1571,51 @@ func (r *Runtime) registerCoreFunctions(b wazero.HostModuleBuilder, _ plugindom.
 			}
 
 			rows, err := r.services.DB.QueryContext(ctx,
-				`SELECT id, title, status_id, assignee_id, task_number FROM tasks
+				`SELECT id, title, status_id, task_number FROM tasks
 				 WHERE project_id = $1 AND deleted_at IS NULL
 				 ORDER BY task_number DESC LIMIT 100`, projectID)
 			if err != nil {
 				copy(stack, writeErrorResult(m, err))
 				return
 			}
-			defer func() { _ = rows.Close() }()
 
-			var tasks []map[string]any
+			type taskRow struct {
+				id       uuid.UUID
+				title    string
+				statusID *uuid.UUID
+				num      int
+			}
+			var taskRows []taskRow
 			for rows.Next() {
-				var id uuid.UUID
-				var title string
-				var statusID, assigneeID *uuid.UUID
-				var num int
-				if err := rows.Scan(&id, &title, &statusID, &assigneeID, &num); err != nil {
+				var tr taskRow
+				if err := rows.Scan(&tr.id, &tr.title, &tr.statusID, &tr.num); err != nil {
+					_ = rows.Close()
 					copy(stack, writeErrorResult(m, err))
 					return
 				}
+				taskRows = append(taskRows, tr)
+			}
+			_ = rows.Close()
+			if err := rows.Err(); err != nil {
+				copy(stack, writeErrorResult(m, err))
+				return
+			}
+
+			taskIDs := make([]uuid.UUID, len(taskRows))
+			for i, tr := range taskRows {
+				taskIDs[i] = tr.id
+			}
+			assigneeIDs, err := r.loadTaskAssigneeIDs(ctx, taskIDs)
+			if err != nil {
+				copy(stack, writeErrorResult(m, err))
+				return
+			}
+
+			var tasks []map[string]any
+			for _, tr := range taskRows {
 				tasks = append(tasks, map[string]any{
-					"id": id, "title": title, "status_id": statusID,
-					"assignee_id": assigneeID, "task_number": num,
+					"id": tr.id, "title": tr.title, "status_id": tr.statusID,
+					"assignee_ids": assigneeIDs[tr.id], "task_number": tr.num,
 				})
 			}
 			copy(stack, writeJSONResult(m, tasks))
@@ -754,21 +1634,26 @@ func (r *Runtime) registerCoreFunctions(b wazero.HostModuleBuilder, _ plugindom.
 			}
 
 			row := r.services.DB.QueryRowContext(ctx,
-				`SELECT id, project_id, title, status_id, assignee_id, task_number
+				`SELECT id, project_id, title, status_id, task_number
 				 FROM tasks WHERE id = $1 AND deleted_at IS NULL`, taskID)
 			var (
-				id, projectID        uuid.UUID
-				title                string
-				statusID, assigneeID *uuid.UUID
-				num                  int
+				id, projectID uuid.UUID
+				title         string
+				statusID      *uuid.UUID
+				num           int
 			)
-			if err := row.Scan(&id, &projectID, &title, &statusID, &assigneeID, &num); err != nil {
+			if err := row.Scan(&id, &projectID, &title, &statusID, &num); err != nil {
+				copy(stack, writeErrorResult(m, err))
+				return
+			}
+			assigneeIDs, err := r.loadTaskAssigneeIDs(ctx, []uuid.UUID{id})
+			if err != nil {
 				copy(stack, writeErrorResult(m, err))
 				return
 			}
 			copy(stack, writeJSONResult(m, map[string]any{
 				"id": id, "project_id": projectID, "title": title,
-				"status_id": statusID, "assignee_id": assigneeID, "task_number": num,
+				"status_id": statusID, "assignee_ids": assigneeIDs[id], "task_number": num,
 			}))
 		}), []api.ValueType{api.ValueTypeI64, api.ValueTypeI64},
 			[]api.ValueType{api.ValueTypeI64, api.ValueTypeI64}).
@@ -840,6 +1725,42 @@ func (r *Runtime) registerCoreFunctions(b wazero.HostModuleBuilder, _ plugindom.
 }
 
 // -------------------------------------------------------------------------
+// Workspace branding read-only function
+// -------------------------------------------------------------------------
+
+// registerSettingsFunction adds paca.settings_get to the host module
+// builder. Follows the same out-pointer-args convention as
+// registerFetchFunction (no WASM result values; the guest passes pointers
+// to where the host should write the response ptr/len).
+func (r *Runtime) registerSettingsFunction(b wazero.HostModuleBuilder, _ plugindom.Plugin) {
+	// paca.settings_get(resPtrPtr, resLenPtr)
+	//   resPtrPtr – pointer to uint32 that receives response JSON ptr
+	//   resLenPtr – pointer to uint32 that receives response JSON len
+	//
+	// Response JSON is a BrandingSnapshot on success, or {"error":"<msg>"} on
+	// failure. No permission gate: this mirrors the public, unauthenticated
+	// GET /branding endpoint, which already exposes the same data to anyone.
+	b.NewFunctionBuilder().
+		WithGoModuleFunction(api.GoModuleFunc(func(ctx context.Context, m api.Module, stack []uint64) {
+			writeBack := func(ptrLen []uint64) {
+				m.Memory().WriteUint32Le(uint32(stack[0]), uint32(ptrLen[0]))
+				m.Memory().WriteUint32Le(uint32(stack[1]), uint32(ptrLen[1]))
+			}
+			if r.services.SettingsReader == nil {
+				writeBack(writeJSONResult(m, map[string]string{"error": "settings_get: not configured"}))
+				return
+			}
+			snap, err := r.services.SettingsReader.GetBranding(ctx)
+			if err != nil {
+				writeBack(writeJSONResult(m, map[string]string{"error": "settings_get: " + err.Error()}))
+				return
+			}
+			writeBack(writeJSONResult(m, snap))
+		}), []api.ValueType{api.ValueTypeI64, api.ValueTypeI64}, nil).
+		Export("settings_get")
+}
+
+// -------------------------------------------------------------------------
 // PLUG-BE-06: HTTP host functions
 // -------------------------------------------------------------------------
 
@@ -859,12 +1780,65 @@ func WithPluginRequest(ctx context.Context, payload *HTTPRequest) context.Contex
 type HTTPRequest struct {
 	Method     string            `json:"method"`
 	Path       string            `json:"path"`
+	Query      map[string]string `json:"query"`
 	ProjectID  string            `json:"project_id"`
 	CallerID   string            `json:"caller_id"`
 	UserID     string            `json:"user_id"`
 	CallerRole string            `json:"caller_role"`
 	Headers    map[string]string `json:"headers"`
 	Body       []byte            `json:"body"`
+
+	// AgentID is set when the request was made by an agent (an agent API key
+	// naming one). It stays on the host — never serialised to the plugin — and
+	// exists so permission_check can judge the agent by its own role, the way
+	// the router's gates do, instead of by UserID: for an agent-key request
+	// that is the shared bot user behind the key, seeded SUPER_ADMIN.
+	AgentID string `json:"-"`
+}
+
+// callerHolds reports whether the caller behind req holds permission, judged
+// the way the router's gates judge it: an agent by its own role — its role in
+// the request's project, or its own global role when the request carries no
+// project — and a human by the roles they are assigned. Never the shared bot
+// user an agent's key resolves to, whose SUPER_ADMIN role would let every agent
+// pass any check a plugin makes and so act beyond its own role. It fails
+// closed: anything it cannot resolve is a "no".
+func (r *Runtime) callerHolds(ctx context.Context, req *HTTPRequest, permission authz.Permission) bool {
+	if req == nil || permission == "" || r.services.Authorizer == nil {
+		return false
+	}
+
+	var projectID *uuid.UUID
+	if req.ProjectID != "" {
+		pid, err := uuid.Parse(req.ProjectID)
+		if err != nil {
+			return false
+		}
+		projectID = &pid
+	}
+
+	var (
+		granted bool
+		err     error
+	)
+	if req.AgentID != "" {
+		agentID, parseErr := uuid.Parse(req.AgentID)
+		if parseErr != nil {
+			return false
+		}
+		if projectID != nil {
+			granted, err = r.services.Authorizer.HasPermissionsForAgent(ctx, agentID, *projectID, permission)
+		} else {
+			granted, err = r.services.Authorizer.HasGlobalPermissionsForAgent(ctx, agentID, permission)
+		}
+	} else {
+		userID, parseErr := uuid.Parse(req.UserID)
+		if parseErr != nil {
+			return false
+		}
+		granted, err = r.services.Authorizer.HasPermissions(ctx, userID, projectID, permission)
+	}
+	return err == nil && granted
 }
 
 func (r *Runtime) registerHTTPFunctions(b wazero.HostModuleBuilder, _ plugindom.Plugin) {
@@ -916,6 +1890,35 @@ func (r *Runtime) registerHTTPFunctions(b wazero.HostModuleBuilder, _ plugindom.
 		WithGoModuleFunction(api.GoModuleFunc(func(_ context.Context, _ api.Module, _ []uint64) {
 		}), []api.ValueType{api.ValueTypeI32, api.ValueTypeI64, api.ValueTypeI64}, nil).
 		Export("http_respond")
+
+	// paca.permission_check(permissionPtr, permissionLen) -> (ok i32)
+	//
+	// Checks whether the current caller (from the request context set by
+	// WithPluginRequest) holds the given permission key, evaluated against the
+	// same effective permission set as requirePermissions route middleware:
+	// built-in permissions and any plugin-declared custom permission stored
+	// on the caller's project/global role (never granted by role name). Scope
+	// (project vs global) is inferred from whether the request carries a
+	// project_id: project-scoped requests check project-role permissions,
+	// others check global-role permissions only. An agent-API-key request is
+	// judged by the agent's own role, exactly as the route gate judges it —
+	// see callerHolds.
+	//
+	// This lets plugin backend code enforce finer-grained authorization
+	// than the single all-or-nothing requirePermissions route gate allows —
+	// e.g. "is caller the record's author OR does caller hold
+	// time_logging.manage_all" — without a second host round-trip per check.
+	b.NewFunctionBuilder().
+		WithGoModuleFunction(api.GoModuleFunc(func(ctx context.Context, m api.Module, stack []uint64) {
+			permission, _ := readString(m, stack[0], stack[1])
+			req, _ := ctx.Value(pluginRequestKey{}).(*HTTPRequest)
+			if r.callerHolds(ctx, req, authz.Permission(permission)) {
+				stack[0] = 1
+				return
+			}
+			stack[0] = 0
+		}), []api.ValueType{api.ValueTypeI64, api.ValueTypeI64}, []api.ValueType{api.ValueTypeI32}).
+		Export("permission_check")
 }
 
 // -------------------------------------------------------------------------
@@ -944,6 +1947,17 @@ func (r *Runtime) registerEventFunctions(b wazero.HostModuleBuilder, p plugindom
 					stack[0] = 0
 					return
 				}
+				// Also durably queue this event for the automation engine,
+				// but only when some loaded plugin actually declared a
+				// Trigger for this topic — TriggersForTopic is the exact
+				// same lookup worker.AutomationConsumer uses when it reads
+				// this entry back, so a plugin emitting an event nobody
+				// automates on never touches this stream.
+				if len(r.TriggersForTopic(topic)) > 0 {
+					if err := r.services.Publisher.Append(ctx, events.StreamPluginTriggerEvents, topic, v); err != nil {
+						r.log.Error("paca.event_emit: append to automation trigger stream", "plugin", p.Name, "topic", topic, "error", err)
+					}
+				}
 			}
 			stack[0] = 1
 		}), []api.ValueType{api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64, api.ValueTypeI64},
@@ -959,7 +1973,7 @@ func (r *Runtime) registerEventFunctions(b wazero.HostModuleBuilder, p plugindom
 		Export("event_subscribe")
 
 	// paca.activity_record(payloadPtr i64, payloadLen i64) -> ok i32
-	// Appends a task-activity event to paca.task_activities stream so the
+	// Appends a task-activity event to the paca.activities stream so the
 	// ActivityConsumer worker can persist it to PostgreSQL.
 	// Payload JSON shape:
 	//   {"task_id":"uuid","activity_type":"task.checklist.created","content":{...}}
@@ -1054,10 +2068,22 @@ func (r *Runtime) registerEventFunctions(b wazero.HostModuleBuilder, p plugindom
 			}
 			payload["actor_id"] = actorID
 			if r.services.Publisher != nil {
-				_ = r.services.Publisher.Append(ctx, events.StreamTaskActivities, inp.ActivityType, payload)
-				_ = r.services.Publisher.Publish(ctx, events.ChannelRealtime, map[string]any{
-					"type":    inp.ActivityType,
-					"payload": payload,
+				var actorUUID *uuid.UUID
+				if id, err := uuid.Parse(actorID); err == nil {
+					actorUUID = &id
+				}
+				// Through the shared fanout like every other activity. A
+				// plugin's own record is kept off the plugin event stream so a
+				// plugin reacting to activity can't re-trigger itself.
+				events.FanoutTo(ctx, r.services.Publisher, events.Event{
+					Topic:            inp.ActivityType,
+					Payload:          payload,
+					ProjectID:        projectID,
+					EntityType:       events.EntityTask,
+					EntityID:         &taskID,
+					ActorID:          actorUUID,
+					Origin:           events.OriginUser,
+					SkipPluginEvents: true,
 				})
 			}
 			stack[0] = 1
@@ -1291,7 +2317,7 @@ func isAllowedFetchDomain(ctx context.Context, rawURL string, allowed []string) 
 	}
 
 	for _, ipAddr := range ips {
-		if isPrivateOrInternalIP(ipAddr.IP) {
+		if netguard.IsPrivateOrInternalIP(ipAddr.IP) {
 			return false
 		}
 	}
@@ -1327,15 +2353,26 @@ func writeToMemory(m api.Module, data []byte) ([]uint64, error) {
 	if len(data) == 0 {
 		return []uint64{0, 0}, nil
 	}
-	malloc := m.ExportedFunction("malloc")
+	// Exported as paca_malloc, not malloc: TinyGo-built plugins already
+	// export "malloc"/"free" from their own bundled wasi-libc allocator, so
+	// plugin-sdk-go's exports use a name that can't collide with those.
+	malloc := m.ExportedFunction("paca_malloc")
 	if malloc == nil {
-		return nil, fmt.Errorf("plugin: malloc not exported")
+		// Fall back to the pre-rename export so plugins built against the
+		// previous SDK keep working until they're rebuilt.
+		malloc = m.ExportedFunction("malloc")
+	}
+	if malloc == nil {
+		return nil, fmt.Errorf("plugin: paca_malloc or malloc not exported")
 	}
 	results, err := malloc.Call(context.Background(), uint64(len(data)))
 	if err != nil || len(results) == 0 {
 		return nil, fmt.Errorf("plugin: malloc failed: %w", err)
 	}
 	ptr := results[0]
+	if ptr == 0 {
+		return nil, fmt.Errorf("plugin: malloc returned 0 (buffer exhausted)")
+	}
 	if !m.Memory().Write(uint32(ptr), data) {
 		return nil, fmt.Errorf("plugin: memory write out of bounds")
 	}

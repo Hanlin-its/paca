@@ -1,4 +1,10 @@
 {
+	"common": {
+		"notFound": "Not found",
+		"somethingWentWrong": "Something went wrong",
+		"retry": "Retry",
+		"noPermissionToView": "You don't have permission to view this"
+	},
 	"dialog": {
 		"closeLabel": "Đóng",
 		"closeButton": "Đóng"
@@ -18,5 +24,21 @@
 		"newPasswordMustDiffer": "Mật khẩu mới phải khác với mật khẩu hiện tại.",
 		"confirmPasswordRequired": "Vui lòng xác nhận mật khẩu mới.",
 		"passwordsDoNotMatch": "Mật khẩu xác nhận không khớp."
+	},
+	"timeAgo": {
+		"justNow": "vừa xong",
+		"minutes_one": "{{count}} phút trước",
+		"minutes_other": "{{count}} phút trước",
+		"hours_one": "{{count}} giờ trước",
+		"hours_other": "{{count}} giờ trước",
+		"days_one": "{{count}} ngày trước",
+		"days_other": "{{count}} ngày trước"
+	},
+	"pagination": {
+		"navLabel": "Phân trang",
+		"previous": "Trang trước",
+		"next": "Trang sau",
+		"page": "Trang {{page}}",
+		"pageOfTotal": "Trang {{page}} / {{totalPages}}"
 	}
 }

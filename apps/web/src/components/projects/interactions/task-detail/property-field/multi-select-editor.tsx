@@ -1,7 +1,8 @@
 import { useTranslation } from "react-i18next";
 import { FieldValue } from "../primitives";
 import { ChipField } from "./chip-field";
-import { OptionListButton } from "./option-list-button";
+import { toOptionItem } from "./option-list-button";
+import { SearchableList } from "./searchable-list";
 import type { SelectOption } from "./types";
 
 export function MultiSelectEditor({
@@ -50,19 +51,29 @@ export function MultiSelectEditor({
 
 	return (
 		<ChipField
-			chips={selected.map((opt) => ({ key: opt.value, label: opt.label }))}
+			chips={selected.map((opt) => ({
+				key: opt.value,
+				label: opt.colorDot ? (
+					<span className="inline-flex items-center gap-1.5">
+						<span
+							className="size-1.75 rounded-full shrink-0"
+							style={{ background: opt.colorDot }}
+						/>
+						{opt.label}
+					</span>
+				) : (
+					opt.label
+				),
+			}))}
 			onRemoveChip={toggle}
 			canEdit={canEdit}
 			addLabel={t("taskDetail.propertyField.multiSelectEditor.addOption")}
 		>
-			{options.map((opt) => (
-				<OptionListButton
-					key={opt.value}
-					option={opt}
-					isSelected={value.includes(opt.value)}
-					onClick={() => toggle(opt.value)}
-				/>
-			))}
+			<SearchableList
+				items={options.map((opt) =>
+					toOptionItem(opt, value.includes(opt.value), () => toggle(opt.value)),
+				)}
+			/>
 		</ChipField>
 	);
 }

@@ -14,8 +14,49 @@ type Config struct {
 	Storage    StorageConfig
 	Security   SecurityConfig
 	Plugins    PluginsConfig
+	Release    ReleaseConfig
 	AIAgentURL string // base URL of the ai-agent service, e.g. http://ai-agent:8080
-	Env        string // development | production
+	// AIAgentInternalKey authenticates server-to-server calls into ai-agent's
+	// internal-only routes (see services/ai-agent's _require_internal_key) —
+	// must match ai-agent's own INTERNAL_API_KEY.
+	AIAgentInternalKey string
+	// SSHBastionHost/PortForwardHost are purely descriptive, deployment-wide
+	// values this service never itself acts on — agent-runner is what
+	// actually relays SSH connections and port forwards (see
+	// docs/ai-agent/environment-management.md's "Port Forwarding" and
+	// "Terminal / SSH Access" sections). They're duplicated here, read from
+	// the exact same SSH_BASTION_HOST/PORT_FORWARD_HOST env vars already set
+	// on agent-runner, solely so GET /environments/config
+	// (handler.EnvironmentHandler.GetConfig) can hand the frontend a real
+	// `ssh` command and a real port-forward host instead of a placeholder —
+	// see that handler's own doc comment. Empty means the operator hasn't
+	// set the matching env var there either, which the frontend treats as
+	// "not configured."
+	SSHBastionHost  string
+	PortForwardHost string
+	Env             string // development | production
+}
+
+// ReleaseConfig holds settings for the "new version available" check that the
+// home screen surfaces. The API queries the GitHub releases/latest endpoint of
+// the upstream project and (optionally) the fork, caching the result.
+type ReleaseConfig struct {
+	// Version is the version of the running build, e.g. "v0.9.4".
+	// Injected via the PACA_VERSION env var; unset builds report "dev" and
+	// never show an update banner.
+	Version string
+	// UpstreamRepo is the "owner/name" whose releases represent the original
+	// project's evolution (default: "Paca-AI/paca").
+	UpstreamRepo string
+	// ForkRepo is the "owner/name" of the fork whose releases represent the
+	// deployer's own versions. Empty disables the fork check.
+	ForkRepo string
+	// CacheTTL is how long a GitHub releases/latest response is cached in
+	// Valkey before a fresh request is made (keeps well under the unauthenticated
+	// rate limit).
+	CacheTTL time.Duration
+	// Timeout is the HTTP timeout for each GitHub request.
+	Timeout time.Duration
 }
 
 // ServerConfig holds HTTP server settings.
@@ -23,6 +64,18 @@ type ServerConfig struct {
 	Port         string
 	CookieSecure bool   // set Secure flag on auth cookies; enable when behind an SSL-terminating proxy
 	PublicURL    string // externally reachable base URL (for example, https://paca.example.com)
+	// CORSAllowedOrigins is the allow-list of frontend origins permitted to
+	// make cross-origin requests. A single "*" (the default, for backward
+	// compatibility with existing deployments that don't set CORS_ORIGINS)
+	// reflects Access-Control-Allow-Origin: * for every request; any other
+	// value is an exact-match allow-list. Configure via the comma-separated
+	// CORS_ORIGINS environment variable, e.g. "https://paca.example.com".
+	CORSAllowedOrigins []string
+	// AuthRateLimit is how many requests per minute one client IP may make
+	// to each credential endpoint under /auth (password login, password set,
+	// SSO login/callback); token refresh gets 3x that. 0 disables the
+	// limits. Configure via AUTH_RATE_LIMIT_PER_MINUTE (default 20).
+	AuthRateLimit int
 }
 
 // AdminConfig holds the default administrator credentials seeded on first startup.
@@ -74,13 +127,14 @@ type JWTConfig struct {
 
 // StorageConfig holds object-storage settings.
 // When Provider is "s3" the service connects to AWS S3 using the Region field.
-// When Provider is "minio" (default) it targets the Endpoint URL.
+// When Provider is anything else (default: "rustfs") it targets the Endpoint
+// URL as a self-hosted, S3-compatible store.
 // The bucket is created automatically on startup if it does not exist.
 type StorageConfig struct {
-	Provider        string // "s3" | "minio"  (default: "minio")
-	Endpoint        string // MinIO URL, e.g. "minio:9000"; ignored for AWS S3
+	Provider        string // "s3" | "rustfs"  (default: "rustfs")
+	Endpoint        string // self-hosted S3-compatible URL, e.g. "rustfs:9000"; ignored for AWS S3
 	PublicURL       string // public-facing base URL for presigned URLs, e.g. "http://localhost/storage"
-	Region          string // AWS region; used for S3; also supplied to MinIO (can be any value)
+	Region          string // AWS region; used for S3; also supplied to the self-hosted store (can be any value)
 	Bucket          string
 	AccessKeyID     string
 	SecretAccessKey string
@@ -110,6 +164,12 @@ type PluginsConfig struct {
 	// bundles for installed plugins.  Served at /plugins-mcp/<pluginName>/.
 	// Each plugin is expected at {MCPDir}/{pluginName}/mcp.js.
 	MCPDir string
+
+	// SkillsDir is the local filesystem directory that contains extracted
+	// Agent Skills bundles for installed plugins.  Served at
+	// /plugins-skills/<pluginName>/.  Each skill is expected at
+	// {SkillsDir}/{pluginName}/{skillName}/SKILL.md.
+	SkillsDir string
 
 	// S3Prefix is the S3 key prefix used when Store is "s3".
 	// Plugin WASM binaries are fetched from {S3Prefix}/{pluginName}/backend.wasm.

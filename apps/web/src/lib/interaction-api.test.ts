@@ -25,6 +25,9 @@ import {
 	layoutToViewType,
 	listAllTasks,
 	listSprintTasks,
+	listSubtasks,
+	SUBTASKS_PAGE_SIZE,
+	subtasksInfiniteQueryOptions,
 	type Task,
 	updateTask,
 } from "./interaction-api";
@@ -47,13 +50,14 @@ const makeTask = (overrides: Partial<Task> = {}): Task => ({
 	parent_task_id: null,
 	description: null,
 	importance: 0,
-	assignee_id: null,
+	assignee_ids: [],
 	reporter_id: null,
 	custom_fields: {},
 	view_position: null,
 	view_group_key: null,
 	created_at: "2026-01-01T00:00:00Z",
 	updated_at: "2026-01-01T00:00:00Z",
+	assignment_mode: "manual",
 	...overrides,
 });
 
@@ -233,6 +237,84 @@ describe("interaction-api", () => {
 		});
 	});
 
+	describe("listSubtasks", () => {
+		it("fetches the first page with the default page size and returns the full TaskListResult", async () => {
+			const task = makeTask({ parent_task_id: TASK_ID });
+			mockGet.mockResolvedValue(
+				ok({
+					items: [task],
+					page_size: SUBTASKS_PAGE_SIZE,
+					next_cursor: null,
+				}),
+			);
+
+			const result = await listSubtasks(PROJECT_ID, TASK_ID);
+
+			expect(result).toEqual({
+				items: [task],
+				page_size: SUBTASKS_PAGE_SIZE,
+				next_cursor: null,
+			});
+			expect(mockGet).toHaveBeenCalledWith(`/projects/${PROJECT_ID}/tasks`, {
+				params: {
+					parent_task_id: TASK_ID,
+					cursor: undefined,
+					page_size: SUBTASKS_PAGE_SIZE,
+				},
+			});
+		});
+
+		it("forwards a cursor to page past the first batch of subtasks", async () => {
+			mockGet.mockResolvedValue(
+				ok({ items: [], page_size: SUBTASKS_PAGE_SIZE, next_cursor: null }),
+			);
+
+			await listSubtasks(PROJECT_ID, TASK_ID, { cursor: "cursor-1" });
+
+			expect(mockGet).toHaveBeenCalledWith(`/projects/${PROJECT_ID}/tasks`, {
+				params: {
+					parent_task_id: TASK_ID,
+					cursor: "cursor-1",
+					page_size: SUBTASKS_PAGE_SIZE,
+				},
+			});
+		});
+	});
+
+	describe("subtasksInfiniteQueryOptions", () => {
+		it("exposes the same query key regardless of pagination state", () => {
+			const opts = subtasksInfiniteQueryOptions(PROJECT_ID, TASK_ID);
+			expect(opts.queryKey).toEqual([
+				"projects",
+				PROJECT_ID,
+				"tasks",
+				TASK_ID,
+				"subtasks",
+			]);
+			expect(opts.initialPageParam).toBeUndefined();
+		});
+
+		it("advances to the next page's cursor while more subtasks remain, and stops once next_cursor is null", () => {
+			const opts = subtasksInfiniteQueryOptions(PROJECT_ID, TASK_ID);
+			expect(
+				opts.getNextPageParam?.(
+					{ items: [], page_size: 50, next_cursor: "c2" },
+					[],
+					undefined,
+					[],
+				),
+			).toBe("c2");
+			expect(
+				opts.getNextPageParam?.(
+					{ items: [], page_size: 50, next_cursor: null },
+					[],
+					"c2",
+					[],
+				),
+			).toBeUndefined();
+		});
+	});
+
 	describe("listAllTasks", () => {
 		it("passes only explicit filtering params through the single tasks endpoint", async () => {
 			mockGet.mockResolvedValue(
@@ -295,6 +377,100 @@ describe("interaction-api", () => {
 				{ params: Record<string, unknown> },
 			];
 			expect(config.params?.search).toBeUndefined();
+		});
+
+		it("serializes customFieldFilters as a single JSON query param", async () => {
+			mockGet.mockResolvedValue(
+				ok({ items: [], total: 0, page: 1, page_size: 200 }),
+			);
+
+			await listAllTasks(PROJECT_ID, {
+				customFieldFilters: {
+					priority: { values: ["High", "Urgent"] },
+					effort: { min: 2, max: 8 },
+				},
+			});
+
+			const [, config] = mockGet.mock.calls[0] as [
+				string,
+				{ params: Record<string, unknown> },
+			];
+			expect(config.params?.custom_field_filters).toBe(
+				JSON.stringify({
+					priority: { values: ["High", "Urgent"] },
+					effort: { min: 2, max: 8 },
+				}),
+			);
+		});
+
+		it("omits custom_field_filters when customFieldFilters is empty or unset", async () => {
+			mockGet.mockResolvedValue(
+				ok({ items: [], total: 0, page: 1, page_size: 200 }),
+			);
+
+			await listAllTasks(PROJECT_ID, { customFieldFilters: {} });
+
+			const [, config] = mockGet.mock.calls[0] as [
+				string,
+				{ params: Record<string, unknown> },
+			];
+			expect(config.params?.custom_field_filters).toBeUndefined();
+		});
+
+		it("serializes the built-in date/story-points/importance/tags filters", async () => {
+			mockGet.mockResolvedValue(
+				ok({ items: [], total: 0, page: 1, page_size: 200 }),
+			);
+
+			await listAllTasks(PROJECT_ID, {
+				startDateAfter: "2024-01-01",
+				startDateBefore: "2024-06-01",
+				dueDateAfter: "2024-02-01",
+				dueDateBefore: "2024-07-01",
+				storyPointsMin: 2,
+				storyPointsMax: 8,
+				importanceRanges: [
+					{ min: 1, max: 19 },
+					{ min: 100, max: 2147483647 },
+				],
+				tags: ["urgent", "needs review"],
+			});
+
+			const [, config] = mockGet.mock.calls[0] as [
+				string,
+				{ params: Record<string, unknown> },
+			];
+			expect(config.params?.start_date_after).toBe("2024-01-01");
+			expect(config.params?.start_date_before).toBe("2024-06-01");
+			expect(config.params?.due_date_after).toBe("2024-02-01");
+			expect(config.params?.due_date_before).toBe("2024-07-01");
+			expect(config.params?.story_points_min).toBe(2);
+			expect(config.params?.story_points_max).toBe(8);
+			expect(config.params?.importance_ranges).toBe(
+				JSON.stringify([
+					{ min: 1, max: 19 },
+					{ min: 100, max: 2147483647 },
+				]),
+			);
+			expect(config.params?.tags).toBe("urgent,needs review");
+		});
+
+		it("omits the built-in filter params when unset or empty", async () => {
+			mockGet.mockResolvedValue(
+				ok({ items: [], total: 0, page: 1, page_size: 200 }),
+			);
+
+			await listAllTasks(PROJECT_ID, { importanceRanges: [], tags: [] });
+
+			const [, config] = mockGet.mock.calls[0] as [
+				string,
+				{ params: Record<string, unknown> },
+			];
+			expect(config.params?.start_date_after).toBeUndefined();
+			expect(config.params?.due_date_before).toBeUndefined();
+			expect(config.params?.story_points_min).toBeUndefined();
+			expect(config.params?.importance_ranges).toBeUndefined();
+			expect(config.params?.tags).toBeUndefined();
 		});
 	});
 

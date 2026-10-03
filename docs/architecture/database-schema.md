@@ -16,6 +16,13 @@ Interactive diagram: [https://dbdiagram.io/d/Paca-69c212ae78c6c4bc7a4fc190](http
 | `000006_add_plugin_view_type.sql` | Extends `sprint_views.view_type` CHECK to allow `'plugin'` as a valid view type. |
 | `000007_remove_github_tables.sql` | Drops GitHub integration tables (`github_integrations`, `github_repositories`, `github_pull_requests`, `github_task_pr_links`, `github_task_branches`) — migrated to plugins. |
 | `000008_add_ai_agents.sql` | Adds AI agent tables: `agents`, `agent_mcp_servers`, `agent_skills`, `agent_chat_sessions`, `agent_conversations`, `agent_conversation_events`. Modifies `project_members` to add `member_type` and `agent_id` (makes `user_id` nullable) for agent membership support. |
+| `000017_add_agent_environment_variables.sql` | Adds `agent_environment_variables` (per-agent secret env vars, encrypted at rest). |
+| `000022_add_acp_agents.sql` | Adds ACP (Agent Client Protocol) agent support to `agents`: `agent_type` ('llm' \| 'acp'), `acp_provider`, `acp_command`, `acp_bridge_token_hash` — a second agent "shape" that delegates to a local coding CLI over a bridge daemon instead of running an LLM loop in-cluster. |
+| `000031_add_global_agents.sql` | Adds "global" agents — an agent with no owning project (`agents.project_id` nullable, `agent_scope` discriminator, `global_role_id`) that is instead attached to zero or more projects via ordinary `project_members` rows, the same mechanism used to add a human member. Adds `actor_user_id` to `agent_chat_sessions` and `agent_conversations` for chat sessions/conversations started from the home page or admin pages, outside any project. See the comment above the `agents` table below. |
+| `000059_add_default_global_role.sql` | Adds `global_roles.is_default` (one default at a time, enforced by the partial unique index `uq_global_roles_one_default`) and marks `USER` the default where none is set. The API used to hardcode the role *named* `USER` for every new account; the default is data now, changed with `PUT /admin/global-roles/:roleId/set-default`. |
+| `000061_unify_activities.sql` | Creates the single `activities` table for every entity in a project (task, doc, sprint, view, automation, environment, member) with an `origin` column, copies all `task_activities` and `doc_activities` rows into it under their original IDs, then drops both old tables. |
+
+*(Migrations between `000008` and `000017`/`000022`/`000031` that touch other subsystems — tasks, sprints, docs, notifications, etc. — are omitted here; see `services/api/migrations/` for the full, authoritative list.)*
 
 ## Schema (DBML)
 
@@ -37,6 +44,7 @@ Table global_roles {
   id uuid [primary key]
   name varchar [unique, not null]
   permissions jsonb [not null]
+  is_default boolean [not null, default: false, note: 'The role new users and new global agents start with. At most one row (partial unique index uq_global_roles_one_default); the row that holds it cannot be deleted.']
   created_at timestamp
   updated_at timestamp
 }
@@ -117,7 +125,6 @@ Table tasks {
   description jsonb [null, note: 'BlockNote rich-text document stored as a JSON array of block objects. null means no description. Each block object follows the BlockNote schema: { id, type, props, content, children }.']
   importance integer [not null, default: 0, note: 'unsigned; higher = more important']
   story_points integer [null, note: 'Story point estimate; must be >= 0 if set']
-  assignee_id uuid [ref: > project_members.id]
   reporter_id uuid [ref: > project_members.id]
   custom_fields jsonb [not null, default: '{}']
   start_date date [null]
@@ -231,6 +238,19 @@ Table task_attachments {
   }
 }
 
+// A task can have multiple assignees; task_assignees is the join table.
+// member_id cascades on delete, so removing a member drops just their one
+// join row rather than clearing the whole task.
+Table task_assignees {
+  task_id uuid [not null, ref: > tasks.id]
+  member_id uuid [not null, ref: > project_members.id]
+  assigned_at timestamp [not null]
+
+  indexes {
+    (task_id, member_id) [pk]
+  }
+}
+
 // --- DOCUMENTATION ---
 Table doc_folders {
   id         uuid [primary key]
@@ -267,26 +287,18 @@ Table doc_snapshots {
   created_at      timestamp
 }
 
-Table doc_activities {
-  id            uuid [primary key]
-  document_id   uuid [not null, ref: > documents.id]
-  actor_id      uuid [null, ref: > project_members.id, note: 'NULL for system events or if the member was removed']
-  activity_type varchar [not null, note: 'doc.created | doc.updated | doc.deleted | doc.moved | doc.folder.created | doc.folder.updated | doc.folder.deleted | comment']
-  content       jsonb [not null, default: '{}', note: 'For doc.updated: [{field, old, new}]. For comment: {text}. For doc.moved: {from_folder_id, to_folder_id}.']
+Table activities {
+  id            uuid [primary key, note: 'Producer-assigned; comments are inserted directly and their stream copy conflicts on this id']
+  project_id    uuid [not null, ref: > projects.id]
+  entity_type   text [not null, note: 'task | doc | sprint | view | automation | environment | member']
+  entity_id     uuid [null, note: 'No FK on purpose: the record of a deletion must outlive the deleted entity']
+  actor_id      uuid [null, ref: > project_members.id, note: 'Resolved from the user/agent UUID by ActivityConsumer. NULL for system events or a removed member']
+  origin        text [not null, default: 'system', note: 'user | agent | automation | jev | annotation | system']
+  activity_type text [not null, note: 'Event topic, e.g. task.updated, doc.moved, sprint.completed, comment']
+  content       jsonb [not null, default: '{}']
   created_at    timestamp
   updated_at    timestamp
   deleted_at    timestamp [null, note: 'Soft-delete for comments']
-}
-
-Table task_activities {
-  id uuid [primary key]
-  task_id uuid [not null, ref: > tasks.id]
-  actor_id uuid [null, ref: > project_members.id, note: 'References project_members(id). Resolved from the authenticated user UUID by the ActivityConsumer at consume-time using the task project_id. NULL for system events or if the member was removed before the stream message was processed.']
-  activity_type varchar [not null]
-  content jsonb [not null, default: '{}']
-  created_at timestamp
-  updated_at timestamp
-  deleted_at timestamp [null, note: 'Soft-delete for comments']
 }
 
 // --- PLUGINS ---
@@ -337,21 +349,55 @@ Table api_keys {
   revoked_at timestamp [null]
 }
 
-// --- AI AGENTS (000008) ---
-
+// --- AI AGENTS (000008, extended by 000017 / 000022 / 000031) ---
+//
+// Global Agents (000031)
+// -----------------------
+// An agent has two possible scopes, discriminated by agent_scope:
+//   'project' (default) — owned by exactly one project (project_id set),
+//                          same as every agent before this migration.
+//   'global'             — project_id is NULL. Chats on the home page and
+//                          admin pages (no project context — see
+//                          agent_chat_sessions/agent_conversations'
+//                          actor_user_id below) and is attached to projects
+//                          only indirectly, by being added as an ordinary
+//                          project_members row — the exact same "invite a
+//                          member" action used for a human, just with
+//                          agent_id set instead of user_id. Because
+//                          uq_pm_project_agent (000008) is scoped per
+//                          (project_id, agent_id) rather than per agent_id
+//                          alone, one global agent can be invited into many
+//                          projects simultaneously, and behaves there
+//                          exactly like a project-scoped agent (task
+//                          assignment, @mention, project chat) — nothing
+//                          else keys off agents.project_id, only the
+//                          project_members row.
+// global_role_id mirrors users.role_id: it governs what a global agent may
+// do at global scope (i.e. via project-management-shaped tools called from
+// the home/admin chat, with no project context of its own). A project-scoped
+// agent never has a global_role_id — see ck_agents_scope.
 Table agents {
   id uuid [primary key]
-  project_id uuid [not null, ref: > projects.id]
+  project_id uuid [null, ref: > projects.id, note: 'NULL for a global-scope agent (agent_scope = global)']
+  agent_scope varchar [not null, default: 'project', note: '''project | global. ck_agents_scope enforces:
+    project -> project_id NOT NULL AND global_role_id NULL
+    global  -> project_id NULL''']
+  global_role_id uuid [null, ref: > global_roles.id, note: 'Only ever set for a global-scope agent. ON DELETE RESTRICT, mirrors fk_users_role_id.']
   name varchar [not null]
-  handle varchar [not null, note: '@mention handle, unique per project']
+  handle varchar [not null, note: '@mention handle. Unique per project for a project-scoped agent; unique workspace-wide for a global agent (see indexes below).']
   avatar_url varchar [null]
-  llm_provider varchar [not null, note: 'LiteLLM provider prefix, e.g. anthropic, openai']
-  llm_model varchar [not null, note: 'LiteLLM model name, e.g. claude-sonnet-4-6']
-  llm_api_key_secret varchar [not null, note: 'Encrypted at rest; never returned by the API']
+  agent_type varchar [not null, default: 'llm', note: '''llm | acp (000022).
+    llm — runs an LLM reasoning loop in-cluster via llm_provider/llm_model/llm_api_key_secret.
+    acp — delegates to a coding CLI (Claude Code, Codex, Gemini CLI, or custom) the user runs
+          locally, connected over an authenticated bridge daemon; llm_* columns stay empty.''']
+  llm_provider varchar [not null, note: 'LiteLLM provider prefix, e.g. anthropic, openai. Empty string for agent_type = acp.']
+  llm_model varchar [not null, note: 'LiteLLM model name, e.g. claude-sonnet-4-6. Empty string for agent_type = acp.']
+  llm_api_key_secret varchar [not null, note: 'Encrypted at rest; never returned by the API. Empty string for agent_type = acp.']
   llm_base_url varchar [null]
+  acp_provider varchar [null, note: 'claude-code | codex | gemini-cli | goose | custom. Required when agent_type = acp (ck_agents_acp_requires_provider).']
+  acp_command jsonb [not null, default: '[]', note: 'JSON array of the launch command + args. Only meaningful when acp_provider = custom.']
+  acp_bridge_token_hash varchar [null, note: 'SHA-256 hex digest of the current local-bridge auth token. The plaintext is shown once, never persisted.']
   system_prompt text [not null, default: '']
-  can_clone_repos boolean [not null, default: true]
-  can_create_prs boolean [not null, default: true]
   max_iterations integer [not null, default: 50]
   timeout_minutes integer [not null, default: 30]
   git_committer_name varchar [not null, default: 'paca-agent']
@@ -362,7 +408,25 @@ Table agents {
   deleted_at timestamp [null]
 
   indexes {
-    (project_id, handle) [unique, note: 'Partial unique: WHERE deleted_at IS NULL']
+    (project_id, handle) [unique, note: 'Partial unique: WHERE deleted_at IS NULL AND project_id IS NOT NULL']
+    (handle) [unique, note: 'Partial unique: WHERE deleted_at IS NULL AND project_id IS NULL — closes the gap standard SQL NULL semantics leave in the index above for global agents']
+    (agent_scope)
+    (global_role_id) [note: 'Partial: WHERE global_role_id IS NOT NULL']
+  }
+}
+
+// Per-agent secret environment variables, encrypted at rest, injected into
+// the agent's sandbox container at run time (000017).
+Table agent_environment_variables {
+  id uuid [primary key]
+  agent_id uuid [not null, ref: > agents.id]
+  key varchar [not null]
+  encrypted_value text [not null]
+  created_at timestamp
+  updated_at timestamp
+
+  indexes {
+    (agent_id, key) [unique]
   }
 }
 
@@ -401,26 +465,37 @@ Table agent_skills {
   }
 }
 
+// project_id/member_id (a project chat) and actor_user_id (a global chat)
+// are mutually exclusive — ck_agent_chat_sessions_actor (000031) requires
+// exactly one side set: project_id+member_id both NOT NULL and actor_user_id
+// NULL, or project_id+member_id both NULL and actor_user_id NOT NULL.
 Table agent_chat_sessions {
   id uuid [primary key]
   agent_id uuid [not null, ref: > agents.id]
-  project_id uuid [not null, ref: > projects.id]
-  member_id uuid [not null, ref: > project_members.id, note: 'The human member chatting with the agent']
+  project_id uuid [null, ref: > projects.id, note: 'NULL for a global chat session (see actor_user_id)']
+  member_id uuid [null, ref: > project_members.id, note: 'The human member chatting with a project agent. NULL for a global chat session.']
+  actor_user_id uuid [null, ref: > users.id, note: 'The human chatting with a global agent from the home/admin pages, identified directly (no project_members row need exist). NULL for a project chat session. ON DELETE RESTRICT.']
   title varchar [null]
   last_message_at timestamp [null]
   created_at timestamp
   updated_at timestamp
 }
 
+// triggered_by_member_id and actor_user_id are never both set
+// (ck_agent_conversations_actor, 000031) — three distinguishable actor
+// states: a project-scoped human member (triggered_by_member_id set), the
+// automation-workflow engine (both NULL, unchanged since 000018), or a human
+// chatting with a global agent (actor_user_id set, project_id NULL).
 Table agent_conversations {
-  id uuid [primary key, note: 'Also used as the OpenHands conversation_id']
+  id uuid [primary key, note: 'Also used as the ACP session/conversation identifier agent-runner passes to Goose']
   agent_id uuid [not null, ref: > agents.id]
-  project_id uuid [not null, ref: > projects.id]
-  trigger_type varchar [not null, note: 'task_assigned | comment_mention | chat_message']
+  project_id uuid [null, ref: > projects.id, note: 'NULL for a global-chat conversation (project_id IS NULL + actor_user_id IS NOT NULL)']
+  trigger_type varchar [not null, note: 'task_assigned | comment_mention | chat_message | description_write. Global chat reuses chat_message — project_id IS NULL is what distinguishes it.']
   task_id uuid [null, ref: > tasks.id]
   comment_id uuid [null]
   chat_session_id uuid [null, ref: > agent_chat_sessions.id]
-  triggered_by_member_id uuid [not null, ref: > project_members.id]
+  triggered_by_member_id uuid [null, ref: > project_members.id, note: 'NULL for the automation engine or a global-chat conversation (see actor_user_id)']
+  actor_user_id uuid [null, ref: > users.id, note: 'Set only for a global-chat conversation. ON DELETE RESTRICT.']
   status varchar [not null, default: 'queued', note: 'queued | running | paused | finished | failed | stopped']
   container_id varchar [null]
   host_port integer [null]
@@ -441,7 +516,7 @@ Table agent_conversation_events {
   id uuid [primary key]
   conversation_id uuid [not null, ref: > agent_conversations.id]
   event_index integer [not null, note: 'Sequential index within the conversation (0-based)']
-  event_type varchar [not null, note: 'OpenHands SDK event type: MessageAction, CmdRunAction, FileEditAction, etc.']
+  event_type varchar [not null, note: 'ACP session/update kind for llm agents: agent_message_chunk, tool_call, tool_call_update, turn_end']
   event_source varchar [not null, note: 'agent | user | system | environment']
   payload jsonb [not null, default: '{}']
   created_at timestamp

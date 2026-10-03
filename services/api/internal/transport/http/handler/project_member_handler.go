@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -12,6 +13,19 @@ import (
 	"github.com/Paca-AI/api/internal/transport/http/middleware"
 	"github.com/Paca-AI/api/internal/transport/http/presenter"
 )
+
+// toProjectMemberResponse maps m to a ProjectMemberResponse and, if an
+// AvatarService is configured, resolves the backing user/agent's avatar
+// keys into presigned display URLs.
+func (h *ProjectHandler) toProjectMemberResponse(ctx context.Context, m *projectdom.ProjectMember) dto.ProjectMemberResponse {
+	resp := dto.ProjectMemberFromEntity(m)
+	if h.avatarSvc != nil {
+		key, thumbKey := dto.MemberAvatarKeys(m)
+		resp.AvatarURL, _ = h.avatarSvc.ResolveAvatarURL(ctx, key)
+		resp.AvatarThumbURL, _ = h.avatarSvc.ResolveAvatarURL(ctx, thumbKey)
+	}
+	return resp
+}
 
 // ListMembers handles GET /projects/:projectId/members.
 func (h *ProjectHandler) ListMembers(w http.ResponseWriter, r *http.Request) {
@@ -27,7 +41,7 @@ func (h *ProjectHandler) ListMembers(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := make([]dto.ProjectMemberResponse, 0, len(members))
 	for _, m := range members {
-		resp = append(resp, dto.ProjectMemberFromEntity(m))
+		resp = append(resp, h.toProjectMemberResponse(r.Context(), m))
 	}
 	presenter.OK(w, r, resp)
 }
@@ -44,8 +58,10 @@ func (h *ProjectHandler) AddMember(w http.ResponseWriter, r *http.Request) {
 	if !middleware.BindJSON(w, r, &req) {
 		return
 	}
-	if req.UserID == uuid.Nil {
-		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "user_id is required"))
+	hasUser := req.UserID != uuid.Nil
+	hasAgent := req.AgentID != nil && *req.AgentID != uuid.Nil
+	if hasUser == hasAgent {
+		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "exactly one of user_id or agent_id is required"))
 		return
 	}
 	if req.ProjectRoleID == uuid.Nil {
@@ -55,16 +71,20 @@ func (h *ProjectHandler) AddMember(w http.ResponseWriter, r *http.Request) {
 
 	m, err := h.svc.AddMember(r.Context(), id, projectdom.AddMemberInput{
 		UserID:        req.UserID,
+		AgentID:       req.AgentID,
 		ProjectRoleID: req.ProjectRoleID,
+		Description:   req.Description,
 	})
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
 	}
-	presenter.Created(w, r, dto.ProjectMemberFromEntity(m))
+	presenter.Created(w, r, h.toProjectMemberResponse(r.Context(), m))
 }
 
 // UpdateMemberRole handles PATCH /projects/:projectId/members/:memberId.
+// Accepts project_role_id and/or description; either may be omitted to
+// leave it unchanged, but at least one must be present.
 func (h *ProjectHandler) UpdateMemberRole(w http.ResponseWriter, r *http.Request) {
 	projectID, err := parseProjectID(r)
 	if err != nil {
@@ -81,19 +101,29 @@ func (h *ProjectHandler) UpdateMemberRole(w http.ResponseWriter, r *http.Request
 	if !middleware.BindJSON(w, r, &req) {
 		return
 	}
-	if req.ProjectRoleID == uuid.Nil {
-		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "project_role_id is required"))
+	if req.ProjectRoleID == nil && req.Description == nil {
+		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "at least one of project_role_id or description is required"))
 		return
 	}
 
-	m, err := h.svc.UpdateMemberRoleByMemberID(r.Context(), projectID, memberID, projectdom.UpdateMemberRoleInput{
-		ProjectRoleID: req.ProjectRoleID,
-	})
-	if err != nil {
-		presenter.Error(w, r, err)
-		return
+	var m *projectdom.ProjectMember
+	if req.ProjectRoleID != nil {
+		m, err = h.svc.UpdateMemberRoleByMemberID(r.Context(), projectID, memberID, projectdom.UpdateMemberRoleInput{
+			ProjectRoleID: *req.ProjectRoleID,
+		})
+		if err != nil {
+			presenter.Error(w, r, err)
+			return
+		}
 	}
-	presenter.OK(w, r, dto.ProjectMemberFromEntity(m))
+	if req.Description != nil {
+		m, err = h.svc.UpdateMemberDescription(r.Context(), projectID, memberID, *req.Description)
+		if err != nil {
+			presenter.Error(w, r, err)
+			return
+		}
+	}
+	presenter.OK(w, r, h.toProjectMemberResponse(r.Context(), m))
 }
 
 // RemoveMember handles DELETE /projects/:projectId/members/:memberId.

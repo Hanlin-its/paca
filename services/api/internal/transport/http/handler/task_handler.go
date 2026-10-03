@@ -4,8 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"net/http"
@@ -15,6 +19,9 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/Paca-AI/api/internal/apierr"
+	attachmentdom "github.com/Paca-AI/api/internal/domain/attachment"
+	notificationdom "github.com/Paca-AI/api/internal/domain/notification"
+	projectdom "github.com/Paca-AI/api/internal/domain/project"
 	sprintdom "github.com/Paca-AI/api/internal/domain/sprint"
 	taskdom "github.com/Paca-AI/api/internal/domain/task"
 	"github.com/Paca-AI/api/internal/events"
@@ -26,10 +33,14 @@ import (
 
 // TaskHandler handles task management endpoints.
 type TaskHandler struct {
-	svc         taskdom.Service
-	viewSvc     sprintdom.ViewService
-	activitySvc taskdom.ActivityService
-	publisher   *messaging.Publisher
+	svc             taskdom.Service
+	viewSvc         sprintdom.ViewService
+	activitySvc     taskdom.ActivityService
+	publisher       *messaging.Publisher
+	projectSvc      projectServiceForAssigned
+	avatarSvc       attachmentdom.AvatarService
+	notificationSvc notificationdom.Service
+	autofillRepo    taskdom.AutofillRepository
 }
 
 // NewTaskHandler returns a TaskHandler wired to the task service, view service,
@@ -50,6 +61,69 @@ type TaskHandlerOption func(*TaskHandler)
 func WithTaskPublisher(p *messaging.Publisher) TaskHandlerOption {
 	return func(h *TaskHandler) {
 		h.publisher = p
+	}
+}
+
+// WithTaskAvatarService configures avatar URL resolution for activity
+// responses (comments/system events show the actor's avatar).
+func WithTaskAvatarService(svc attachmentdom.AvatarService) TaskHandlerOption {
+	return func(h *TaskHandler) {
+		h.avatarSvc = svc
+	}
+}
+
+// WithTaskNotificationService configures dispatching a plugin event (no
+// in-app row) when a task's description is updated to newly @mention a
+// user (see notificationdom.Service.NotifyTaskDescriptionMentioned).
+func WithTaskNotificationService(svc notificationdom.Service) TaskHandlerOption {
+	return func(h *TaskHandler) {
+		h.notificationSvc = svc
+	}
+}
+
+// toActivityResponse maps a to an ActivityResponse and, if an AvatarService
+// is configured, resolves the actor's avatar keys into presigned display URLs.
+func (h *TaskHandler) toActivityResponse(ctx context.Context, a *taskdom.Activity) dto.ActivityResponse {
+	resp := dto.ActivityFromEntity(a)
+	if h.avatarSvc != nil {
+		resp.ActorAvatarURL, _ = h.avatarSvc.ResolveAvatarURL(ctx, a.ActorAvatarKey)
+		resp.ActorAvatarThumbURL, _ = h.avatarSvc.ResolveAvatarURL(ctx, a.ActorAvatarThumbKey)
+	}
+	return resp
+}
+
+// assignedToMeMemberLookupConcurrency caps how many per-project ListMembers
+// lookups ListAssignedToMe issues concurrently while resolving the caller's
+// member IDs.
+const assignedToMeMemberLookupConcurrency = 20
+
+// projectServiceForAssigned is the minimal project-service surface used by
+// ListAssignedToMe to resolve which projects the caller belongs to and their
+// per-project member ID — task_assignees references project_members.id, not
+// the global user ID, so a membership lookup is required before the tasks
+// can be queried.
+type projectServiceForAssigned interface {
+	ListAccessible(ctx context.Context, userID uuid.UUID, page, pageSize int) ([]*projectdom.Project, int64, error)
+	ListMembers(ctx context.Context, projectID uuid.UUID) ([]*projectdom.ProjectMember, error)
+}
+
+// WithTaskAssignedProjectService wires the project service used by
+// ListAssignedToMe. Omitting this option makes ListAssignedToMe respond with
+// an empty list.
+func WithTaskAssignedProjectService(svc projectServiceForAssigned) TaskHandlerOption {
+	return func(h *TaskHandler) {
+		h.projectSvc = svc
+	}
+}
+
+// WithTaskAutofillRepository configures recording which fields a user
+// explicitly set at task creation — see taskdom.AutofillRepository. Omitting
+// this option means no provenance is recorded, so worker.TaskAutofillConsumer
+// would treat those fields as still-blank forever; harmless when Jev isn't
+// configured at all, but should be wired whenever it is.
+func WithTaskAutofillRepository(repo taskdom.AutofillRepository) TaskHandlerOption {
+	return func(h *TaskHandler) {
+		h.autofillRepo = repo
 	}
 }
 
@@ -125,9 +199,9 @@ func (h *TaskHandler) UpdateTaskType(w http.ResponseWriter, r *http.Request) {
 
 	t, err := h.svc.UpdateTaskType(r.Context(), projectID, typeID, taskdom.UpdateTaskTypeInput{
 		Name:        req.Name,
-		Icon:        req.Icon,
-		Color:       req.Color,
-		Description: req.Description,
+		Icon:        req.Icon.Ptr(),
+		Color:       req.Color.Ptr(),
+		Description: req.Description.Ptr(),
 	})
 	if err != nil {
 		presenter.Error(w, r, err)
@@ -345,15 +419,104 @@ func parseTaskSort(ctx context.Context, svc taskdom.Service, projectID uuid.UUID
 		}
 		for _, cf := range cfs {
 			if cf.FieldKey == sortBy {
+				optValues := make([]string, len(cf.Options))
+				for i, o := range cf.Options {
+					optValues[i] = o.Value
+				}
 				return taskdom.TaskSort{
 					By:     sortBy,
 					CFType: string(cf.FieldType),
-					CFOpts: cf.Options,
+					CFOpts: optValues,
 				}
 			}
 		}
 		return taskdom.TaskSort{}
 	}
+}
+
+// customFieldFilterParam is the wire shape of one entry in the
+// custom_field_filters query parameter (a JSON object keyed by field key).
+// Which members are meaningful is determined server-side from the field's
+// CustomFieldDefinition — see parseCustomFieldFilters.
+type customFieldFilterParam struct {
+	Values   []string `json:"values,omitempty"`
+	Min      *float64 `json:"min,omitempty"`
+	Max      *float64 `json:"max,omitempty"`
+	After    *string  `json:"after,omitempty"`
+	Before   *string  `json:"before,omitempty"`
+	Contains *string  `json:"contains,omitempty"`
+}
+
+// parseCustomFieldFilters decodes the custom_field_filters query parameter
+// (a JSON object keyed by custom field key) and resolves each entry's
+// FieldType against the project's custom field definitions — the field type
+// is never trusted from the client, since it determines how the value is
+// cast in SQL. Unknown field keys are silently ignored (e.g. a stale saved
+// view referencing a since-deleted custom field).
+func parseCustomFieldFilters(ctx context.Context, svc taskdom.Service, projectID uuid.UUID, raw string) (map[string]taskdom.CustomFieldFilterQuery, error) {
+	var parsed map[string]customFieldFilterParam
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return nil, apierr.New(apierr.CodeBadRequest, "invalid custom_field_filters")
+	}
+	if len(parsed) == 0 {
+		return nil, nil
+	}
+	cfs, err := svc.ListCustomFieldDefinitions(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	cfByKey := make(map[string]*taskdom.CustomFieldDefinition, len(cfs))
+	for _, cf := range cfs {
+		cfByKey[cf.FieldKey] = cf
+	}
+	resolved := make(map[string]taskdom.CustomFieldFilterQuery, len(parsed))
+	for key, p := range parsed {
+		cf, ok := cfByKey[key]
+		if !ok {
+			continue
+		}
+		resolved[key] = taskdom.CustomFieldFilterQuery{
+			FieldType: string(cf.FieldType),
+			Values:    p.Values,
+			Min:       p.Min,
+			Max:       p.Max,
+			After:     p.After,
+			Before:    p.Before,
+			Contains:  p.Contains,
+		}
+	}
+	return resolved, nil
+}
+
+// isValidDateString reports whether s is a valid "YYYY-MM-DD" date, matching
+// the format the start_date/due_date columns and their filter query params use.
+func isValidDateString(s string) bool {
+	_, err := time.Parse("2006-01-02", s)
+	return err == nil
+}
+
+// importanceRangeParam is the wire shape of one entry in the
+// importance_ranges query parameter (a JSON array of inclusive [min,max]
+// ranges, OR'd together — see taskdom.TaskFilter.ImportanceRanges).
+type importanceRangeParam struct {
+	Min int `json:"min"`
+	Max int `json:"max"`
+}
+
+// parseImportanceRanges decodes the importance_ranges query parameter.
+func parseImportanceRanges(raw string) ([]taskdom.IntRange, error) {
+	var parsed []importanceRangeParam
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return nil, apierr.New(apierr.CodeBadRequest, "invalid importance_ranges")
+	}
+	ranges := make([]taskdom.IntRange, 0, len(parsed))
+	for _, p := range parsed {
+		if p.Min > p.Max {
+			return nil, apierr.New(apierr.CodeBadRequest, "invalid importance_ranges: min > max")
+		}
+		ranges = append(ranges, taskdom.IntRange{Min: p.Min, Max: p.Max})
+	}
+	return ranges, nil
 }
 
 // ListTasks handles GET /projects/:projectId/tasks.
@@ -364,6 +527,14 @@ func parseTaskSort(ctx context.Context, svc taskdom.Service, projectID uuid.UUID
 //   - task_type_ids=<uuid,uuid>
 //   - parent_task_id=<uuid>
 //   - search=<text> (matches title or "#<task_number>", case-insensitive)
+//   - search_content=true (with search: also match description text)
+//   - custom_field_filters=<json> (object keyed by custom field key; see
+//     customFieldFilterParam for the shape of each entry)
+//   - start_date_after=<YYYY-MM-DD>, start_date_before=<YYYY-MM-DD>
+//   - due_date_after=<YYYY-MM-DD>, due_date_before=<YYYY-MM-DD>
+//   - story_points_min=<int>, story_points_max=<int>
+//   - importance_ranges=<json> (array of {"min":int,"max":int}, OR'd together)
+//   - tags=<tag,tag,...> (matches tasks with ANY of these tags)
 func (h *TaskHandler) ListTasks(w http.ResponseWriter, r *http.Request) {
 	projectID, err := parseProjectID(r)
 	if err != nil {
@@ -371,9 +542,10 @@ func (h *TaskHandler) ListTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pageSize, _ := strconv.Atoi(defaultQuery(r, "page_size", "20"))
-	if pageSize < 1 || pageSize > 200 {
-		pageSize = 20
+	pageSize, err := parsePageSize(r, 20, 200)
+	if err != nil {
+		presenter.Error(w, r, err)
+		return
 	}
 	filter := taskdom.TaskFilter{}
 
@@ -457,6 +629,76 @@ func (h *TaskHandler) ListTasks(w http.ResponseWriter, r *http.Request) {
 	}
 	if raw := strings.TrimSpace(r.URL.Query().Get("search")); raw != "" {
 		filter.Search = &raw
+		filter.SearchContent = r.URL.Query().Get("search_content") == "true"
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("custom_field_filters")); raw != "" {
+		cfFilters, err := parseCustomFieldFilters(r.Context(), h.svc, projectID, raw)
+		if err != nil {
+			presenter.Error(w, r, err)
+			return
+		}
+		filter.CustomFieldFilters = cfFilters
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("start_date_after")); raw != "" {
+		if !isValidDateString(raw) {
+			presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "invalid start_date_after"))
+			return
+		}
+		filter.StartDateAfter = &raw
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("start_date_before")); raw != "" {
+		if !isValidDateString(raw) {
+			presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "invalid start_date_before"))
+			return
+		}
+		filter.StartDateBefore = &raw
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("due_date_after")); raw != "" {
+		if !isValidDateString(raw) {
+			presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "invalid due_date_after"))
+			return
+		}
+		filter.DueDateAfter = &raw
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("due_date_before")); raw != "" {
+		if !isValidDateString(raw) {
+			presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "invalid due_date_before"))
+			return
+		}
+		filter.DueDateBefore = &raw
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("story_points_min")); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil {
+			presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "invalid story_points_min"))
+			return
+		}
+		filter.StoryPointsMin = &v
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("story_points_max")); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil {
+			presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "invalid story_points_max"))
+			return
+		}
+		filter.StoryPointsMax = &v
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("importance_ranges")); raw != "" {
+		ranges, err := parseImportanceRanges(raw)
+		if err != nil {
+			presenter.Error(w, r, err)
+			return
+		}
+		filter.ImportanceRanges = ranges
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("tags")); raw != "" {
+		var tags []string
+		for _, tag := range strings.Split(raw, ",") {
+			if tag = strings.TrimSpace(tag); tag != "" {
+				tags = append(tags, tag)
+			}
+		}
+		filter.Tags = tags
 	}
 	if cursorRaw := r.URL.Query().Get("cursor"); cursorRaw != "" {
 		filter.CursorAfter = &cursorRaw
@@ -554,6 +796,113 @@ func (h *TaskHandler) ListTasks(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ListAssignedToMe handles GET /users/me/tasks. It returns open (non-done)
+// tasks assigned to the authenticated user across every project they belong
+// to, ordered by importance (most important first) then created_at (oldest
+// first), keyset-paginated via the same opaque "cursor" query param used by
+// ListTasks. Powers the cross-project "assigned to me" widget on the home page.
+func (h *TaskHandler) ListAssignedToMe(w http.ResponseWriter, r *http.Request) {
+	claims := middleware.ClaimsFrom(r)
+	if claims == nil {
+		presenter.Error(w, r, apierr.New(apierr.CodeUnauthenticated, "unauthenticated"))
+		return
+	}
+	userID, err := uuid.Parse(claims.Subject)
+	if err != nil {
+		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "invalid subject claim"))
+		return
+	}
+
+	pageSize, err := parsePageSize(r, 10, 100)
+	if err != nil {
+		presenter.Error(w, r, err)
+		return
+	}
+	var cursor *string
+	if raw := r.URL.Query().Get("cursor"); raw != "" {
+		cursor = &raw
+	}
+
+	empty := func() {
+		presenter.OK(w, r, map[string]any{
+			"items":       []dto.TaskResponse{},
+			"page_size":   pageSize,
+			"next_cursor": nil,
+		})
+	}
+
+	if h.projectSvc == nil {
+		empty()
+		return
+	}
+
+	projects, _, err := h.projectSvc.ListAccessible(r.Context(), userID, 1, 10000)
+	if err != nil {
+		presenter.Error(w, r, err)
+		return
+	}
+	if len(projects) == 0 {
+		empty()
+		return
+	}
+
+	// Resolve the caller's project_members.id in each project — task
+	// assignment is stored by member ID, not user ID. Capped so a caller
+	// belonging to many projects can't fan out unbounded concurrent lookups.
+	g, gctx := errgroup.WithContext(r.Context())
+	g.SetLimit(assignedToMeMemberLookupConcurrency)
+	var mu sync.Mutex
+	var memberIDs []uuid.UUID
+	for _, p := range projects {
+		projectID := p.ID
+		g.Go(func() error {
+			members, listErr := h.projectSvc.ListMembers(gctx, projectID)
+			if listErr != nil {
+				return listErr
+			}
+			for _, m := range members {
+				if m.UserID == userID {
+					mu.Lock()
+					memberIDs = append(memberIDs, m.ID)
+					mu.Unlock()
+					break
+				}
+			}
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		presenter.Error(w, r, err)
+		return
+	}
+	if len(memberIDs) == 0 {
+		empty()
+		return
+	}
+
+	tasks, hasMore, err := h.svc.ListAssignedTasks(r.Context(), memberIDs, pageSize, cursor)
+	if err != nil {
+		presenter.Error(w, r, err)
+		return
+	}
+
+	resp := make([]dto.TaskResponse, 0, len(tasks))
+	for _, t := range tasks {
+		resp = append(resp, dto.TaskFromEntity(t))
+	}
+
+	var nextCursor *string
+	if hasMore && len(tasks) > 0 {
+		s := taskdom.EncodeTaskCursor(tasks[len(tasks)-1], taskdom.TaskSort{By: "importance"})
+		nextCursor = &s
+	}
+	presenter.OK(w, r, map[string]any{
+		"items":       resp,
+		"page_size":   pageSize,
+		"next_cursor": nextCursor,
+	})
+}
+
 // GetTask handles GET /projects/:projectId/tasks/:taskId.
 func (h *TaskHandler) GetTask(w http.ResponseWriter, r *http.Request) {
 	projectID, err := parseProjectID(r)
@@ -603,10 +952,25 @@ func (h *TaskHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req dto.CreateTaskRequest
-	if !middleware.BindJSON(w, r, &req) {
+	// Body is buffered (rather than using middleware.BindJSON's streaming
+	// decode) so it can be decoded twice: once into the typed DTO as usual,
+	// and once into rawFields to see which top-level keys the client
+	// actually sent — needed only to disambiguate CreateTaskRequest.
+	// Importance (a bare int, so JSON-absent and JSON-`0` otherwise decode
+	// identically) for userSetFieldKeys below.
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "failed to read request body"))
 		return
 	}
+	var req dto.CreateTaskRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, err.Error()))
+		return
+	}
+	var rawFields map[string]json.RawMessage
+	_ = json.Unmarshal(body, &rawFields) // best-effort; req above already validated the body decodes
+
 	if req.Description != nil {
 		if err := dto.ValidateBlockNoteContent(*req.Description); err != nil {
 			presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "description: "+err.Error()))
@@ -615,25 +979,59 @@ func (h *TaskHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	t, err := h.svc.CreateTask(r.Context(), taskdom.CreateTaskInput{
-		ProjectID:    projectID,
-		TaskTypeID:   req.TaskTypeID,
-		StatusID:     req.StatusID,
-		SprintID:     req.SprintID,
-		ParentTaskID: req.ParentTaskID,
-		Title:        req.Title,
-		Description:  req.NormalizedDescription(),
-		Importance:   req.Importance,
-		StoryPoints:  req.StoryPoints,
-		AssigneeID:   req.AssigneeID,
-		ReporterID:   req.ReporterID,
-		CustomFields: req.CustomFields,
-		StartDate:    req.StartDate,
-		DueDate:      req.DueDate,
-		Tags:         req.Tags,
+		ProjectID:      projectID,
+		TaskTypeID:     req.TaskTypeID,
+		StatusID:       req.StatusID,
+		SprintID:       req.SprintID,
+		ParentTaskID:   req.ParentTaskID,
+		Title:          req.Title,
+		Description:    req.NormalizedDescription(),
+		Importance:     req.Importance,
+		StoryPoints:    req.StoryPoints,
+		AssigneeIDs:    req.AssigneeIDs,
+		ReporterID:     req.ReporterID,
+		CustomFields:   req.CustomFields,
+		StartDate:      req.StartDate,
+		DueDate:        req.DueDate,
+		Tags:           req.Tags,
+		AssignmentMode: req.AssignmentMode,
 	})
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
+	}
+
+	// Record which fields the user explicitly provided (best-effort), scoped
+	// to the fields worker.TaskAutofillConsumer might otherwise fill in —
+	// see taskdom.AutofillRepository's doc comment. custom_fields keys are
+	// read from the already-decoded map (no absent/explicit-null ambiguity
+	// there), but the rest need rawFields: Importance is a bare int (JSON
+	// absence and JSON 0 are indistinguishable), Tags is a bare []string
+	// (JSON absence and an explicit empty array are indistinguishable), and
+	// TaskTypeID/ParentTaskID are pointers that are still nil for both
+	// "omitted" and "explicitly set to null" — checking rawFields instead
+	// treats an explicit null as user-set too (the user deliberately cleared
+	// it), not as something autofill should still try to fill.
+	if h.autofillRepo != nil {
+		userSetFieldKeys := make([]string, 0, len(req.CustomFields)+5)
+		for _, key := range []string{"importance", "task_type_id", "story_points", "tags", "parent_task_id"} {
+			if _, ok := rawFields[key]; ok {
+				userSetFieldKeys = append(userSetFieldKeys, key)
+			}
+		}
+		for key := range req.CustomFields {
+			userSetFieldKeys = append(userSetFieldKeys, "custom:"+key)
+		}
+		if len(userSetFieldKeys) > 0 {
+			if err := h.autofillRepo.RecordUserSetFields(r.Context(), t.ID, userSetFieldKeys); err != nil {
+				// Best-effort: a failure here just means autofill might later
+				// fill in a field this request explicitly set, not that the
+				// request itself failed — but it's worth a log line since it's
+				// a silent gap in the "never overwrite a human-set field"
+				// guarantee (see taskdom.AutofillRepository's doc comment).
+				slog.Warn("task handler: failed to record user-set fields", "task_id", t.ID, "err", err)
+			}
+		}
 	}
 
 	// Record creation activity (best-effort).
@@ -653,15 +1051,10 @@ func (h *TaskHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 			Content:      content,
 		})
 
-		// Enqueue an assignment event so the NotificationConsumer can create
-		// the in-app notification asynchronously (best-effort).
-		if h.publisher != nil && req.AssigneeID != nil {
-			_ = h.publisher.Append(r.Context(), events.StreamTaskAssignments, "task.assigned", map[string]any{
-				"task_id":                t.ID,
-				"project_id":             projectID,
-				"new_assignee_member_id": req.AssigneeID.String(),
-				"actor_user_id":          actorID.String(),
-			})
+		// Enqueue one assignment event per assignee so the NotificationConsumer
+		// can create the in-app notification asynchronously (best-effort).
+		for _, memberID := range req.AssigneeIDs {
+			_ = events.PublishAssignmentChanged(r.Context(), h.publisher, t.ID, projectID, memberID, nil, actorID, agentIDPtr, nil)
 		}
 	}
 
@@ -696,24 +1089,65 @@ func (h *TaskHandler) UpdateTask(w http.ResponseWriter, r *http.Request) {
 	oldTask, _ := h.svc.GetTask(r.Context(), projectID, taskID)
 
 	t, err := h.svc.UpdateTask(r.Context(), projectID, taskID, taskdom.UpdateTaskInput{
-		TaskTypeID:   req.TaskTypeID.Ptr(),
-		StatusID:     req.StatusID.Ptr(),
-		SprintID:     req.SprintID.Ptr(),
-		ParentTaskID: req.ParentTaskID.Ptr(),
-		Title:        req.Title,
-		Description:  req.Description.Ptr(),
-		Importance:   req.Importance,
-		StoryPoints:  req.StoryPoints.Ptr(),
-		AssigneeID:   req.AssigneeID.Ptr(),
-		ReporterID:   req.ReporterID.Ptr(),
-		CustomFields: req.CustomFields,
-		StartDate:    req.StartDate.Ptr(),
-		DueDate:      req.DueDate.Ptr(),
-		Tags:         req.Tags,
+		TaskTypeID:     req.TaskTypeID.Ptr(),
+		StatusID:       req.StatusID.Ptr(),
+		SprintID:       req.SprintID.Ptr(),
+		ParentTaskID:   req.ParentTaskID.Ptr(),
+		Title:          req.Title,
+		Description:    req.Description.Ptr(),
+		Importance:     req.Importance,
+		StoryPoints:    req.StoryPoints.Ptr(),
+		AssigneeIDs:    req.AssigneeIDs.Ptr(),
+		ReporterID:     req.ReporterID.Ptr(),
+		CustomFields:   req.CustomFields,
+		StartDate:      req.StartDate.Ptr(),
+		DueDate:        req.DueDate.Ptr(),
+		Tags:           req.Tags,
+		AssignmentMode: req.AssignmentMode,
 	})
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
+	}
+
+	// Record which fields this PATCH explicitly touched (best-effort) — see
+	// the equivalent block in CreateTask. Unlike there, no rawFields trick is
+	// needed: TaskTypeID.Set/StoryPoints.Set/ParentTaskID.Set already
+	// distinguish omitted from explicit (the Optional* wrapper types decode
+	// that way), and CustomFields/Tags are already *map[string]any/*[]string
+	// (nil = omitted). Note CustomFields is a whole-map replace (see
+	// UpdateTaskInput's doc comment), so every key in a PATCH that touches
+	// custom_fields at all is marked user-set here, not just the key(s) that
+	// actually changed value — an accepted over-approximation since only the
+	// create-time snapshot gates the autofill consumer.
+	if h.autofillRepo != nil {
+		var userSetFieldKeys []string
+		if req.TaskTypeID.Set {
+			userSetFieldKeys = append(userSetFieldKeys, "task_type_id")
+		}
+		if req.Importance != nil {
+			userSetFieldKeys = append(userSetFieldKeys, "importance")
+		}
+		if req.StoryPoints.Set {
+			userSetFieldKeys = append(userSetFieldKeys, "story_points")
+		}
+		if req.ParentTaskID.Set {
+			userSetFieldKeys = append(userSetFieldKeys, "parent_task_id")
+		}
+		if req.Tags != nil {
+			userSetFieldKeys = append(userSetFieldKeys, "tags")
+		}
+		if req.CustomFields != nil {
+			for key := range *req.CustomFields {
+				userSetFieldKeys = append(userSetFieldKeys, "custom:"+key)
+			}
+		}
+		if len(userSetFieldKeys) > 0 {
+			if err := h.autofillRepo.RecordUserSetFields(r.Context(), taskID, userSetFieldKeys); err != nil {
+				// Best-effort — see the identical comment in CreateTask.
+				slog.Warn("task handler: failed to record user-set fields", "task_id", taskID, "err", err)
+			}
+		}
 	}
 
 	// Record update activity (best-effort).
@@ -736,19 +1170,29 @@ func (h *TaskHandler) UpdateTask(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 
-		// Enqueue an assignment event when the assignee changed so the
-		// NotificationConsumer can create the in-app notification asynchronously.
-		if h.publisher != nil && req.AssigneeID.Set && req.AssigneeID.Value != nil {
-			oldAssignee := uuidPtrToStr(oldTask.AssigneeID)
-			newAssignee := req.AssigneeID.Value.String()
-			if oldAssignee != newAssignee {
-				_ = h.publisher.Append(r.Context(), events.StreamTaskAssignments, "task.assigned", map[string]any{
-					"task_id":                taskID,
-					"project_id":             projectID,
-					"new_assignee_member_id": req.AssigneeID.Value.String(),
-					"old_assignee_member_id": oldAssignee,
-					"actor_user_id":          actorID.String(),
-				})
+		// Enqueue an assignment event for each newly-added assignee so the
+		// NotificationConsumer can create the in-app notification
+		// asynchronously. Members already assigned before this update don't
+		// get a duplicate event — only genuinely new assignments notify.
+		if req.AssigneeIDs.Set {
+			oldSet := make(map[uuid.UUID]struct{}, len(oldTask.AssigneeIDs))
+			for _, id := range oldTask.AssigneeIDs {
+				oldSet[id] = struct{}{}
+			}
+			for _, memberID := range req.AssigneeIDs.Value {
+				if _, alreadyAssigned := oldSet[memberID]; alreadyAssigned {
+					continue
+				}
+				_ = events.PublishAssignmentChanged(r.Context(), h.publisher, taskID, projectID, memberID, nil, actorID, agentIDPtr, nil)
+			}
+		}
+
+		// Publish a plugin event for each user newly @mentioned in the
+		// description (no in-app row — see
+		// notificationSvc.NotifyTaskDescriptionMentioned's doc comment).
+		if h.notificationSvc != nil && req.Description.Set && req.Description.Value != nil {
+			for _, mentionedID := range newlyMentionedUserIDs(oldTask.Description, req.Description.Value) {
+				h.notificationSvc.NotifyTaskDescriptionMentioned(r.Context(), mentionedID, actorID, projectID, taskID)
 			}
 		}
 	}
@@ -796,12 +1240,23 @@ func (h *TaskHandler) taskChangedFields(ctx context.Context, old *taskdom.Task, 
 		}
 	}
 
-	if req.AssigneeID.Set {
-		oldVal := uuidPtrToStr(old.AssigneeID)
-		newVal := uuidPtrToStr(req.AssigneeID.Value)
-		if oldVal != newVal {
+	if req.AssigneeIDs.Set {
+		oldVal := uuidSliceToStrs(old.AssigneeIDs)
+		newVal := uuidSliceToStrs(req.AssigneeIDs.Value)
+		if !equalStrSets(oldVal, newVal) {
 			changes = append(changes, taskdom.FieldChange{Field: "assignee", Old: oldVal, New: newVal})
 		}
+	}
+
+	// Tracked even when AssigneeIDs doesn't itself change (e.g. switching an
+	// already-unassigned task into Auto mode): without this, flipping a task
+	// to Auto mode with an empty assignee list produces zero recorded
+	// changes, so no task.updated activity gets published to
+	// events.StreamActivities, and TaskAutoAssignConsumer — which only
+	// reacts to task.created/task.updated stream messages — never even runs
+	// to pick an assignee.
+	if req.AssignmentMode != nil && *req.AssignmentMode != old.AssignmentMode {
+		changes = append(changes, taskdom.FieldChange{Field: "assignment_mode", Old: old.AssignmentMode, New: *req.AssignmentMode})
 	}
 
 	if req.ReporterID.Set {
@@ -893,6 +1348,30 @@ func uuidPtrToStr(id *uuid.UUID) string {
 		return ""
 	}
 	return id.String()
+}
+
+// uuidSliceToStrs converts a UUID slice to a sorted string slice, for
+// order-insensitive set comparison and stable activity-log rendering.
+func uuidSliceToStrs(ids []uuid.UUID) []string {
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = id.String()
+	}
+	sort.Strings(out)
+	return out
+}
+
+// equalStrSets reports whether a and b (both already sorted) contain the same elements.
+func equalStrSets(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // timePtrToStr formats a *time.Time as a date string (empty string for nil).
@@ -1061,7 +1540,7 @@ func (h *TaskHandler) CreateCustomFieldDefinition(w http.ResponseWriter, r *http
 		FieldKey:    req.FieldKey,
 		DisplayName: req.DisplayName,
 		FieldType:   req.FieldType,
-		Options:     req.Options,
+		Options:     req.CustomFieldOptionsToDomain(),
 		IsRequired:  req.IsRequired,
 	})
 	if err != nil {
@@ -1092,7 +1571,7 @@ func (h *TaskHandler) UpdateCustomFieldDefinition(w http.ResponseWriter, r *http
 	f, err := h.svc.UpdateCustomFieldDefinition(r.Context(), projectID, fieldID, taskdom.UpdateCustomFieldDefinitionInput{
 		DisplayName: req.DisplayName,
 		FieldType:   req.FieldType,
-		Options:     req.Options,
+		Options:     req.CustomFieldOptionsToDomain(),
 		IsRequired:  req.IsRequired,
 	})
 	if err != nil {
@@ -1142,19 +1621,24 @@ func parseCommentID(r *http.Request) (uuid.UUID, error) {
 
 // ListTaskActivities handles GET /projects/:projectId/tasks/:taskId/activities.
 func (h *TaskHandler) ListTaskActivities(w http.ResponseWriter, r *http.Request) {
+	projectID, err := parseProjectID(r)
+	if err != nil {
+		presenter.Error(w, r, err)
+		return
+	}
 	taskID, err := parseTaskID(r)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
 	}
-	activities, err := h.activitySvc.ListActivities(r.Context(), taskID)
+	activities, err := h.activitySvc.ListActivities(r.Context(), projectID, taskID)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
 	}
 	resp := make([]dto.ActivityResponse, 0, len(activities))
 	for _, a := range activities {
-		resp = append(resp, dto.ActivityFromEntity(a))
+		resp = append(resp, h.toActivityResponse(r.Context(), a))
 	}
 	presenter.OK(w, r, map[string]any{"items": resp})
 }
@@ -1205,7 +1689,7 @@ func (h *TaskHandler) AddComment(w http.ResponseWriter, r *http.Request) {
 		presenter.Error(w, r, err)
 		return
 	}
-	presenter.Created(w, r, dto.ActivityFromEntity(a))
+	presenter.Created(w, r, h.toActivityResponse(r.Context(), a))
 }
 
 // UpdateComment handles PATCH /projects/:projectId/tasks/:taskId/activities/comments/:commentId.
@@ -1248,7 +1732,7 @@ func (h *TaskHandler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 		presenter.Error(w, r, err)
 		return
 	}
-	presenter.OK(w, r, dto.ActivityFromEntity(a))
+	presenter.OK(w, r, h.toActivityResponse(r.Context(), a))
 }
 
 // DeleteComment handles DELETE /projects/:projectId/tasks/:taskId/activities/comments/:commentId.

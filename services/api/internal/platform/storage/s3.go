@@ -1,8 +1,11 @@
 package storage
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -14,15 +17,15 @@ import (
 )
 
 // S3Config holds the configuration for an S3-compatible object store.
-// Both AWS S3 and MinIO are supported.
+// Both AWS S3 and self-hosted S3-compatible stores (e.g. RustFS) are supported.
 type S3Config struct {
-	Endpoint        string // leave empty for AWS S3; set to MinIO URL for self-hosted
+	Endpoint        string // leave empty for AWS S3; set to the self-hosted store's URL otherwise
 	Region          string
 	Bucket          string
 	AccessKeyID     string
 	SecretAccessKey string
-	UseSSL          bool // only relevant when Endpoint is set (MinIO)
-	ForcePathStyle  bool // set true for MinIO
+	UseSSL          bool // only relevant when Endpoint is set (self-hosted)
+	ForcePathStyle  bool // set true for self-hosted stores
 	// PublicURL is the public-facing base URL that clients (browsers) use to
 	// reach the object store through the gateway proxy, e.g.
 	// "http://localhost/storage".  When set, all presigned URLs are rewritten
@@ -40,8 +43,8 @@ type S3Client struct {
 }
 
 // NewS3Client constructs an S3Client.  When cfg.Endpoint is empty the client
-// connects to AWS S3; otherwise it targets the given MinIO (or other
-// S3-compatible) endpoint.
+// connects to AWS S3; otherwise it targets the given self-hosted
+// S3-compatible endpoint (e.g. RustFS).
 func NewS3Client(ctx context.Context, cfg S3Config) (*S3Client, error) {
 	opts := []func(*awsconfig.LoadOptions) error{
 		awsconfig.WithRegion(cfg.Region),
@@ -85,7 +88,7 @@ func NewS3Client(ctx context.Context, cfg S3Config) (*S3Client, error) {
 }
 
 // internalEndpoint returns the full scheme+host of the internal endpoint as
-// it appears in presigned URLs (e.g. "http://minio:9000").
+// it appears in presigned URLs (e.g. "http://rustfs:9000").
 func (c *S3Client) internalEndpoint() string {
 	if c.cfg.Endpoint == "" {
 		return ""
@@ -231,6 +234,43 @@ func (c *S3Client) DeleteObject(ctx context.Context, bucket, key string) error {
 	return nil
 }
 
+// GetObject downloads an object's contents into memory, bounded by maxBytes
+// (see the Client interface doc — maxBytes <= 0 means unbounded).
+func (c *S3Client) GetObject(ctx context.Context, bucket, key string, maxBytes int64) ([]byte, error) {
+	out, err := c.s3.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("storage: get object %q: %w", key, err)
+	}
+	defer func() { _ = out.Body.Close() }()
+
+	var body io.Reader = out.Body
+	if maxBytes > 0 {
+		body = io.LimitReader(out.Body, maxBytes)
+	}
+	data, err := io.ReadAll(body)
+	if err != nil {
+		return nil, fmt.Errorf("storage: read object %q: %w", key, err)
+	}
+	return data, nil
+}
+
+// PutObject uploads data directly to the object store from the server.
+func (c *S3Client) PutObject(ctx context.Context, bucket, key, contentType string, data []byte) error {
+	_, err := c.s3.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(bucket),
+		Key:         aws.String(key),
+		ContentType: aws.String(contentType),
+		Body:        bytes.NewReader(data),
+	})
+	if err != nil {
+		return fmt.Errorf("storage: put object %q: %w", key, err)
+	}
+	return nil
+}
+
 // EnsureBucket creates the bucket if it does not already exist.
 func (c *S3Client) EnsureBucket(ctx context.Context, bucket string) error {
 	_, err := c.s3.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: aws.String(bucket)})
@@ -241,6 +281,14 @@ func (c *S3Client) EnsureBucket(ctx context.Context, bucket string) error {
 	input := &s3.CreateBucketInput{Bucket: aws.String(bucket)}
 
 	if _, err := c.s3.CreateBucket(ctx, input); err != nil {
+		// Another caller may have won a concurrent create race between our
+		// HeadBucket check and this call; both outcomes mean the bucket is
+		// now present, so they aren't real errors.
+		var alreadyOwned *s3types.BucketAlreadyOwnedByYou
+		var alreadyExists *s3types.BucketAlreadyExists
+		if errors.As(err, &alreadyOwned) || errors.As(err, &alreadyExists) {
+			return nil
+		}
 		return fmt.Errorf("storage: create bucket %q: %w", bucket, err)
 	}
 	return nil

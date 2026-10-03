@@ -70,7 +70,11 @@ describe("getProjectRoleTools", () => {
 describe("handleProjectMemberTool – list_project_members", () => {
 	it("calls client.listProjectMembers with projectId", async () => {
 		const client = makeClient();
-		await handleProjectMemberTool("list_project_members", { projectId: "p1" }, client);
+		await handleProjectMemberTool(
+			"list_project_members",
+			{ projectId: "p1" },
+			client,
+		);
 		expect(client.listProjectMembers).toHaveBeenCalledWith("p1");
 	});
 
@@ -82,6 +86,21 @@ describe("handleProjectMemberTool – list_project_members", () => {
 		);
 		expect(result.content[0].text).toContain("Project Members:");
 		expect(result.content[0].text).toContain("alice");
+	});
+
+	it("surfaces the member ID distinctly from the user ID", async () => {
+		// Regression test: assigneeId (task assignment) and trigger_ai_agent's
+		// member_id both expect member.id, not member.user_id — the two differ
+		// per member, and this formatted text is the only place an agent can
+		// look them up. Losing this line silently breaks every "use
+		// list_project_members to get the member ID" tool description.
+		const result = await handleProjectMemberTool(
+			"list_project_members",
+			{ projectId: "p1" },
+			makeClient(),
+		);
+		expect(result.content[0].text).toContain("Member ID: m1");
+		expect(result.content[0].text).toContain("User ID: u1");
 	});
 });
 
@@ -199,7 +218,11 @@ describe("handleProjectMemberTool – remove_project_member", () => {
 describe("handleProjectMemberTool – list_project_roles", () => {
 	it("calls client.listProjectRoles with projectId", async () => {
 		const client = makeClient();
-		await handleProjectMemberTool("list_project_roles", { projectId: "p1" }, client);
+		await handleProjectMemberTool(
+			"list_project_roles",
+			{ projectId: "p1" },
+			client,
+		);
 		expect(client.listProjectRoles).toHaveBeenCalledWith("p1");
 	});
 
@@ -223,7 +246,11 @@ describe("handleProjectMemberTool – create_project_role", () => {
 		const client = makeClient();
 		await handleProjectMemberTool(
 			"create_project_role",
-			{ projectId: "p1", name: "Dev", permissions: ["tasks.write", "tasks.read"] },
+			{
+				projectId: "p1",
+				name: "Dev",
+				permissions: ["tasks.write", "tasks.read"],
+			},
 			client,
 		);
 		expect(client.createProjectRole).toHaveBeenCalledWith("p1", {
@@ -252,7 +279,12 @@ describe("handleProjectMemberTool – update_project_role", () => {
 		const client = makeClient();
 		await handleProjectMemberTool(
 			"update_project_role",
-			{ projectId: "p1", roleId: "r1", name: "Senior Dev", permissions: ["tasks.*"] },
+			{
+				projectId: "p1",
+				roleId: "r1",
+				name: "Senior Dev",
+				permissions: ["tasks.*"],
+			},
 			client,
 		);
 		expect(client.updateProjectRole).toHaveBeenCalledWith("p1", "r1", {

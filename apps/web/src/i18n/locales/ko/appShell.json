@@ -24,19 +24,27 @@
 		"allProjects": "모든 프로젝트",
 		"project": "프로젝트",
 		"agents": "에이전트",
+		"environments": "환경",
+		"conversations": "대화",
+		"automation": "자동화",
 		"team": "팀",
-		"settings": "설정"
+		"settings": "설정",
+		"changelog": "새로운 소식",
+		"activity": "활동"
 	},
 	"projectSwitcher": {
 		"projects": "프로젝트",
 		"yourProjects": "내 프로젝트",
 		"noProjectsYet": "아직 프로젝트가 없습니다",
-		"newProject": "새 프로젝트"
+		"newProject": "새 프로젝트",
+		"loadingMore": "불러오는 중…"
 	},
 	"interactions": {
 		"title": "인터랙션",
 		"timeline": "타임라인",
-		"productBacklog": "제품 백로그"
+		"productBacklog": "제품 백로그",
+		"plannedSprints": "초안 스프린트",
+		"completedSprints": "완료된 스프린트"
 	},
 	"docs": {
 		"documentation": "문서",
@@ -49,24 +57,23 @@
 		"newSubfolder": "새 하위 폴더",
 		"rename": "이름 변경",
 		"delete": "삭제",
-		"untitled": "제목 없음"
+		"untitled": "제목 없음",
+		"errors": {
+			"titleInvalid": "제목이 유효하지 않습니다.",
+			"folderNameInvalid": "폴더 이름이 유효하지 않습니다.",
+			"renameFailed": "이름을 변경하지 못했습니다. 다시 시도해 주세요."
+		}
 	},
 	"notifications": {
 		"title": "알림",
 		"empty": "아직 알림이 없습니다",
+		"loadingMore": "불러오는 중…",
 		"markAllAsRead": "모두 읽음으로 표시",
+		"muteSound": "알림 소리 음소거",
+		"unmuteSound": "알림 소리 음소거 해제",
 		"text": {
 			"assigned": "{{actor}}님이 작업 #{{taskNumber}} — {{taskTitle}}에 회원님을 배정했습니다",
 			"mentioned": "{{actor}}님이 #{{taskNumber}} — {{taskTitle}}에서 회원님을 멘션했습니다"
-		},
-		"timeAgo": {
-			"justNow": "방금 전",
-			"minutes_one": "{{count}}분 전",
-			"minutes_other": "{{count}}분 전",
-			"hours_one": "{{count}}시간 전",
-			"hours_other": "{{count}}시간 전",
-			"days_one": "{{count}}일 전",
-			"days_other": "{{count}}일 전"
 		}
 	},
 	"userMenu": {

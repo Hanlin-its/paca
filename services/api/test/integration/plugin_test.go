@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	plugindom "github.com/Paca-AI/api/internal/domain/plugin"
 	"github.com/Paca-AI/api/internal/platform/authz"
 	jwttoken "github.com/Paca-AI/api/internal/platform/token"
@@ -21,7 +23,6 @@ import (
 	usersvc "github.com/Paca-AI/api/internal/service/user"
 	"github.com/Paca-AI/api/internal/transport/http/handler"
 	"github.com/Paca-AI/api/internal/transport/http/router"
-	"github.com/google/uuid"
 )
 
 // ---------------------------------------------------------------------------
@@ -207,7 +208,7 @@ func newPluginTestEnv(t *testing.T, adminPerms bool) *pluginTestEnv {
 	userID := uuid.New()
 	perms := []authz.Permission{authz.PermissionProjectsRead}
 	if adminPerms {
-		perms = append(perms, authz.PermissionUsersWrite)
+		perms = append(perms, authz.PermissionPluginsRead, authz.PermissionPluginsWrite)
 	}
 	permStore := &integrationPermissionStore{globalPerms: perms}
 

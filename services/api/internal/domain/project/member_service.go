@@ -6,10 +6,15 @@ import (
 	"github.com/google/uuid"
 )
 
-// AddMemberInput carries fields for adding a user to a project.
+// AddMemberInput carries fields for adding a member to a project — a human
+// (UserID) or, exclusively, a global agent being invited (AgentID). Exactly
+// one of UserID/AgentID must be set.
 type AddMemberInput struct {
 	UserID        uuid.UUID
+	AgentID       *uuid.UUID
 	ProjectRoleID uuid.UUID
+	// Description applies to human members only — see ProjectMember.Description.
+	Description string
 }
 
 // UpdateMemberRoleInput carries fields for changing a member's role.
@@ -20,11 +25,17 @@ type UpdateMemberRoleInput struct {
 // MemberService defines member management use cases.
 type MemberService interface {
 	ListMembers(ctx context.Context, projectID uuid.UUID) ([]*ProjectMember, error)
+	// CountDistinctAgentsByProjects returns the distinct agent member count
+	// across projectIDs — see MemberRepository.CountDistinctAgentsByProjects.
+	CountDistinctAgentsByProjects(ctx context.Context, projectIDs []uuid.UUID) (int64, error)
 	AddMember(ctx context.Context, projectID uuid.UUID, in AddMemberInput) (*ProjectMember, error)
 	UpdateMemberRole(ctx context.Context, projectID, userID uuid.UUID, in UpdateMemberRoleInput) (*ProjectMember, error)
 	RemoveMember(ctx context.Context, projectID, userID uuid.UUID) error
 	// UpdateMemberRoleByMemberID changes the role of a member by their membership record ID.
 	UpdateMemberRoleByMemberID(ctx context.Context, projectID, memberID uuid.UUID, in UpdateMemberRoleInput) (*ProjectMember, error)
+	// UpdateMemberDescription changes a member's Jev-facing description by
+	// their membership record ID — see ProjectMember.Description.
+	UpdateMemberDescription(ctx context.Context, projectID, memberID uuid.UUID, description string) (*ProjectMember, error)
 	// RemoveMemberByMemberID removes a member by their membership record ID.
 	RemoveMemberByMemberID(ctx context.Context, projectID, memberID uuid.UUID) error
 	// GetMyProjectPermissions returns the effective permission map of the

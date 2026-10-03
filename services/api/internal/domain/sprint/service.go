@@ -39,19 +39,25 @@ type CreateSprintInput struct {
 	Status    SprintStatus
 }
 
-// UpdateSprintInput carries mutable sprint fields.
+// UpdateSprintInput carries mutable sprint fields for a PATCH operation.
+// Name is applied when non-empty. For StartDate, EndDate, and Goal, the
+// double pointer encodes three states:
+//   - nil outer pointer  → field was absent in the request; do NOT overwrite
+//   - non-nil outer pointer, inner pointer nil  → explicitly set to null (clear)
+//   - non-nil outer pointer, inner pointer non-nil  → set to the given value
 type UpdateSprintInput struct {
 	Name      string
-	StartDate *time.Time
-	EndDate   *time.Time
-	Goal      *string
+	StartDate **time.Time
+	EndDate   **time.Time
+	Goal      **string
 	Status    *SprintStatus
 }
 
 // ViewService defines use cases for sprint views and manual task ordering.
 type ViewService interface {
-	// ListViews returns all views belonging to a sprint.
-	ListViews(ctx context.Context, sprintID uuid.UUID) ([]*SprintView, error)
+	// ListViews returns all views belonging to a sprint, verifying the
+	// sprint belongs to projectID.
+	ListViews(ctx context.Context, projectID, sprintID uuid.UUID) ([]*SprintView, error)
 
 	// ListProjectViews returns all views for a project filtered by viewCtx
 	// (ViewContextBacklog or ViewContextTimeline).
@@ -59,6 +65,8 @@ type ViewService interface {
 
 	// GetView returns the view identified by id, verifying it belongs to projectID.
 	GetView(ctx context.Context, projectID, id uuid.UUID) (*SprintView, error)
+	// CreateView creates a new view. When in.SprintID is set, verifies the
+	// sprint belongs to in.ProjectID before creating the view.
 	CreateView(ctx context.Context, in CreateViewInput) (*SprintView, error)
 	// UpdateView updates the view identified by id, verifying it belongs to projectID.
 	UpdateView(ctx context.Context, projectID, id uuid.UUID, in UpdateViewInput) (*SprintView, error)
@@ -66,25 +74,46 @@ type ViewService interface {
 	DeleteView(ctx context.Context, projectID, id uuid.UUID) error
 
 	// MoveTask updates the manual position of a task within a view,
-	// verifying the view belongs to projectID.
+	// verifying the view and the task both belong to projectID.
 	MoveTask(ctx context.Context, projectID, viewID uuid.UUID, in MoveTaskInput) error
 
 	// BulkMoveTasks updates the manual positions of multiple tasks in a view
-	// within a single transaction, verifying the view belongs to projectID.
+	// within a single transaction, verifying the view and every task belong
+	// to projectID.
 	BulkMoveTasks(ctx context.Context, projectID, viewID uuid.UUID, items []MoveTaskInput) error
 
 	// ListTaskPositions returns the manual ordering for all tasks in a view,
 	// verifying the view belongs to projectID.
 	ListTaskPositions(ctx context.Context, projectID, viewID uuid.UUID) ([]*ViewTaskPosition, error)
 
-	// ReorderViews reorders all views belonging to a sprint.  viewIDs must
-	// contain every view ID for that sprint in the desired order.
-	ReorderViews(ctx context.Context, sprintID uuid.UUID, viewIDs []uuid.UUID) error
+	// ReorderViews reorders all views belonging to a sprint, verifying the
+	// sprint belongs to projectID.  viewIDs must contain every view ID for
+	// that sprint in the desired order.
+	ReorderViews(ctx context.Context, projectID, sprintID uuid.UUID, viewIDs []uuid.UUID) error
 
 	// ReorderProjectViews reorders all views for a project with the given
 	// context.  viewIDs must contain every view ID for that project+context
 	// in the desired order.
 	ReorderProjectViews(ctx context.Context, projectID uuid.UUID, viewCtx ViewContext, viewIDs []uuid.UUID) error
+
+	// SetUserViewConfig stores the current user's personal config (settings and
+	// filters) for a view, verifying it belongs to projectID, and returns the
+	// view carrying that personal config.  The change is private to the user:
+	// it never touches the shared view row and emits no project-wide event.
+	SetUserViewConfig(ctx context.Context, projectID, viewID, userID uuid.UUID, cfg ViewConfig) (*SprintView, error)
+
+	// OverlayUserConfigs merges each view's Config with the user's personal
+	// override where one exists (field by field — a field the user never
+	// personalized keeps tracking the shared default), leaving the shared
+	// default entirely otherwise. Also sets HasPersonalConfig on each view.
+	// It is safe to call with views obtained from a cache: only the returned
+	// copies are mutated. A nil user (unauthenticated) is a no-op.
+	OverlayUserConfigs(ctx context.Context, userID uuid.UUID, views []*SprintView) error
+
+	// ClearUserViewConfig removes the current user's personal override for a
+	// view, verifying it belongs to projectID, and returns the view now
+	// carrying the shared default config (HasPersonalConfig is false).
+	ClearUserViewConfig(ctx context.Context, projectID, viewID, userID uuid.UUID) (*SprintView, error)
 }
 
 // CreateViewInput carries fields required to create a sprint view.

@@ -7,8 +7,9 @@ import (
 	"testing"
 	"time"
 
-	globalroledom "github.com/Paca-AI/api/internal/domain/globalrole"
 	"github.com/google/uuid"
+
+	globalroledom "github.com/Paca-AI/api/internal/domain/globalrole"
 )
 
 func seedTaskMemberUser(t *testing.T, env *e2eEnv, username, password string) {
@@ -87,6 +88,7 @@ func createSprintViaAPI(t *testing.T, env *e2eEnv, client *http.Client, token, p
 // ---------------------------------------------------------------------------
 
 func TestE2ESprintManagement_CRUD(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "sprint-crud-user", "sprintpass1")
 	client, token := taskMemberLogin(t, env, "sprint-crud-user", "sprintpass1")
@@ -151,10 +153,211 @@ func TestE2ESprintManagement_CRUD(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Sprint partial-update semantics
+//
+// Regression coverage: PATCH /sprints/:sprintId used to unconditionally
+// overwrite start_date/end_date/goal with whatever the request carried, even
+// when the client omitted those fields entirely — silently wiping them on
+// any PATCH that only meant to change e.g. the name. See UpdateSprintInput
+// in internal/domain/sprint/service.go.
+// ---------------------------------------------------------------------------
+
+func TestE2ESprintManagement_PartialUpdatePreservesFields(t *testing.T) {
+	t.Parallel()
+	env := newE2EEnv(t)
+	seedTaskMemberUser(t, env, "sprint-patch-user", "sprintpatchpass1")
+	client, token := taskMemberLogin(t, env, "sprint-patch-user", "sprintpatchpass1")
+	projID := createProjectForTasksViaAPI(t, env, client, token)
+
+	sprintsURL := fmt.Sprintf("%s/api/v1/projects/%s/sprints", env.base, projID)
+
+	const (
+		startDate = "2026-01-01T00:00:00Z"
+		endDate   = "2026-01-15T00:00:00Z"
+		goal      = "Ship the thing"
+	)
+	var sprintID string
+
+	t.Run("create_sprint_with_dates_and_goal", func(t *testing.T) {
+		body := jsonBody(t, map[string]any{
+			"name":       "Sprint With Dates",
+			"status":     "planned",
+			"start_date": startDate,
+			"end_date":   endDate,
+			"goal":       goal,
+		})
+		req := mustRequest(env.ctx, t, http.MethodPost, sprintsURL, body)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp := mustDo(t, client, req)
+		defer func() { _ = resp.Body.Close() }()
+		assertStatus(t, resp, http.StatusCreated)
+		var env2 envelope
+		decodeJSON(t, resp, &env2)
+		data := assertDataMap(t, env2)
+		sprintID, _ = data["id"].(string)
+		if sprintID == "" {
+			t.Fatal("expected non-empty sprint id")
+		}
+		if g, _ := data["goal"].(string); g != goal {
+			t.Fatalf("expected goal %q at creation, got %v", goal, data["goal"])
+		}
+	})
+
+	t.Run("patch_name_only_preserves_dates_and_goal", func(t *testing.T) {
+		body := jsonBody(t, map[string]any{"name": "Sprint With Dates Renamed"})
+		req := mustRequest(env.ctx, t, http.MethodPatch,
+			fmt.Sprintf("%s/%s", sprintsURL, sprintID), body)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp := mustDo(t, client, req)
+		defer func() { _ = resp.Body.Close() }()
+		assertStatus(t, resp, http.StatusOK)
+		var env2 envelope
+		decodeJSON(t, resp, &env2)
+		data := assertDataMap(t, env2)
+
+		if name, _ := data["name"].(string); name != "Sprint With Dates Renamed" {
+			t.Errorf("expected renamed sprint, got %q", name)
+		}
+		if g, _ := data["goal"].(string); g != goal {
+			t.Errorf("expected goal to remain %q after a name-only PATCH, got %v", goal, data["goal"])
+		}
+		if gotStart, _ := data["start_date"].(string); gotStart == "" {
+			t.Error("expected start_date to remain set after a name-only PATCH, got empty")
+		}
+		if gotEnd, _ := data["end_date"].(string); gotEnd == "" {
+			t.Error("expected end_date to remain set after a name-only PATCH, got empty")
+		}
+	})
+
+	t.Run("explicit_null_clears_goal_without_touching_dates", func(t *testing.T) {
+		body := jsonBody(t, map[string]any{"goal": nil})
+		req := mustRequest(env.ctx, t, http.MethodPatch,
+			fmt.Sprintf("%s/%s", sprintsURL, sprintID), body)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp := mustDo(t, client, req)
+		defer func() { _ = resp.Body.Close() }()
+		assertStatus(t, resp, http.StatusOK)
+		var env2 envelope
+		decodeJSON(t, resp, &env2)
+		data := assertDataMap(t, env2)
+
+		if g := data["goal"]; g != nil {
+			t.Errorf("expected goal to be cleared, got %v", g)
+		}
+		if gotStart, _ := data["start_date"].(string); gotStart == "" {
+			t.Error("expected start_date to remain set after clearing goal")
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Task type partial-update semantics
+//
+// Regression coverage: PATCH /task-types/:typeId used to unconditionally
+// overwrite icon/color/description with whatever the request carried, even
+// when the client omitted those fields entirely. See UpdateTaskTypeInput in
+// internal/domain/task/service.go.
+// ---------------------------------------------------------------------------
+
+func TestE2ETaskTypeManagement_PartialUpdatePreservesFields(t *testing.T) {
+	t.Parallel()
+	env := newE2EEnv(t)
+	seedTaskMemberUser(t, env, "task-type-patch-user", "tasktypepass1")
+	client, token := taskMemberLogin(t, env, "task-type-patch-user", "tasktypepass1")
+	projID := createProjectForTasksViaAPI(t, env, client, token)
+
+	taskTypesURL := fmt.Sprintf("%s/api/v1/projects/%s/task-types", env.base, projID)
+
+	const (
+		icon        = "rocket"
+		color       = "#ff0000"
+		description = "A feature request"
+	)
+	var typeID string
+
+	t.Run("create_task_type_with_icon_color_description", func(t *testing.T) {
+		body := jsonBody(t, map[string]any{
+			"name":        "Feature",
+			"icon":        icon,
+			"color":       color,
+			"description": description,
+		})
+		req := mustRequest(env.ctx, t, http.MethodPost, taskTypesURL, body)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp := mustDo(t, client, req)
+		defer func() { _ = resp.Body.Close() }()
+		assertStatus(t, resp, http.StatusCreated)
+		var env2 envelope
+		decodeJSON(t, resp, &env2)
+		data := assertDataMap(t, env2)
+		typeID, _ = data["id"].(string)
+		if typeID == "" {
+			t.Fatal("expected non-empty task type id")
+		}
+	})
+
+	t.Run("patch_name_only_preserves_icon_color_description", func(t *testing.T) {
+		body := jsonBody(t, map[string]any{"name": "Feature Request"})
+		req := mustRequest(env.ctx, t, http.MethodPatch,
+			fmt.Sprintf("%s/%s", taskTypesURL, typeID), body)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp := mustDo(t, client, req)
+		defer func() { _ = resp.Body.Close() }()
+		assertStatus(t, resp, http.StatusOK)
+		var env2 envelope
+		decodeJSON(t, resp, &env2)
+		data := assertDataMap(t, env2)
+
+		if name, _ := data["name"].(string); name != "Feature Request" {
+			t.Errorf("expected renamed task type, got %q", name)
+		}
+		if i, _ := data["icon"].(string); i != icon {
+			t.Errorf("expected icon to remain %q after a name-only PATCH, got %v", icon, data["icon"])
+		}
+		if c, _ := data["color"].(string); c != color {
+			t.Errorf("expected color to remain %q after a name-only PATCH, got %v", color, data["color"])
+		}
+		if d, _ := data["description"].(string); d != description {
+			t.Errorf("expected description to remain %q after a name-only PATCH, got %v", description, data["description"])
+		}
+	})
+
+	t.Run("explicit_null_clears_icon_without_touching_color_or_description", func(t *testing.T) {
+		body := jsonBody(t, map[string]any{"icon": nil})
+		req := mustRequest(env.ctx, t, http.MethodPatch,
+			fmt.Sprintf("%s/%s", taskTypesURL, typeID), body)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp := mustDo(t, client, req)
+		defer func() { _ = resp.Body.Close() }()
+		assertStatus(t, resp, http.StatusOK)
+		var env2 envelope
+		decodeJSON(t, resp, &env2)
+		data := assertDataMap(t, env2)
+
+		if icon := data["icon"]; icon != nil {
+			t.Errorf("expected icon to be cleared, got %v", icon)
+		}
+		if c, _ := data["color"].(string); c != color {
+			t.Errorf("expected color to remain %q, got %v", color, data["color"])
+		}
+		if d, _ := data["description"].(string); d != description {
+			t.Errorf("expected description to remain %q, got %v", description, data["description"])
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
 // Task CRUD
 // ---------------------------------------------------------------------------
 
 func TestE2ETaskManagement_CRUD(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "task-crud-user", "taskpass1")
 	client, token := taskMemberLogin(t, env, "task-crud-user", "taskpass1")
@@ -302,6 +505,7 @@ func TestE2ETaskManagement_CRUD(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestE2ETask_Unauthenticated(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	projID := uuid.New().String()
 	req := mustRequest(env.ctx, t, http.MethodGet,
@@ -312,6 +516,7 @@ func TestE2ETask_Unauthenticated(t *testing.T) {
 }
 
 func TestE2ESprint_Unauthenticated(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	projID := uuid.New().String()
 	req := mustRequest(env.ctx, t, http.MethodGet,
@@ -326,6 +531,7 @@ func TestE2ESprint_Unauthenticated(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestE2ETask_InsufficientPermissions(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	// Seed a plain user with no task permissions.
 	seedUser(t, env, "no-task-perm-user", "plainpass1", "No Task Perm")
@@ -355,6 +561,7 @@ func TestE2ETask_InsufficientPermissions(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestE2ESprintManagement_GetSprint(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "get-sprint-user", "getsprintpass1")
 	client, token := taskMemberLogin(t, env, "get-sprint-user", "getsprintpass1")
@@ -392,6 +599,7 @@ func TestE2ESprintManagement_GetSprint(t *testing.T) {
 }
 
 func TestE2ESprintView_SprintTasks(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "sprint-tasks-user", "sprinttaskspass1")
 	client, token := taskMemberLogin(t, env, "sprint-tasks-user", "sprinttaskspass1")
@@ -447,6 +655,7 @@ func TestE2ESprintView_SprintTasks(t *testing.T) {
 }
 
 func TestE2ESprintView_Backlog(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "backlog-view-user", "backlogpass1")
 	client, token := taskMemberLogin(t, env, "backlog-view-user", "backlogpass1")
@@ -502,6 +711,7 @@ func TestE2ESprintView_Backlog(t *testing.T) {
 // view_position and view_group_key on each task that has a recorded manual
 // position in that view.
 func TestE2ETaskList_WithViewID(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "view-task-pos-user", "viewpospass1")
 	client, token := taskMemberLogin(t, env, "view-task-pos-user", "viewpospass1")
@@ -644,6 +854,7 @@ func TestE2ETaskList_WithViewID(t *testing.T) {
 // GET /sprints/:sprintId/tasks?view_id=<id> returns view_position and
 // view_group_key for tasks that have a recorded position in that view.
 func TestE2ESprintTasks_WithViewID(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "sprint-viewid-user", "sprintviewpass1")
 	client, token := taskMemberLogin(t, env, "sprint-viewid-user", "sprintviewpass1")
@@ -773,6 +984,7 @@ func TestE2ESprintTasks_WithViewID(t *testing.T) {
 // GET /tasks?sprint_id=null&view_id=<id> returns view_position and view_group_key
 // for backlog tasks that have a recorded position in that view.
 func TestE2EBacklog_WithViewID(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "backlog-viewid-user", "backlogviewpass1")
 	client, token := taskMemberLogin(t, env, "backlog-viewid-user", "backlogviewpass1")
@@ -898,6 +1110,7 @@ func TestE2EBacklog_WithViewID(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestE2ETaskManagement_DatesAndTags(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "dates-tags-user", "datestagpass1")
 	client, token := taskMemberLogin(t, env, "dates-tags-user", "datestagpass1")
@@ -1012,8 +1225,180 @@ func TestE2ETaskManagement_DatesAndTags(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Multiple assignees
+// ---------------------------------------------------------------------------
+
+func TestE2ETaskManagement_MultipleAssignees(t *testing.T) {
+	t.Parallel()
+	env := newE2EEnv(t)
+	ownerUsername := "multi-assignee-owner-" + uuid.NewString()
+	seedTaskMemberUser(t, env, ownerUsername, "multiassigneeowner1")
+	client, token := taskMemberLogin(t, env, ownerUsername, "multiassigneeowner1")
+	projID := createProjectForTasksViaAPI(t, env, client, token)
+
+	memberA := addProjectMemberWithAutomationPerms(t, env, client, token, projID, "multi-assignee-a-"+uuid.NewString(), "multiassigneea1")
+	memberB := addProjectMemberWithAutomationPerms(t, env, client, token, projID, "multi-assignee-b-"+uuid.NewString(), "multiassigneeb1")
+	memberC := addProjectMemberWithAutomationPerms(t, env, client, token, projID, "multi-assignee-c-"+uuid.NewString(), "multiassigneec1")
+
+	var taskID string
+
+	assigneeIDs := func(data map[string]any) []string {
+		raw, _ := data["assignee_ids"].([]any)
+		out := make([]string, len(raw))
+		for i, v := range raw {
+			out[i], _ = v.(string)
+		}
+		return out
+	}
+	containsAll := func(got []string, want ...string) bool {
+		set := make(map[string]bool, len(got))
+		for _, g := range got {
+			set[g] = true
+		}
+		for _, w := range want {
+			if !set[w] {
+				return false
+			}
+		}
+		return true
+	}
+
+	t.Run("create_task_with_multiple_assignees", func(t *testing.T) {
+		body := jsonBody(t, map[string]any{
+			"title":        "Task with multiple assignees",
+			"assignee_ids": []string{memberA, memberB},
+		})
+		req := mustRequest(env.ctx, t, http.MethodPost,
+			fmt.Sprintf("%s/api/v1/projects/%s/tasks", env.base, projID), body)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp := mustDo(t, client, req)
+		defer func() { _ = resp.Body.Close() }()
+		assertStatus(t, resp, http.StatusCreated)
+		var env2 envelope
+		decodeJSON(t, resp, &env2)
+		data := assertDataMap(t, env2)
+		taskID, _ = data["id"].(string)
+		if taskID == "" {
+			t.Fatal("expected non-empty task id")
+		}
+		got := assigneeIDs(data)
+		if len(got) != 2 || !containsAll(got, memberA, memberB) {
+			t.Fatalf("expected assignee_ids=[%s,%s], got %v", memberA, memberB, got)
+		}
+	})
+
+	t.Run("get_task_returns_both_assignees", func(t *testing.T) {
+		req := mustRequest(env.ctx, t, http.MethodGet,
+			fmt.Sprintf("%s/api/v1/projects/%s/tasks/%s", env.base, projID, taskID), nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp := mustDo(t, client, req)
+		defer func() { _ = resp.Body.Close() }()
+		assertStatus(t, resp, http.StatusOK)
+		var env2 envelope
+		decodeJSON(t, resp, &env2)
+		data := assertDataMap(t, env2)
+		got := assigneeIDs(data)
+		if len(got) != 2 || !containsAll(got, memberA, memberB) {
+			t.Fatalf("expected assignee_ids=[%s,%s], got %v", memberA, memberB, got)
+		}
+	})
+
+	t.Run("filter_by_assignee_ids_matches_any_assignee", func(t *testing.T) {
+		// Filtering by memberB alone should still surface the task since it
+		// matches ANY of its assignees, not all of them.
+		req := mustRequest(env.ctx, t, http.MethodGet,
+			fmt.Sprintf("%s/api/v1/projects/%s/tasks?assignee_ids=%s", env.base, projID, memberB), nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp := mustDo(t, client, req)
+		defer func() { _ = resp.Body.Close() }()
+		assertStatus(t, resp, http.StatusOK)
+		var env2 envelope
+		decodeJSON(t, resp, &env2)
+		data := assertDataMap(t, env2)
+		items, _ := data["items"].([]any)
+		found := false
+		for _, item := range items {
+			m, _ := item.(map[string]any)
+			if id, _ := m["id"].(string); id == taskID {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("expected task %s to be included when filtering by assignee_ids=%s", taskID, memberB)
+		}
+	})
+
+	t.Run("filter_by_unrelated_assignee_excludes_task", func(t *testing.T) {
+		req := mustRequest(env.ctx, t, http.MethodGet,
+			fmt.Sprintf("%s/api/v1/projects/%s/tasks?assignee_ids=%s", env.base, projID, memberC), nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp := mustDo(t, client, req)
+		defer func() { _ = resp.Body.Close() }()
+		assertStatus(t, resp, http.StatusOK)
+		var env2 envelope
+		decodeJSON(t, resp, &env2)
+		data := assertDataMap(t, env2)
+		items, _ := data["items"].([]any)
+		for _, item := range items {
+			m, _ := item.(map[string]any)
+			if id, _ := m["id"].(string); id == taskID {
+				t.Errorf("did not expect task %s when filtering by unrelated assignee_ids=%s", taskID, memberC)
+			}
+		}
+	})
+
+	t.Run("update_task_removes_one_and_adds_another", func(t *testing.T) {
+		body := jsonBody(t, map[string]any{"assignee_ids": []string{memberB, memberC}})
+		req := mustRequest(env.ctx, t, http.MethodPatch,
+			fmt.Sprintf("%s/api/v1/projects/%s/tasks/%s", env.base, projID, taskID), body)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp := mustDo(t, client, req)
+		defer func() { _ = resp.Body.Close() }()
+		assertStatus(t, resp, http.StatusOK)
+		var env2 envelope
+		decodeJSON(t, resp, &env2)
+		data := assertDataMap(t, env2)
+		got := assigneeIDs(data)
+		if len(got) != 2 || !containsAll(got, memberB, memberC) {
+			t.Fatalf("expected assignee_ids=[%s,%s], got %v", memberB, memberC, got)
+		}
+	})
+
+	t.Run("update_task_clears_all_assignees", func(t *testing.T) {
+		body := jsonBody(t, map[string]any{"assignee_ids": []string{}})
+		req := mustRequest(env.ctx, t, http.MethodPatch,
+			fmt.Sprintf("%s/api/v1/projects/%s/tasks/%s", env.base, projID, taskID), body)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp := mustDo(t, client, req)
+		defer func() { _ = resp.Body.Close() }()
+		assertStatus(t, resp, http.StatusOK)
+		var env2 envelope
+		decodeJSON(t, resp, &env2)
+		data := assertDataMap(t, env2)
+		got := assigneeIDs(data)
+		if len(got) != 0 {
+			t.Fatalf("expected no assignees after clearing, got %v", got)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
 // Custom field definition helpers
 // ---------------------------------------------------------------------------
+
+// customFieldOptions builds the wire shape for a select/multi_select custom
+// field's options list: an array of {"value": ...} objects (each may also
+// carry an optional "color", not needed by these tests).
+func customFieldOptions(values ...string) []map[string]any {
+	opts := make([]map[string]any, len(values))
+	for i, v := range values {
+		opts[i] = map[string]any{"value": v}
+	}
+	return opts
+}
 
 func createCustomFieldViaAPI(t *testing.T, env *e2eEnv, client *http.Client, token, projectID string, body map[string]any) string {
 	t.Helper()
@@ -1040,6 +1425,7 @@ func createCustomFieldViaAPI(t *testing.T, env *e2eEnv, client *http.Client, tok
 // ---------------------------------------------------------------------------
 
 func TestE2ECustomFieldManagement_CRUD(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "cf-crud-user", "cfcrudpass1")
 	client, token := taskMemberLogin(t, env, "cf-crud-user", "cfcrudpass1")
@@ -1120,7 +1506,7 @@ func TestE2ECustomFieldManagement_CRUD(t *testing.T) {
 			"field_key":    "status_tag",
 			"display_name": "Status Tag",
 			"field_type":   "select",
-			"options":      []string{"open", "in_progress", "done"},
+			"options":      customFieldOptions("open", "in_progress", "done"),
 			"is_required":  true,
 		})
 		req := mustRequest(env.ctx, t, http.MethodGet,
@@ -1202,6 +1588,7 @@ func TestE2ECustomFieldManagement_CRUD(t *testing.T) {
 }
 
 func TestE2ECustomFieldManagement_Unauthorized(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedUser(t, env, "cf-noperm-user", "cfnopermpass1", "No Perm CF")
 	jar, _ := cookiejar.New(nil)
@@ -1232,6 +1619,7 @@ func TestE2ECustomFieldManagement_Unauthorized(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestE2ECompleteSprint_MovesToBacklog(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "complete-sprint-user", "completepass1")
 	client, token := taskMemberLogin(t, env, "complete-sprint-user", "completepass1")
@@ -1290,6 +1678,7 @@ func TestE2ECompleteSprint_MovesToBacklog(t *testing.T) {
 }
 
 func TestE2ECompleteSprint_AlreadyCompleted(t *testing.T) {
+	t.Parallel()
 	env := newE2EEnv(t)
 	seedTaskMemberUser(t, env, "complete-sprint-dup-user", "completepass2")
 	client, token := taskMemberLogin(t, env, "complete-sprint-dup-user", "completepass2")

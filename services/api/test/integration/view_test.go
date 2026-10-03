@@ -12,9 +12,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	sprintdom "github.com/Paca-AI/api/internal/domain/sprint"
 	"github.com/Paca-AI/api/internal/platform/authz"
 	jwttoken "github.com/Paca-AI/api/internal/platform/token"
+	activitysvc "github.com/Paca-AI/api/internal/service/activity"
 	authsvc "github.com/Paca-AI/api/internal/service/auth"
 	projectsvc "github.com/Paca-AI/api/internal/service/project"
 	sprintsvc "github.com/Paca-AI/api/internal/service/sprint"
@@ -22,7 +25,6 @@ import (
 	usersvc "github.com/Paca-AI/api/internal/service/user"
 	"github.com/Paca-AI/api/internal/transport/http/handler"
 	"github.com/Paca-AI/api/internal/transport/http/router"
-	"github.com/google/uuid"
 )
 
 // ---------------------------------------------------------------------------
@@ -30,20 +32,26 @@ import (
 // ---------------------------------------------------------------------------
 
 type fakeViewRepoIT struct {
-	mu        sync.RWMutex
-	views     map[uuid.UUID]*sprintdom.SprintView
-	positions map[string]*sprintdom.ViewTaskPosition
+	mu          sync.RWMutex
+	views       map[uuid.UUID]*sprintdom.SprintView
+	positions   map[string]*sprintdom.ViewTaskPosition
+	userConfigs map[string]sprintdom.ViewConfig
 }
 
 func newFakeViewRepoIT() *fakeViewRepoIT {
 	return &fakeViewRepoIT{
-		views:     make(map[uuid.UUID]*sprintdom.SprintView),
-		positions: make(map[string]*sprintdom.ViewTaskPosition),
+		views:       make(map[uuid.UUID]*sprintdom.SprintView),
+		positions:   make(map[string]*sprintdom.ViewTaskPosition),
+		userConfigs: make(map[string]sprintdom.ViewConfig),
 	}
 }
 
 func viewPosKey(viewID, taskID uuid.UUID) string {
 	return viewID.String() + ":" + taskID.String()
+}
+
+func userViewCfgKey(viewID, userID uuid.UUID) string {
+	return viewID.String() + ":" + userID.String()
 }
 
 func (r *fakeViewRepoIT) ListViews(_ context.Context, sprintID uuid.UUID) ([]*sprintdom.SprintView, error) {
@@ -177,6 +185,32 @@ func (r *fakeViewRepoIT) ReorderViews(_ context.Context, items []sprintdom.ViewR
 	return nil
 }
 
+func (r *fakeViewRepoIT) GetUserViewConfigs(_ context.Context, userID uuid.UUID, viewIDs []uuid.UUID) (map[uuid.UUID]sprintdom.ViewConfig, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[uuid.UUID]sprintdom.ViewConfig)
+	for _, viewID := range viewIDs {
+		if cfg, ok := r.userConfigs[userViewCfgKey(viewID, userID)]; ok {
+			out[viewID] = cfg
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeViewRepoIT) UpsertUserViewConfig(_ context.Context, viewID, userID uuid.UUID, cfg sprintdom.ViewConfig) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.userConfigs[userViewCfgKey(viewID, userID)] = cfg
+	return nil
+}
+
+func (r *fakeViewRepoIT) DeleteUserViewConfig(_ context.Context, viewID, userID uuid.UUID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.userConfigs, userViewCfgKey(viewID, userID))
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Router builder
 // ---------------------------------------------------------------------------
@@ -189,11 +223,11 @@ func buildViewTestRouter(viewRepo *fakeViewRepoIT, sprintRepo *fakeSprintRepoIT,
 	userService := usersvc.New(userRepo)
 	projectRepo := newFakeProjectRepo()
 	taskRepo := newFakeTaskRepoIT()
-	projectService := projectsvc.New(projectRepo, taskRepo)
+	projectService := projectsvc.New(projectRepo, taskRepo, nil)
 	taskService := tasksvc.New(taskRepo)
-	sprintService := sprintsvc.New(sprintRepo, taskRepo)
-	viewService := sprintsvc.NewViewService(viewRepo)
-	activityService := tasksvc.NewActivityService(newFakeTaskActivityRepo(), &fakeActivityMemberRepo{}, nil)
+	sprintService := sprintsvc.New(sprintRepo, taskRepo, nil)
+	viewService := sprintsvc.NewViewService(viewRepo, sprintRepo, taskRepo, nil)
+	activityService := tasksvc.NewActivityService(activitysvc.New(newFakeTaskActivityRepo(), &fakeActivityMemberRepo{}, nil), taskRepo, &fakeActivityMemberRepo{})
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
 	return router.New(router.Deps{
@@ -271,6 +305,18 @@ func seedSprintIT(t *testing.T, repo *fakeSprintRepoIT, projectID uuid.UUID) uui
 	return id
 }
 
+// createTaskIT creates a real task via HTTP and returns its ID — task
+// positions must reference a task that actually belongs to the project (see
+// GHSA-xwmv-9c7h-g947), so tests can no longer use a bare uuid.NewString().
+func createTaskIT(t *testing.T, r http.Handler, tok, taskBase, title string) string {
+	t.Helper()
+	w := serve(r, authedJSONReq(t.Context(), http.MethodPost, taskBase, tok, map[string]any{"title": title}))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create task %q: expected 201, got %d: %s", title, w.Code, w.Body.String())
+	}
+	return taskIDFrom(t, "task", w.Body.Bytes())
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -280,8 +326,8 @@ func TestIntegrationViews_CRUD(t *testing.T) {
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
 			projectID: {
-				authz.PermissionSprintsRead,
-				authz.PermissionSprintsWrite,
+				authz.PermissionViewsRead,
+				authz.PermissionViewsWrite,
 				authz.PermissionTasksRead,
 				authz.PermissionTasksWrite,
 			},
@@ -358,7 +404,7 @@ func TestIntegrationViews_DeleteLastViewRejected(t *testing.T) {
 	projectID := uuid.New()
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionSprintsRead, authz.PermissionSprintsWrite},
+			projectID: {authz.PermissionViewsRead, authz.PermissionViewsWrite},
 		},
 	}
 	sprintRepo := newFakeSprintRepoIT()
@@ -391,7 +437,7 @@ func TestIntegrationViews_CreateInvalidTypeReturns400(t *testing.T) {
 	projectID := uuid.New()
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionSprintsRead, authz.PermissionSprintsWrite},
+			projectID: {authz.PermissionViewsRead, authz.PermissionViewsWrite},
 		},
 	}
 	sprintRepo := newFakeSprintRepoIT()
@@ -419,8 +465,8 @@ func TestIntegrationViews_TaskPositions(t *testing.T) {
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
 			projectID: {
-				authz.PermissionSprintsRead,
-				authz.PermissionSprintsWrite,
+				authz.PermissionViewsRead,
+				authz.PermissionViewsWrite,
 				authz.PermissionTasksRead,
 				authz.PermissionTasksWrite,
 			},
@@ -444,7 +490,7 @@ func TestIntegrationViews_TaskPositions(t *testing.T) {
 	}
 	viewID := viewIDFrom(t, createW.Body.Bytes())
 
-	taskID := uuid.NewString()
+	taskID := createTaskIT(t, r, tok, fmt.Sprintf("/api/v1/projects/%s/tasks", projectID), "Positioned Task")
 	posURL := fmt.Sprintf("%s/%s/task-positions/%s", itemBase, viewID, taskID)
 
 	// Move task
@@ -485,8 +531,8 @@ func TestIntegrationViews_BulkMoveTasks(t *testing.T) {
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
 			projectID: {
-				authz.PermissionSprintsRead,
-				authz.PermissionSprintsWrite,
+				authz.PermissionViewsRead,
+				authz.PermissionViewsWrite,
 				authz.PermissionTasksRead,
 				authz.PermissionTasksWrite,
 			},
@@ -512,9 +558,10 @@ func TestIntegrationViews_BulkMoveTasks(t *testing.T) {
 	bulkURL := fmt.Sprintf("%s/%s/task-positions", itemBase, viewID)
 	listURL := bulkURL
 
-	task1 := uuid.NewString()
-	task2 := uuid.NewString()
-	task3 := uuid.NewString()
+	taskBase := fmt.Sprintf("/api/v1/projects/%s/tasks", projectID)
+	task1 := createTaskIT(t, r, tok, taskBase, "Task 1")
+	task2 := createTaskIT(t, r, tok, taskBase, "Task 2")
+	task3 := createTaskIT(t, r, tok, taskBase, "Task 3")
 
 	// --- happy path: bulk upsert three tasks ---
 	w := serve(r, authedJSONReq(t.Context(), http.MethodPut, bulkURL, tok, map[string]any{
@@ -582,7 +629,7 @@ func TestIntegrationViews_BulkMoveTasks_EmptyItems(t *testing.T) {
 	projectID := uuid.New()
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionSprintsRead, authz.PermissionSprintsWrite, authz.PermissionTasksWrite},
+			projectID: {authz.PermissionViewsRead, authz.PermissionViewsWrite, authz.PermissionTasksWrite},
 		},
 	}
 	sprintRepo := newFakeSprintRepoIT()
@@ -612,7 +659,7 @@ func TestIntegrationViews_BulkMoveTasks_AuthzGuard(t *testing.T) {
 	// TasksRead only — no TasksWrite
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionSprintsRead, authz.PermissionTasksRead},
+			projectID: {authz.PermissionViewsRead, authz.PermissionTasksRead},
 		},
 	}
 	sprintRepo := newFakeSprintRepoIT()
@@ -639,8 +686,8 @@ func TestIntegrationBacklogViews_BulkMoveTasks(t *testing.T) {
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
 			projectID: {
-				authz.PermissionSprintsRead,
-				authz.PermissionSprintsWrite,
+				authz.PermissionViewsRead,
+				authz.PermissionViewsWrite,
 				authz.PermissionTasksRead,
 				authz.PermissionTasksWrite,
 			},
@@ -663,8 +710,9 @@ func TestIntegrationBacklogViews_BulkMoveTasks(t *testing.T) {
 	viewID := viewIDFrom(t, createW.Body.Bytes())
 	bulkURL := fmt.Sprintf("%s/%s/task-positions", itemBase, viewID)
 
-	task1 := uuid.NewString()
-	task2 := uuid.NewString()
+	taskBase := fmt.Sprintf("/api/v1/projects/%s/tasks", projectID)
+	task1 := createTaskIT(t, r, tok, taskBase, "Backlog Task 1")
+	task2 := createTaskIT(t, r, tok, taskBase, "Backlog Task 2")
 
 	w := serve(r, authedJSONReq(t.Context(), http.MethodPut, bulkURL, tok, map[string]any{
 		"items": []map[string]any{
@@ -723,8 +771,8 @@ func newBacklogViewPerms(projectID uuid.UUID) *projectPermStore {
 	return &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
 			projectID: {
-				authz.PermissionSprintsRead,
-				authz.PermissionSprintsWrite,
+				authz.PermissionViewsRead,
+				authz.PermissionViewsWrite,
 				authz.PermissionTasksRead,
 				authz.PermissionTasksWrite,
 			},
@@ -914,7 +962,7 @@ func TestIntegrationBacklogViews_TaskPositions(t *testing.T) {
 		t.Fatalf("create backlog view: expected 201, got %d", createW.Code)
 	}
 	viewID := viewIDFrom(t, createW.Body.Bytes())
-	taskID := uuid.NewString()
+	taskID := createTaskIT(t, r, tok, fmt.Sprintf("/api/v1/projects/%s/tasks", projectID), "Backlog Positioned Task")
 
 	// Move task
 	moveW := serve(r, authedJSONReq(t.Context(), http.MethodPut,
@@ -976,7 +1024,7 @@ func TestIntegrationViews_Reorder(t *testing.T) {
 	projectID := uuid.New()
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionSprintsRead, authz.PermissionSprintsWrite},
+			projectID: {authz.PermissionViewsRead, authz.PermissionViewsWrite},
 		},
 	}
 	sprintRepo := newFakeSprintRepoIT()
@@ -1044,7 +1092,7 @@ func TestIntegrationViews_Reorder_MismatchReturns400(t *testing.T) {
 	projectID := uuid.New()
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionSprintsRead, authz.PermissionSprintsWrite},
+			projectID: {authz.PermissionViewsRead, authz.PermissionViewsWrite},
 		},
 	}
 	sprintRepo := newFakeSprintRepoIT()
@@ -1075,7 +1123,7 @@ func TestIntegrationViews_Reorder_AuthzGuard(t *testing.T) {
 	// SprintsRead only — no SprintsWrite
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionSprintsRead},
+			projectID: {authz.PermissionViewsRead},
 		},
 	}
 	sprintRepo := newFakeSprintRepoIT()
@@ -1102,7 +1150,7 @@ func TestIntegrationBacklogViews_Reorder(t *testing.T) {
 	projectID := uuid.New()
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionSprintsRead, authz.PermissionSprintsWrite},
+			projectID: {authz.PermissionViewsRead, authz.PermissionViewsWrite},
 		},
 	}
 	sprintRepo := newFakeSprintRepoIT()
@@ -1161,8 +1209,8 @@ func newTimelineViewPerms(projectID uuid.UUID) *projectPermStore {
 	return &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
 			projectID: {
-				authz.PermissionSprintsRead,
-				authz.PermissionSprintsWrite,
+				authz.PermissionViewsRead,
+				authz.PermissionViewsWrite,
 				authz.PermissionTasksRead,
 				authz.PermissionTasksWrite,
 			},
@@ -1401,7 +1449,7 @@ func TestIntegrationTimelineViews_TaskPositions(t *testing.T) {
 		t.Fatalf("create timeline view: expected 201, got %d", createW.Code)
 	}
 	viewID := viewIDFrom(t, createW.Body.Bytes())
-	taskID := uuid.NewString()
+	taskID := createTaskIT(t, r, tok, fmt.Sprintf("/api/v1/projects/%s/tasks", projectID), "Timeline Positioned Task")
 
 	// Move task
 	moveW := serve(r, authedJSONReq(t.Context(), http.MethodPut,
@@ -1467,7 +1515,7 @@ func TestIntegrationViews_FiltersRoundtrip_AllNormalMode(t *testing.T) {
 	projectID := uuid.New()
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionSprintsRead, authz.PermissionSprintsWrite},
+			projectID: {authz.PermissionViewsRead, authz.PermissionViewsWrite},
 		},
 	}
 	sprintRepo := newFakeSprintRepoIT()
@@ -1564,7 +1612,7 @@ func TestIntegrationViews_FiltersRoundtrip_SprintIDs(t *testing.T) {
 	projectID := uuid.New()
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionSprintsRead, authz.PermissionSprintsWrite},
+			projectID: {authz.PermissionViewsRead, authz.PermissionViewsWrite},
 		},
 	}
 	sprintRepo := newFakeSprintRepoIT()
@@ -1629,7 +1677,7 @@ func TestIntegrationViews_UpdateConfig_TaskTypes(t *testing.T) {
 	projectID := uuid.New()
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionSprintsRead, authz.PermissionSprintsWrite},
+			projectID: {authz.PermissionViewsRead, authz.PermissionViewsWrite},
 		},
 	}
 	sprintRepo := newFakeSprintRepoIT()
@@ -1693,7 +1741,7 @@ func TestIntegrationViews_UpdateConfig_PageSize(t *testing.T) {
 	projectID := uuid.New()
 	store := &projectPermStore{
 		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionSprintsRead, authz.PermissionSprintsWrite},
+			projectID: {authz.PermissionViewsRead, authz.PermissionViewsWrite},
 		},
 	}
 	sprintRepo := newFakeSprintRepoIT()

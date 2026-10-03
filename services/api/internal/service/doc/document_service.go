@@ -3,13 +3,19 @@ package docsvc
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"time"
 
-	docdom "github.com/Paca-AI/api/internal/domain/doc"
 	"github.com/google/uuid"
+
+	docdom "github.com/Paca-AI/api/internal/domain/doc"
+	projectdom "github.com/Paca-AI/api/internal/domain/project"
 )
+
+// memberLookup resolves an actor to their project membership.
+type memberLookup interface {
+	FindMemberByActor(ctx context.Context, projectID, actorID uuid.UUID, agentID *uuid.UUID) (*projectdom.ProjectMember, error)
+}
 
 // Service is the concrete implementation of docdom.Service.
 type Service struct {
@@ -35,7 +41,7 @@ func (s *Service) ListFolders(ctx context.Context, projectID uuid.UUID) ([]*docd
 // CreateFolder creates a new folder.
 func (s *Service) CreateFolder(ctx context.Context, in docdom.CreateFolderInput) (*docdom.DocFolder, error) {
 	name := strings.TrimSpace(in.Name)
-	if name == "" {
+	if name == "" || strings.Contains(name, "/") {
 		return nil, docdom.ErrFolderNameInvalid
 	}
 
@@ -78,7 +84,10 @@ func (s *Service) UpdateFolder(ctx context.Context, id uuid.UUID, in docdom.Upda
 		return nil, docdom.ErrFolderNotFound
 	}
 
-	if name := strings.TrimSpace(in.Name); name != "" {
+	if name := strings.TrimSpace(in.Name); name != "" && name != f.Name {
+		if strings.Contains(name, "/") {
+			return nil, docdom.ErrFolderNameInvalid
+		}
 		f.Name = name
 	}
 	if in.ParentID != nil { // double-pointer present → update parent
@@ -123,8 +132,31 @@ func (s *Service) DeleteFolder(ctx context.Context, id uuid.UUID, projectID uuid
 // --- Document Service -------------------------------------------------------
 
 // ListDocuments returns non-deleted documents for a project.
-func (s *Service) ListDocuments(ctx context.Context, projectID uuid.UUID, folderID *uuid.UUID) ([]*docdom.Document, error) {
-	return s.repo.ListDocuments(ctx, projectID, folderID)
+func (s *Service) ListDocuments(ctx context.Context, projectID uuid.UUID, folderID *uuid.UUID, search *string, cursor *string, limit *int) ([]*docdom.Document, bool, error) {
+	return s.repo.ListDocuments(ctx, projectID, folderID, search, cursor, limit)
+}
+
+// SearchDocuments finds documents whose title or body contains query.
+func (s *Service) SearchDocuments(ctx context.Context, projectID uuid.UUID, query string, limit int) ([]docdom.SearchHit, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	docs, err := s.repo.SearchDocuments(ctx, projectID, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	hits := make([]docdom.SearchHit, 0, len(docs))
+	for _, d := range docs {
+		hits = append(hits, docdom.NewSearchHit(d, query))
+	}
+	return hits, nil
 }
 
 // GetDocument returns a single document.
@@ -137,6 +169,8 @@ func (s *Service) CreateDocument(ctx context.Context, in docdom.CreateDocumentIn
 	title := strings.TrimSpace(in.Title)
 	if title == "" {
 		title = "Untitled"
+	} else if strings.Contains(title, "/") {
+		return nil, docdom.ErrDocTitleInvalid
 	}
 
 	if in.FolderID != nil {
@@ -172,10 +206,13 @@ func (s *Service) CreateDocument(ctx context.Context, in docdom.CreateDocumentIn
 
 // UpdateDocument updates a document's mutable fields and creates a snapshot
 // when the content changes.
-func (s *Service) UpdateDocument(ctx context.Context, id uuid.UUID, in docdom.UpdateDocumentInput) (*docdom.Document, error) {
+func (s *Service) UpdateDocument(ctx context.Context, projectID, id uuid.UUID, in docdom.UpdateDocumentInput) (*docdom.Document, error) {
 	d, err := s.repo.FindDocumentByID(ctx, id)
 	if err != nil {
 		return nil, err
+	}
+	if d.ProjectID != projectID {
+		return nil, docdom.ErrDocNotFound
 	}
 
 	contentChanged := false
@@ -185,6 +222,9 @@ func (s *Service) UpdateDocument(ctx context.Context, id uuid.UUID, in docdom.Up
 	if in.Title != nil {
 		title := strings.TrimSpace(*in.Title)
 		if title == "" {
+			return nil, docdom.ErrDocTitleInvalid
+		}
+		if title != d.Title && strings.Contains(title, "/") {
 			return nil, docdom.ErrDocTitleInvalid
 		}
 		d.Title = title
@@ -242,9 +282,13 @@ func (s *Service) UpdateDocument(ctx context.Context, id uuid.UUID, in docdom.Up
 }
 
 // DeleteDocument soft-deletes a document.
-func (s *Service) DeleteDocument(ctx context.Context, id uuid.UUID) error {
-	if _, err := s.repo.FindDocumentByID(ctx, id); err != nil {
+func (s *Service) DeleteDocument(ctx context.Context, projectID, id uuid.UUID) error {
+	d, err := s.repo.FindDocumentByID(ctx, id)
+	if err != nil {
 		return err
+	}
+	if d.ProjectID != projectID {
+		return docdom.ErrDocNotFound
 	}
 	return s.repo.DeleteDocument(ctx, id)
 }
@@ -252,18 +296,29 @@ func (s *Service) DeleteDocument(ctx context.Context, id uuid.UUID) error {
 // --- Snapshot Service -------------------------------------------------------
 
 // ListSnapshots returns snapshots for a document, newest first.
-func (s *Service) ListSnapshots(ctx context.Context, documentID uuid.UUID) ([]*docdom.DocSnapshot, error) {
-	if _, err := s.repo.FindDocumentByID(ctx, documentID); err != nil {
+func (s *Service) ListSnapshots(ctx context.Context, projectID, documentID uuid.UUID) ([]*docdom.DocSnapshot, error) {
+	d, err := s.repo.FindDocumentByID(ctx, documentID)
+	if err != nil {
 		return nil, err
+	}
+	if d.ProjectID != projectID {
+		return nil, docdom.ErrDocNotFound
 	}
 	return s.repo.ListSnapshots(ctx, documentID)
 }
 
 // GetSnapshot returns a single snapshot.
-func (s *Service) GetSnapshot(ctx context.Context, id uuid.UUID) (*docdom.DocSnapshot, error) {
+func (s *Service) GetSnapshot(ctx context.Context, projectID, id uuid.UUID) (*docdom.DocSnapshot, error) {
 	snap, err := s.repo.FindSnapshotByID(ctx, id)
 	if err != nil {
 		return nil, err
+	}
+	d, err := s.repo.FindDocumentByID(ctx, snap.DocumentID)
+	if err != nil {
+		return nil, err
+	}
+	if d.ProjectID != projectID {
+		return nil, docdom.ErrSnapshotNotFound
 	}
 	return snap, nil
 }
@@ -281,10 +336,4 @@ func (s *Service) resolveMember(ctx context.Context, userID *uuid.UUID, projectI
 		return nil
 	}
 	return &member.ID
-}
-
-// buildFieldChanges constructs the content for a doc.updated activity.
-func buildFieldChanges(changes []docdom.FieldChange) json.RawMessage {
-	raw, _ := json.Marshal(map[string]any{"changes": changes})
-	return raw
 }

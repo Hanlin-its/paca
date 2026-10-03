@@ -9,6 +9,7 @@ export const ApiErrorCode = {
 	MissingToken: "AUTH_MISSING_TOKEN",
 	TokenInvalid: "AUTH_TOKEN_INVALID",
 	Unauthenticated: "AUTH_UNAUTHENTICATED",
+	TooManyRequests: "TOO_MANY_REQUESTS",
 
 	// Password / session gate errors.
 	PasswordChangeRequired: "AUTH_PASSWORD_CHANGE_REQUIRED",
@@ -16,7 +17,9 @@ export const ApiErrorCode = {
 	// User domain errors.
 	UserNotFound: "USER_NOT_FOUND",
 	UsernameTaken: "USER_USERNAME_TAKEN",
+	EmailTaken: "USER_EMAIL_TAKEN",
 	InvalidCurrentPassword: "USER_INVALID_CURRENT_PASSWORD",
+	PasswordSetTokenInvalid: "USER_PASSWORD_SET_TOKEN_INVALID",
 	Forbidden: "FORBIDDEN",
 
 	// Global role domain errors.
@@ -24,6 +27,14 @@ export const ApiErrorCode = {
 	GlobalRoleNameTaken: "GLOBAL_ROLE_NAME_TAKEN",
 	GlobalRoleNameInvalid: "GLOBAL_ROLE_NAME_INVALID",
 	GlobalRoleHasUsers: "GLOBAL_ROLE_HAS_ASSIGNED_USERS",
+	GlobalRoleIsDefault: "GLOBAL_ROLE_IS_DEFAULT",
+	GlobalRoleNoDefault: "GLOBAL_ROLE_NO_DEFAULT",
+
+	// SSO provider errors.
+	SSOProviderNotFound: "SSO_PROVIDER_NOT_FOUND",
+	SSOProviderSlugTaken: "SSO_PROVIDER_SLUG_TAKEN",
+	SSOProviderInvalid: "SSO_PROVIDER_INVALID",
+	SSODiscoveryFailed: "SSO_DISCOVERY_FAILED",
 
 	// Project domain errors.
 	ProjectNotFound: "PROJECT_NOT_FOUND",
@@ -42,16 +53,26 @@ export const ApiErrorCode = {
 	TaskTypeNameInvalid: "TASK_TYPE_NAME_INVALID",
 	TaskTypeIsSystem: "TASK_TYPE_IS_SYSTEM",
 	TaskTypeNameReserved: "TASK_TYPE_NAME_RESERVED",
+	TaskTypeIsDefault: "TASK_TYPE_IS_DEFAULT",
 
 	// Task status domain errors.
 	TaskStatusNotFound: "TASK_STATUS_NOT_FOUND",
 	TaskStatusNameInvalid: "TASK_STATUS_NAME_INVALID",
 	TaskStatusCategoryInvalid: "TASK_STATUS_CATEGORY_INVALID",
 	TaskStatusReorderInvalid: "TASK_STATUS_REORDER_INVALID",
+	// Delete blocked because an automation node still references this status.
+	TaskStatusInUseByAutomation: "TASK_STATUS_IN_USE_BY_AUTOMATION",
+	TaskStatusIsDefault: "TASK_STATUS_IS_DEFAULT",
 
 	// Task domain errors.
 	TaskNotFound: "TASK_NOT_FOUND",
 	TaskTitleInvalid: "TASK_TITLE_INVALID",
+
+	// Task link domain errors.
+	TaskLinkNotFound: "TASK_LINK_NOT_FOUND",
+	TaskLinkSelf: "TASK_LINK_CANNOT_LINK_TO_SELF",
+	TaskLinkAlreadyExists: "TASK_LINK_ALREADY_EXISTS",
+	TaskLinkCrossProject: "TASK_LINK_CROSS_PROJECT",
 
 	// Custom field domain errors.
 	CustomFieldNotFound: "CUSTOM_FIELD_NOT_FOUND",
@@ -59,6 +80,26 @@ export const ApiErrorCode = {
 	CustomFieldKeyTaken: "CUSTOM_FIELD_KEY_TAKEN",
 	CustomFieldTypeInvalid: "CUSTOM_FIELD_TYPE_INVALID",
 	CustomFieldNameInvalid: "CUSTOM_FIELD_NAME_INVALID",
+
+	// Sprint domain errors.
+	SprintAlreadyComplete: "SPRINT_ALREADY_COMPLETE",
+
+	// Board view domain errors.
+	ViewIsLastView: "VIEW_IS_LAST_VIEW",
+	ViewReorderInvalid: "VIEW_REORDER_INVALID",
+
+	// Document domain errors.
+	DocTitleInvalid: "DOC_TITLE_INVALID",
+	DocFolderNameInvalid: "DOC_FOLDER_NAME_INVALID",
+
+	// Annotation domain errors.
+	AnnotationBodyEmpty: "ANNOTATION_BODY_EMPTY",
+	AnnotationAlreadyHasTask: "ANNOTATION_ALREADY_HAS_TASK",
+	AnnotationTaskCreationInProgress: "ANNOTATION_TASK_CREATION_IN_PROGRESS",
+
+	// Attachment domain errors.
+	AttachmentNotFound: "ATTACHMENT_NOT_FOUND",
+	AttachmentInvalid: "ATTACHMENT_INVALID",
 
 	// GitHub integration errors.
 	GitHubIntegrationNotFound: "GITHUB_INTEGRATION_NOT_FOUND",
@@ -74,6 +115,103 @@ export const ApiErrorCode = {
 	GitHubWebhookURLNotPublic: "GITHUB_WEBHOOK_URL_NOT_PUBLIC",
 	GitHubBranchAlreadyLinked: "GITHUB_BRANCH_ALREADY_LINKED",
 	GitHubTokenInsufficientPermissions: "GITHUB_TOKEN_INSUFFICIENT_PERMISSIONS",
+
+	// Plugin domain errors.
+	PluginNotFound: "PLUGIN_NOT_FOUND",
+	PluginNameTaken: "PLUGIN_NAME_TAKEN",
+	PluginAlreadyUpToDate: "PLUGIN_ALREADY_UP_TO_DATE",
+	PluginDowngradeNotAllowed: "PLUGIN_DOWNGRADE_NOT_ALLOWED",
+	PluginIncompatibleHostVersion: "PLUGIN_INCOMPATIBLE_HOST_VERSION",
+
+	// Agent domain errors.
+	// Sent from agent create/update when the requested handle is already
+	// used by another agent (handles are unique, like a username). See
+	// create-agent-dialog.tsx's createError.
+	AgentHandleTaken: "AGENT_HANDLE_TAKEN",
+	// Sent from agent create/update when default_environment_id/
+	// default_folder_id no longer resolve (e.g. deleted between load and
+	// submit) — see create-agent-dialog.tsx's createError and
+	// agent-detail.tsx's OverviewTab.
+	AgentDefaultEnvironmentInvalid: "AGENT_DEFAULT_ENVIRONMENT_INVALID",
+	AgentDefaultFolderInvalid: "AGENT_DEFAULT_FOLDER_INVALID",
+	// Sent from AddSkill when the skill name collides with one of Paca's own
+	// internal scaffolding names, or is malformed ("."/".."/contains a path
+	// separator) — see agent-detail.tsx's AddSkillDialog.
+	AgentSkillNameReserved: "AGENT_SKILL_NAME_RESERVED",
+	AgentSkillNameInvalid: "AGENT_SKILL_NAME_INVALID",
+	// Sent from AddEnvVar when the key is already set on this agent, or
+	// collides with a name reserved for the sandbox itself — see
+	// agent-detail.tsx's AddEnvVarDialog.
+	AgentEnvVarKeyTaken: "AGENT_ENV_VAR_KEY_TAKEN",
+	AgentEnvVarKeyReserved: "AGENT_ENV_VAR_KEY_RESERVED",
+	// Sent when granting access to a member who already holds a grant for
+	// this agent (usually a stale member picker) — see agent-detail.tsx's
+	// AccessTab.
+	AgentAccessGrantExists: "AGENT_ACCESS_GRANT_EXISTS",
+	// Sent instead of dispatching a new chat turn when the agent is already
+	// at parallelism_limit running conversations and the request didn't opt
+	// into on_busy: "queue" | "force" — error_details carries "running"/
+	// "limit" (see getApiErrorDetails). See agent-busy-dialog.tsx.
+	AgentParallelismLimitReached: "AGENT_PARALLELISM_LIMIT_REACHED",
+	// Sent instead of dispatching a new chat turn when another conversation
+	// — from any agent, not just this one — is already running in the same
+	// environment folder (an explicit environment/folder override, or two
+	// agents sharing one default environment, can both cross agent
+	// boundaries the parallelism_limit check above never sees). Carries
+	// error_details.environment_id. See agent-busy-dialog.tsx — same
+	// on_busy=queue|force retry as AgentParallelismLimitReached, just a
+	// different reason for being busy.
+	AgentEnvironmentFolderBusy: "AGENT_ENVIRONMENT_FOLDER_BUSY",
+	// Returned from create/update agent when parallelism_limit > 1 is
+	// requested for an agent that can't safely run more than one
+	// conversation at once (an ACP-type agent, or one attached to a shared
+	// default_environment_id) — see agent-detail.tsx's requiresSerialDispatch,
+	// which keeps the field disabled in that case so this should be
+	// unreachable from the UI in practice.
+	AgentParallelismLimitUnsupported: "AGENT_PARALLELISM_LIMIT_UNSUPPORTED",
+	// Returned when on_busy is set to anything other than "", "queue", or
+	// "force" — should be unreachable from the UI in practice, since
+	// agent-busy-dialog.tsx/useAgentBusyPrompt only ever sends one of those
+	// three values.
+	AgentOnBusyInvalid: "AGENT_ON_BUSY_INVALID",
+	// Sent instead of dispatching a chat turn when the agent itself is
+	// access_mode=restricted and the caller holds no grant for it. See
+	// conversation-to-thread-messages.ts's chatSessionAccessDeniedKey.
+	AgentAccessRestricted: "AGENT_ACCESS_RESTRICTED",
+	// Environment domain errors (static environments — see
+	// docs/ai-agent/environment-management.md).
+	// Sent instead of dispatching a chat turn when the environment the
+	// conversation would attach to (explicit override, or the agent's own
+	// DefaultEnvironmentID) is access_mode=restricted and the caller holds
+	// no grant for it — a separate resource from the agent above, so a
+	// separate code/remedy ("ask for environment access", not agent
+	// access). See conversation-to-thread-messages.ts's
+	// chatSessionAccessDeniedKey.
+	EnvironmentAccessRestricted: "ENVIRONMENT_ACCESS_RESTRICTED",
+	EnvironmentNameInvalid: "ENVIRONMENT_NAME_INVALID",
+	// Sent from start/stop/restart when the environment is already
+	// mid-transition — see environment-detail.tsx's header actions and
+	// RestartEnvironmentDialog, and environment-connect.tsx's
+	// WebAppConnectTab.
+	EnvironmentBusy: "ENVIRONMENT_BUSY",
+	EnvironmentCPULimitInvalid: "ENVIRONMENT_CPU_LIMIT_INVALID",
+	EnvironmentMemoryLimitInvalid: "ENVIRONMENT_MEMORY_LIMIT_INVALID",
+	// Sent from AddFolder — see folder-create-dialog.tsx.
+	EnvironmentFolderPathTaken: "ENVIRONMENT_FOLDER_PATH_TAKEN",
+	EnvironmentFolderPathInvalid: "ENVIRONMENT_FOLDER_PATH_INVALID",
+	// Sent from AddSSHKey — see environment-connect.tsx's AddSSHKeyDialog.
+	EnvironmentSSHKeyInvalid: "ENVIRONMENT_SSH_KEY_INVALID",
+	EnvironmentSSHKeyFingerprintTaken: "ENVIRONMENT_SSH_KEY_FINGERPRINT_TAKEN",
+	// Sent from AddPortForward — see environment-detail.tsx's
+	// AddPortForwardDialog.
+	EnvironmentPortForwardContainerPortInvalid:
+		"ENVIRONMENT_PORT_FORWARD_CONTAINER_PORT_INVALID",
+	EnvironmentPortForwardContainerPortTaken:
+		"ENVIRONMENT_PORT_FORWARD_CONTAINER_PORT_TAKEN",
+	// Sent when granting access to a member who already holds a grant for
+	// this environment (usually a stale member picker) — see
+	// environment-detail.tsx's AccessTab.
+	EnvironmentAccessGrantExists: "ENVIRONMENT_ACCESS_GRANT_EXISTS",
 
 	// Generic / request errors.
 	BadRequest: "BAD_REQUEST",
@@ -93,6 +231,36 @@ export function isPasswordChangeRequired(err: unknown): boolean {
 	);
 }
 
+/** The HTTP status code of an Axios error's response, or undefined for a
+ *  non-HTTP failure (network error, timeout) or a non-Axios error. */
+export function getHttpStatus(error: unknown): number | undefined {
+	return (error as { response?: { status?: number } } | undefined)?.response
+		?.status;
+}
+
+/**
+ * True for a plain "you don't have permission" 403 — every 403 except the
+ * one that means something more specific and is already handled elsewhere
+ * (AUTH_PASSWORD_CHANGE_REQUIRED triggers its own redirect to
+ * /change-password in api-client.ts's response interceptor, so a component
+ * reacting to it as a normal permission error would show a confusing
+ * message for the instant before that redirect lands). Use this to decide
+ * whether to render a NoPermissionState instead of a generic error state —
+ * see that component's doc comment.
+ */
+export function isForbiddenError(error: unknown): boolean {
+	return getHttpStatus(error) === 403 && !isPasswordChangeRequired(error);
+}
+
+/**
+ * Returns true when an Axios error is a 404 TASK_NOT_FOUND — i.e. the API has
+ * authoritatively confirmed the task doesn't exist, as opposed to a network
+ * failure, timeout, or 5xx that says nothing about whether the task exists.
+ */
+export function isTaskNotFoundError(err: unknown): boolean {
+	return getApiErrorCode(err) === ApiErrorCode.TaskNotFound;
+}
+
 /** Shape of the success envelope returned by the API on success. */
 export interface SuccessEnvelope<T> {
 	success: true;
@@ -105,6 +273,12 @@ export interface ApiErrorEnvelope {
 	success: false;
 	error_code: ApiErrorCode;
 	error: string;
+	/**
+	 * Structured, non-localized values for the handful of error codes that
+	 * need them (e.g. `PLUGIN_INCOMPATIBLE_HOST_VERSION` carries
+	 * `required_version`/`host_version`) — see `getApiErrorDetails`.
+	 */
+	error_details?: Record<string, string>;
 	request_id?: string;
 }
 
@@ -123,4 +297,33 @@ export function getApiErrorCode(error: unknown): ApiErrorCode | null {
 	if (!code) return null;
 	const known = Object.values(ApiErrorCode) as string[];
 	return known.includes(code) ? (code as ApiErrorCode) : null;
+}
+
+/**
+ * Extracts the human-readable `error` message from an API error envelope.
+ * This is free-text set by the server and is never localized — prefer
+ * `getApiErrorDetails` plus a translated string with interpolation when the
+ * code supports it, and fall back to this only for unrecognized codes.
+ * Returns `null` when the error is not an API error envelope.
+ */
+export function getApiErrorMessage(error: unknown): string | null {
+	const err = error as {
+		response?: { data?: { error?: string } };
+	};
+	return err?.response?.data?.error ?? null;
+}
+
+/**
+ * Extracts the structured `error_details` map from an API error envelope
+ * (see `ApiErrorEnvelope.error_details`) — values here are plain data (IDs,
+ * version numbers), never translated text, so they're safe to interpolate
+ * into a locally translated string. Returns `null` when absent.
+ */
+export function getApiErrorDetails(
+	error: unknown,
+): Record<string, string> | null {
+	const err = error as {
+		response?: { data?: { error_details?: Record<string, string> } };
+	};
+	return err?.response?.data?.error_details ?? null;
 }

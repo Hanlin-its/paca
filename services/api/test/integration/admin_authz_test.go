@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	globalroledom "github.com/Paca-AI/api/internal/domain/globalrole"
 	"github.com/Paca-AI/api/internal/platform/authz"
 	jwttoken "github.com/Paca-AI/api/internal/platform/token"
@@ -17,7 +19,6 @@ import (
 	usersvc "github.com/Paca-AI/api/internal/service/user"
 	"github.com/Paca-AI/api/internal/transport/http/handler"
 	"github.com/Paca-AI/api/internal/transport/http/router"
-	"github.com/google/uuid"
 )
 
 type integrationPermissionStore struct {
@@ -56,6 +57,18 @@ func (s *fakeGlobalRoleService) Delete(context.Context, uuid.UUID) error {
 
 func (s *fakeGlobalRoleService) ReplaceUserRoles(context.Context, uuid.UUID, []uuid.UUID) ([]*globalroledom.GlobalRole, error) {
 	return []*globalroledom.GlobalRole{}, nil
+}
+
+func (s *fakeGlobalRoleService) FindByID(context.Context, uuid.UUID) (*globalroledom.GlobalRole, error) {
+	return &globalroledom.GlobalRole{ID: uuid.New(), Name: "TEST", Permissions: map[string]any{}}, nil
+}
+
+func (s *fakeGlobalRoleService) SetDefault(context.Context, uuid.UUID) (*globalroledom.GlobalRole, error) {
+	return &globalroledom.GlobalRole{ID: uuid.New(), Name: "TEST", Permissions: map[string]any{}, IsDefault: true}, nil
+}
+
+func (s *fakeGlobalRoleService) FindDefault(context.Context) (*globalroledom.GlobalRole, error) {
+	return nil, globalroledom.ErrNoDefault
 }
 
 func buildAdminTestRouter(perms []authz.Permission) http.Handler {

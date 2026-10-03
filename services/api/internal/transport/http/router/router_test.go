@@ -7,17 +7,22 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
+	attachmentdom "github.com/Paca-AI/api/internal/domain/attachment"
 	domainauth "github.com/Paca-AI/api/internal/domain/auth"
 	globalroledom "github.com/Paca-AI/api/internal/domain/globalrole"
+	projectdom "github.com/Paca-AI/api/internal/domain/project"
+	settingsdom "github.com/Paca-AI/api/internal/domain/settings"
 	userdom "github.com/Paca-AI/api/internal/domain/user"
 	"github.com/Paca-AI/api/internal/platform/authz"
 	jwttoken "github.com/Paca-AI/api/internal/platform/token"
 	"github.com/Paca-AI/api/internal/transport/http/handler"
-	"github.com/google/uuid"
 )
 
 type mockAuthSvc struct{}
@@ -28,6 +33,9 @@ func (m *mockAuthSvc) Login(context.Context, string, string, bool) (*domainauth.
 func (m *mockAuthSvc) Refresh(context.Context, string) (*domainauth.TokenPair, error) {
 	return &domainauth.TokenPair{AccessToken: "at2", RefreshToken: "rt2", RefreshTTL: 24 * time.Hour}, nil
 }
+func (m *mockAuthSvc) RefreshAnnotation(context.Context, string) (*domainauth.TokenPair, error) {
+	return &domainauth.TokenPair{AnnotationAccessToken: "aat2", AnnotationRefreshToken: "art2", RefreshTTL: 24 * time.Hour}, nil
+}
 func (m *mockAuthSvc) Logout(context.Context, string) error { return nil }
 
 type mockUserSvc struct{}
@@ -35,8 +43,14 @@ type mockUserSvc struct{}
 func (m *mockUserSvc) GetByID(context.Context, uuid.UUID) (*userdom.User, error) {
 	return &userdom.User{ID: uuid.New(), Username: "alice", FullName: "Alice", Role: userdom.RoleUser}, nil
 }
-func (m *mockUserSvc) List(context.Context, int, int) ([]*userdom.User, int64, error) {
+func (m *mockUserSvc) List(context.Context, int, int, userdom.ListFilter) ([]*userdom.User, int64, error) {
 	return []*userdom.User{}, 0, nil
+}
+func (m *mockUserSvc) CountUsers(context.Context) (int64, error) {
+	return 0, nil
+}
+func (m *mockUserSvc) CountUsersMustChangePassword(context.Context) (int64, error) {
+	return 0, nil
 }
 func (m *mockUserSvc) ListGlobalPermissions(context.Context, uuid.UUID) ([]string, error) {
 	return []string{string(authz.PermissionUsersRead)}, nil
@@ -52,7 +66,20 @@ func (m *mockUserSvc) AdminUpdate(context.Context, uuid.UUID, userdom.AdminUpdat
 }
 func (m *mockUserSvc) ResetPassword(context.Context, uuid.UUID, string) error            { return nil }
 func (m *mockUserSvc) ChangeMyPassword(context.Context, uuid.UUID, string, string) error { return nil }
-func (m *mockUserSvc) Delete(context.Context, uuid.UUID) error                           { return nil }
+func (m *mockUserSvc) IssuePasswordSetToken(context.Context, uuid.UUID) (string, time.Time, error) {
+	return "", time.Time{}, nil
+}
+func (m *mockUserSvc) SetPasswordWithToken(context.Context, string, string) error { return nil }
+func (m *mockUserSvc) Delete(context.Context, uuid.UUID) error                    { return nil }
+func (m *mockUserSvc) InitiateAvatarUpload(context.Context, uuid.UUID, string, string, int64) (*attachmentdom.UploadSession, error) {
+	return &attachmentdom.UploadSession{}, nil
+}
+func (m *mockUserSvc) CompleteAvatarUpload(context.Context, uuid.UUID, uuid.UUID) (*userdom.User, error) {
+	return &userdom.User{ID: uuid.New(), Username: "alice", FullName: "Alice", Role: userdom.RoleUser}, nil
+}
+func (m *mockUserSvc) RemoveAvatar(context.Context, uuid.UUID) (*userdom.User, error) {
+	return &userdom.User{ID: uuid.New(), Username: "alice", FullName: "Alice", Role: userdom.RoleUser}, nil
+}
 
 type mockGlobalRoleSvc struct{}
 
@@ -68,6 +95,111 @@ func (m *mockGlobalRoleSvc) Update(context.Context, uuid.UUID, globalroledom.Upd
 func (m *mockGlobalRoleSvc) Delete(context.Context, uuid.UUID) error { return nil }
 func (m *mockGlobalRoleSvc) ReplaceUserRoles(context.Context, uuid.UUID, []uuid.UUID) ([]*globalroledom.GlobalRole, error) {
 	return []*globalroledom.GlobalRole{}, nil
+}
+func (m *mockGlobalRoleSvc) FindByID(context.Context, uuid.UUID) (*globalroledom.GlobalRole, error) {
+	return &globalroledom.GlobalRole{ID: uuid.New(), Name: "SUPER_ADMIN", Permissions: map[string]any{}}, nil
+}
+func (m *mockGlobalRoleSvc) SetDefault(context.Context, uuid.UUID) (*globalroledom.GlobalRole, error) {
+	return &globalroledom.GlobalRole{ID: uuid.New(), Name: "SUPER_ADMIN", Permissions: map[string]any{}, IsDefault: true}, nil
+}
+func (m *mockGlobalRoleSvc) FindDefault(context.Context) (*globalroledom.GlobalRole, error) {
+	return nil, globalroledom.ErrNoDefault
+}
+
+// stubProjectSvc is a minimal projectdom.Service with no projects, just
+// enough to exercise routing for the /projects collection endpoints.
+type stubProjectSvc struct{}
+
+func (s *stubProjectSvc) List(context.Context, int, int) ([]*projectdom.Project, int64, error) {
+	return nil, 0, nil
+}
+func (s *stubProjectSvc) ListAccessible(context.Context, uuid.UUID, int, int) ([]*projectdom.Project, int64, error) {
+	return nil, 0, nil
+}
+func (s *stubProjectSvc) GetByID(context.Context, uuid.UUID) (*projectdom.Project, error) {
+	return nil, projectdom.ErrNotFound
+}
+func (s *stubProjectSvc) IsProjectPublic(context.Context, uuid.UUID) (bool, error) {
+	return false, nil
+}
+func (s *stubProjectSvc) Create(context.Context, projectdom.CreateProjectInput) (*projectdom.Project, error) {
+	return nil, nil
+}
+func (s *stubProjectSvc) Update(context.Context, uuid.UUID, projectdom.UpdateProjectInput) (*projectdom.Project, error) {
+	return nil, nil
+}
+func (s *stubProjectSvc) Delete(context.Context, uuid.UUID) error { return nil }
+func (s *stubProjectSvc) InitiateAvatarUpload(context.Context, uuid.UUID, string, string, int64, uuid.UUID) (*attachmentdom.UploadSession, error) {
+	return &attachmentdom.UploadSession{}, nil
+}
+func (s *stubProjectSvc) CompleteAvatarUpload(context.Context, uuid.UUID, uuid.UUID) (*projectdom.Project, error) {
+	return nil, projectdom.ErrNotFound
+}
+func (s *stubProjectSvc) RemoveAvatar(context.Context, uuid.UUID) (*projectdom.Project, error) {
+	return nil, projectdom.ErrNotFound
+}
+func (s *stubProjectSvc) ListMembers(context.Context, uuid.UUID) ([]*projectdom.ProjectMember, error) {
+	return nil, nil
+}
+func (s *stubProjectSvc) CountDistinctAgentsByProjects(context.Context, []uuid.UUID) (int64, error) {
+	return 0, nil
+}
+func (s *stubProjectSvc) AddMember(context.Context, uuid.UUID, projectdom.AddMemberInput) (*projectdom.ProjectMember, error) {
+	return nil, nil
+}
+func (s *stubProjectSvc) UpdateMemberRole(context.Context, uuid.UUID, uuid.UUID, projectdom.UpdateMemberRoleInput) (*projectdom.ProjectMember, error) {
+	return nil, nil
+}
+func (s *stubProjectSvc) RemoveMember(context.Context, uuid.UUID, uuid.UUID) error { return nil }
+func (s *stubProjectSvc) UpdateMemberRoleByMemberID(context.Context, uuid.UUID, uuid.UUID, projectdom.UpdateMemberRoleInput) (*projectdom.ProjectMember, error) {
+	return nil, nil
+}
+func (s *stubProjectSvc) UpdateMemberDescription(context.Context, uuid.UUID, uuid.UUID, string) (*projectdom.ProjectMember, error) {
+	return nil, nil
+}
+func (s *stubProjectSvc) RemoveMemberByMemberID(context.Context, uuid.UUID, uuid.UUID) error {
+	return nil
+}
+func (s *stubProjectSvc) GetMyProjectPermissions(context.Context, uuid.UUID, uuid.UUID, *uuid.UUID) (map[string]any, error) {
+	return nil, nil
+}
+func (s *stubProjectSvc) AddAgentMember(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID) error {
+	return nil
+}
+func (s *stubProjectSvc) RemoveAgentMember(context.Context, uuid.UUID, uuid.UUID) error { return nil }
+func (s *stubProjectSvc) ListRoles(context.Context, uuid.UUID) ([]*projectdom.ProjectRole, error) {
+	return nil, nil
+}
+func (s *stubProjectSvc) CreateRole(context.Context, uuid.UUID, projectdom.CreateRoleInput) (*projectdom.ProjectRole, error) {
+	return nil, nil
+}
+func (s *stubProjectSvc) UpdateRole(context.Context, uuid.UUID, uuid.UUID, projectdom.UpdateRoleInput) (*projectdom.ProjectRole, error) {
+	return nil, nil
+}
+func (s *stubProjectSvc) DeleteRole(context.Context, uuid.UUID, uuid.UUID) error { return nil }
+func (s *stubProjectSvc) FindRoleByID(context.Context, uuid.UUID) (*projectdom.ProjectRole, error) {
+	return nil, projectdom.ErrRoleNotFound
+}
+
+// fakeSettingsSvc is a minimal settingsdom.Service — enough to exercise
+// routing/permission checks for the /admin/settings endpoints without a
+// real DB.
+type fakeSettingsSvc struct{}
+
+func (f *fakeSettingsSvc) Get(context.Context) (*settingsdom.WorkspaceSettings, error) {
+	return &settingsdom.WorkspaceSettings{}, nil
+}
+func (f *fakeSettingsSvc) InitiateImageUpload(context.Context, settingsdom.ImageSlot, string, string, int64, uuid.UUID) (*attachmentdom.UploadSession, error) {
+	return &attachmentdom.UploadSession{}, nil
+}
+func (f *fakeSettingsSvc) CompleteImageUpload(context.Context, settingsdom.ImageSlot, uuid.UUID, uuid.UUID) (*settingsdom.WorkspaceSettings, error) {
+	return &settingsdom.WorkspaceSettings{}, nil
+}
+func (f *fakeSettingsSvc) RemoveImage(context.Context, settingsdom.ImageSlot, uuid.UUID) (*settingsdom.WorkspaceSettings, error) {
+	return &settingsdom.WorkspaceSettings{}, nil
+}
+func (f *fakeSettingsSvc) UpdateSettings(context.Context, *string, *string, *string, uuid.UUID) (*settingsdom.WorkspaceSettings, error) {
+	return &settingsdom.WorkspaceSettings{}, nil
 }
 
 type allowAllPermissionStore struct{}
@@ -99,9 +231,10 @@ func newTestRouter(t *testing.T) http.Handler {
 func newTestRouterWithStore(t *testing.T, store authz.PermissionStore) http.Handler {
 	t.Helper()
 
+	authorizer := authz.NewAuthorizer(store)
 	deps := Deps{
 		TokenManager: jwttoken.New("test-secret", 15*time.Minute, 24*time.Hour),
-		Authorizer:   authz.NewAuthorizer(store),
+		Authorizer:   authorizer,
 		Health:       handler.NewHealthHandler(),
 		Auth: handler.NewAuthHandler(&mockAuthSvc{}, handler.CookieConfig{
 			Secure:            false,
@@ -111,6 +244,8 @@ func newTestRouterWithStore(t *testing.T, store authz.PermissionStore) http.Hand
 		}),
 		User:       handler.NewUserHandler(&mockUserSvc{}),
 		GlobalRole: handler.NewGlobalRoleHandler(&mockGlobalRoleSvc{}),
+		Project:    handler.NewProjectHandler(&stubProjectSvc{}, authorizer),
+		Settings:   handler.NewSettingsHandler(&fakeSettingsSvc{}),
 		Log:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 
@@ -152,6 +287,39 @@ func TestNew_CORSPreflight(t *testing.T) {
 	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "*" {
 		t.Fatalf("expected CORS origin '*', got %q", got)
 	}
+}
+
+func TestNew_CORSAllowList(t *testing.T) {
+	deps := Deps{
+		TokenManager:       jwttoken.New("test-secret", 15*time.Minute, 24*time.Hour),
+		Authorizer:         authz.NewAuthorizer(&allowAllPermissionStore{}),
+		Health:             handler.NewHealthHandler(),
+		Log:                slog.New(slog.NewTextHandler(io.Discard, nil)),
+		CORSAllowedOrigins: []string{"https://paca.example.com"},
+	}
+	r := New(deps)
+
+	t.Run("allowed origin is echoed back", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/healthz", nil)
+		req.Header.Set("Origin", "https://paca.example.com")
+		r.ServeHTTP(w, req)
+
+		if got := w.Header().Get("Access-Control-Allow-Origin"); got != "https://paca.example.com" {
+			t.Fatalf("expected allowed origin echoed back, got %q", got)
+		}
+	})
+
+	t.Run("unlisted origin gets no CORS header", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/healthz", nil)
+		req.Header.Set("Origin", "https://evil.example.com")
+		r.ServeHTTP(w, req)
+
+		if got := w.Header().Get("Access-Control-Allow-Origin"); got != "" {
+			t.Fatalf("expected no CORS header for unlisted origin, got %q", got)
+		}
+	})
 }
 
 func TestNew_RequestIDPropagation(t *testing.T) {
@@ -252,6 +420,38 @@ func TestAdminRoute_CreateGlobalRole_RequiresWritePermission(t *testing.T) {
 	}
 }
 
+func TestAdminRoute_UpdateSettings_RequiresWritePermission(t *testing.T) {
+	r := newTestRouterWithStore(t, &staticPermissionStore{globalPerms: []authz.Permission{authz.PermissionUsersRead}})
+	tok := issueAccessTokenForRouterTests(t)
+
+	body := bytes.NewBufferString(`{"brand_name":"Acme"}`)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPatch, "/api/v1/admin/settings", body)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 without settings.write permission, got %d (%s)", w.Code, w.Body.String())
+	}
+}
+
+func TestAdminRoute_UpdateSettings_WithWritePermission(t *testing.T) {
+	r := newTestRouterWithStore(t, &staticPermissionStore{globalPerms: []authz.Permission{authz.PermissionSettingsWrite}})
+	tok := issueAccessTokenForRouterTests(t)
+
+	body := bytes.NewBufferString(`{"brand_name":"Acme"}`)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPatch, "/api/v1/admin/settings", body)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 with settings.write permission, got %d (%s)", w.Code, w.Body.String())
+	}
+}
+
 func TestAdminRoute_AssignGlobalRoles_RequiresAssignPermission(t *testing.T) {
 	r := newTestRouterWithStore(t, &staticPermissionStore{globalPerms: []authz.Permission{authz.PermissionGlobalRolesWrite}})
 	tok := issueAccessTokenForRouterTests(t)
@@ -265,5 +465,97 @@ func TestAdminRoute_AssignGlobalRoles_RequiresAssignPermission(t *testing.T) {
 
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 without assign permission, got %d (%s)", w.Code, w.Body.String())
+	}
+}
+
+// TestProjectsRoute_WorkspaceStats_NotShadowedByProjectIDRoute guards against
+// a regression where "/projects" and "/projects/{projectId}" were registered
+// as two separate chi Route()/Mount() calls: chi treated the {projectId}
+// mount as matching ANY sub-path of "/projects", including the static
+// "/workspace-stats" route, so "workspace-stats" got bound to {projectId} and
+// failed uuid.Parse with "invalid project id". See router.go's Projects
+// collection block, which now uses r.Group instead of a separate r.Route.
+func TestProjectsRoute_WorkspaceStats_NotShadowedByProjectIDRoute(t *testing.T) {
+	r := newTestRouter(t)
+	tok := issueAccessTokenForRouterTests(t)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/projects/workspace-stats", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 from GetWorkspaceStats, got %d (%s)", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "invalid project id") {
+		t.Fatalf("workspace-stats request was shadowed by the /projects/{projectId} route: %s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "open_task_count") {
+		t.Fatalf("expected WorkspaceStatsResponse body, got %s", w.Body.String())
+	}
+}
+
+// TestProjectsRoute_GetByID_StillParsesProjectID is the counterpart check:
+// the {projectId} route must still receive and parse a real project ID after
+// the r.Group fix, rather than always falling through to the collection
+// routes.
+func TestProjectsRoute_GetByID_StillParsesProjectID(t *testing.T) {
+	r := newTestRouter(t)
+	tok := issueAccessTokenForRouterTests(t)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/projects/"+uuid.NewString(), nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	r.ServeHTTP(w, req)
+
+	if strings.Contains(w.Body.String(), "invalid project id") {
+		t.Fatalf("valid project UUID was rejected as invalid: %s", w.Body.String())
+	}
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 (unknown project id from stub service), got %d (%s)", w.Code, w.Body.String())
+	}
+}
+
+func TestNew_AuthRateLimit(t *testing.T) {
+	deps := Deps{
+		TokenManager: jwttoken.New("test-secret", 15*time.Minute, 24*time.Hour),
+		Authorizer:   authz.NewAuthorizer(&allowAllPermissionStore{}),
+		Health:       handler.NewHealthHandler(),
+		Auth: handler.NewAuthHandler(&mockAuthSvc{}, handler.CookieConfig{
+			AccessTTL: 15 * time.Minute, RefreshTTL: 24 * time.Hour, RefreshSessionTTL: 12 * time.Hour,
+		}),
+		User:          handler.NewUserHandler(&mockUserSvc{}),
+		Log:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+		AuthRateLimit: 2,
+	}
+	r := New(deps)
+	login := func(ip string) int {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/auth/login",
+			strings.NewReader(`{"username":"alice","password":"pw"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = ip + ":1234"
+		r.ServeHTTP(w, req)
+		return w.Code
+	}
+	for i := range 2 {
+		if code := login("203.0.113.1"); code == http.StatusTooManyRequests {
+			t.Fatalf("login %d rate-limited too early", i+1)
+		}
+	}
+	if code := login("203.0.113.1"); code != http.StatusTooManyRequests {
+		t.Fatalf("third login: got %d, want 429", code)
+	}
+	if code := login("203.0.113.2"); code == http.StatusTooManyRequests {
+		t.Fatal("another client was rate-limited")
+	}
+
+	// Refresh has its own, larger budget: exhausting login doesn't block it.
+	w := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/auth/refresh", nil)
+	req.RemoteAddr = "203.0.113.1:1234"
+	r.ServeHTTP(w, req)
+	if w.Code == http.StatusTooManyRequests {
+		t.Fatal("refresh shares login's budget")
 	}
 }

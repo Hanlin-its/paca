@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	taskdom "github.com/Paca-AI/api/internal/domain/task"
 	"github.com/google/uuid"
+
+	taskdom "github.com/Paca-AI/api/internal/domain/task"
 )
 
 // --- Optional JSON field types ----------------------------------------------
@@ -40,6 +41,44 @@ func (o *OptionalUUID) UnmarshalJSON(data []byte) error {
 // Ptr returns a **uuid.UUID suitable for UpdateTaskInput:
 // nil when the field was absent, &nil when explicitly null, &&id when set.
 func (o OptionalUUID) Ptr() **uuid.UUID {
+	if !o.Set {
+		return nil
+	}
+	return &o.Value
+}
+
+// OptionalUUIDSlice is a JSON-decodable field for a settable list of UUIDs
+// (e.g. assignee_ids). Unlike OptionalUUID it has no null/absent distinction
+// beyond "was this field present in the body" — JSON null is treated the same
+// as an empty array (both clear the stored set).
+type OptionalUUIDSlice struct {
+	Set   bool
+	Value []uuid.UUID
+}
+
+// UnmarshalJSON implements json.Unmarshaler. It marks the field as Set and
+// decodes the value, treating JSON null as an empty (non-nil) slice.
+func (o *OptionalUUIDSlice) UnmarshalJSON(data []byte) error {
+	o.Set = true
+	if string(data) == "null" {
+		o.Value = []uuid.UUID{}
+		return nil
+	}
+	var ids []uuid.UUID
+	if err := json.Unmarshal(data, &ids); err != nil {
+		return fmt.Errorf("invalid uuid array value: %w", err)
+	}
+	if ids == nil {
+		ids = []uuid.UUID{}
+	}
+	o.Value = ids
+	return nil
+}
+
+// Ptr returns a *[]uuid.UUID suitable for UpdateTaskInput.AssigneeIDs: nil
+// when the field was absent (don't overwrite), non-nil when it was set
+// (replace in full, possibly with an empty slice to clear).
+func (o OptionalUUIDSlice) Ptr() *[]uuid.UUID {
 	if !o.Set {
 		return nil
 	}
@@ -179,11 +218,13 @@ type CreateTaskTypeRequest struct {
 }
 
 // UpdateTaskTypeRequest is the body for PATCH /projects/:projectId/task-types/:typeId.
+// Icon, Color, and Description use the Optional* wrapper types so an absent
+// field leaves the stored value unchanged, distinct from an explicit JSON null.
 type UpdateTaskTypeRequest struct {
-	Name        string  `json:"name"`
-	Icon        *string `json:"icon"`
-	Color       *string `json:"color"`
-	Description *string `json:"description"`
+	Name        string         `json:"name"`
+	Icon        OptionalString `json:"icon"`
+	Color       OptionalString `json:"color"`
+	Description OptionalString `json:"description"`
 }
 
 // TaskTypeResponse is the public representation of a task type.
@@ -279,12 +320,16 @@ type CreateTaskRequest struct {
 	Description  *json.RawMessage `json:"description"`
 	Importance   int              `json:"importance"`
 	StoryPoints  *int             `json:"story_points"`
-	AssigneeID   *uuid.UUID       `json:"assignee_id"`
+	AssigneeIDs  []uuid.UUID      `json:"assignee_ids"`
 	ReporterID   *uuid.UUID       `json:"reporter_id"`
 	CustomFields map[string]any   `json:"custom_fields"`
 	StartDate    *time.Time       `json:"start_date"`
 	DueDate      *time.Time       `json:"due_date"`
 	Tags         []string         `json:"tags"`
+	// AssignmentMode: omit for the default ("manual"). "auto" asks
+	// worker.TaskAutofillConsumer to resolve AssigneeIDs via Jev — see
+	// taskdom.Task.AssignmentMode's doc comment.
+	AssignmentMode string `json:"assignment_mode"`
 }
 
 // NormalizedDescription returns the description as a json.RawMessage suitable
@@ -302,20 +347,23 @@ func (r CreateTaskRequest) NormalizedDescription() json.RawMessage {
 // For Tags and CustomFields, a nil pointer means absent (don't update); a non-nil
 // pointer (even to an empty slice/map) means the field was explicitly set.
 type UpdateTaskRequest struct {
-	Title        string          `json:"title"`
-	TaskTypeID   OptionalUUID    `json:"task_type_id"`
-	StatusID     OptionalUUID    `json:"status_id"`
-	SprintID     OptionalUUID    `json:"sprint_id"`
-	ParentTaskID OptionalUUID    `json:"parent_task_id"`
-	Description  OptionalJSON    `json:"description"`
-	Importance   *int            `json:"importance"`
-	StoryPoints  OptionalInt     `json:"story_points"`
-	AssigneeID   OptionalUUID    `json:"assignee_id"`
-	ReporterID   OptionalUUID    `json:"reporter_id"`
-	CustomFields *map[string]any `json:"custom_fields"`
-	StartDate    OptionalTime    `json:"start_date"`
-	DueDate      OptionalTime    `json:"due_date"`
-	Tags         *[]string       `json:"tags"`
+	Title        string            `json:"title"`
+	TaskTypeID   OptionalUUID      `json:"task_type_id"`
+	StatusID     OptionalUUID      `json:"status_id"`
+	SprintID     OptionalUUID      `json:"sprint_id"`
+	ParentTaskID OptionalUUID      `json:"parent_task_id"`
+	Description  OptionalJSON      `json:"description"`
+	Importance   *int              `json:"importance"`
+	StoryPoints  OptionalInt       `json:"story_points"`
+	AssigneeIDs  OptionalUUIDSlice `json:"assignee_ids"`
+	ReporterID   OptionalUUID      `json:"reporter_id"`
+	CustomFields *map[string]any   `json:"custom_fields"`
+	StartDate    OptionalTime      `json:"start_date"`
+	DueDate      OptionalTime      `json:"due_date"`
+	Tags         *[]string         `json:"tags"`
+	// AssignmentMode: nil means unchanged. See CreateTaskRequest's own doc
+	// comment.
+	AssignmentMode *string `json:"assignment_mode"`
 }
 
 // TaskResponse is the public representation of a task.
@@ -334,7 +382,7 @@ type TaskResponse struct {
 	Description  json.RawMessage `json:"description,omitempty"`
 	Importance   int             `json:"importance"`
 	StoryPoints  *int            `json:"story_points,omitempty"`
-	AssigneeID   *uuid.UUID      `json:"assignee_id,omitempty"`
+	AssigneeIDs  []uuid.UUID     `json:"assignee_ids"`
 	ReporterID   *uuid.UUID      `json:"reporter_id,omitempty"`
 	CustomFields map[string]any  `json:"custom_fields"`
 	StartDate    *time.Time      `json:"start_date,omitempty"`
@@ -344,6 +392,9 @@ type TaskResponse struct {
 	ViewGroupKey *string         `json:"view_group_key,omitempty"`
 	CreatedAt    time.Time       `json:"created_at"`
 	UpdatedAt    time.Time       `json:"updated_at"`
+	// AssignmentMode is "manual" or "auto" — see taskdom.Task.AssignmentMode's
+	// doc comment.
+	AssignmentMode string `json:"assignment_mode"`
 }
 
 // TaskFromEntity maps a domain Task to a TaskResponse DTO.
@@ -356,69 +407,129 @@ func TaskFromEntity(t *taskdom.Task) TaskResponse {
 	if tags == nil {
 		tags = []string{}
 	}
+	assigneeIDs := t.AssigneeIDs
+	if assigneeIDs == nil {
+		assigneeIDs = []uuid.UUID{}
+	}
 	return TaskResponse{
-		ID:           t.ID,
-		ProjectID:    t.ProjectID,
-		TaskNumber:   t.TaskNumber,
-		Title:        t.Title,
-		TaskTypeID:   t.TaskTypeID,
-		StatusID:     t.StatusID,
-		SprintID:     t.SprintID,
-		ParentTaskID: t.ParentTaskID,
-		Description:  t.Description,
-		Importance:   t.Importance,
-		StoryPoints:  t.StoryPoints,
-		AssigneeID:   t.AssigneeID,
-		ReporterID:   t.ReporterID,
-		CustomFields: cf,
-		StartDate:    t.StartDate,
-		DueDate:      t.DueDate,
-		Tags:         tags,
-		CreatedAt:    t.CreatedAt,
-		UpdatedAt:    t.UpdatedAt,
+		ID:             t.ID,
+		ProjectID:      t.ProjectID,
+		TaskNumber:     t.TaskNumber,
+		Title:          t.Title,
+		TaskTypeID:     t.TaskTypeID,
+		StatusID:       t.StatusID,
+		SprintID:       t.SprintID,
+		ParentTaskID:   t.ParentTaskID,
+		Description:    t.Description,
+		Importance:     t.Importance,
+		StoryPoints:    t.StoryPoints,
+		AssigneeIDs:    assigneeIDs,
+		ReporterID:     t.ReporterID,
+		CustomFields:   cf,
+		StartDate:      t.StartDate,
+		DueDate:        t.DueDate,
+		Tags:           tags,
+		CreatedAt:      t.CreatedAt,
+		UpdatedAt:      t.UpdatedAt,
+		AssignmentMode: t.AssignmentMode,
 	}
 }
 
 // --- Custom Field Definition DTOs ------------------------------------------
 
+// CustomFieldOptionDTO is one selectable value of a select / multi_select
+// custom field, with an optional display color. Mirrors
+// taskdom.CustomFieldOption.
+type CustomFieldOptionDTO struct {
+	Value string  `json:"value"`
+	Color *string `json:"color,omitempty"`
+}
+
+// UnmarshalJSON accepts either a plain string (the pre-000050 wire shape,
+// e.g. "Open") or an object carrying an optional color (e.g.
+// {"value":"Open","color":"#6366f1"}). Without this, a request body built
+// by a direct API caller still using the old plain-string options array
+// would hard-fail decoding instead of being accepted like it used to.
+// Mirrors the same two-shape tolerance already applied when reading legacy
+// rows in unmarshalCustomFieldOptions and when normalizing MCP tool input.
+func (o *CustomFieldOptionDTO) UnmarshalJSON(data []byte) error {
+	var value string
+	if err := json.Unmarshal(data, &value); err == nil {
+		o.Value = value
+		o.Color = nil
+		return nil
+	}
+	type alias CustomFieldOptionDTO
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*o = CustomFieldOptionDTO(a)
+	return nil
+}
+
 // CreateCustomFieldDefinitionRequest is the body for
 // POST /projects/:projectId/custom-fields.
 type CreateCustomFieldDefinitionRequest struct {
-	FieldKey    string            `json:"field_key" binding:"required"`
-	DisplayName string            `json:"display_name" binding:"required"`
-	FieldType   taskdom.FieldType `json:"field_type" binding:"required"`
-	Options     []string          `json:"options"`
-	IsRequired  bool              `json:"is_required"`
+	FieldKey    string                 `json:"field_key" binding:"required"`
+	DisplayName string                 `json:"display_name" binding:"required"`
+	FieldType   taskdom.FieldType      `json:"field_type" binding:"required"`
+	Options     []CustomFieldOptionDTO `json:"options"`
+	IsRequired  bool                   `json:"is_required"`
 }
 
 // UpdateCustomFieldDefinitionRequest is the body for
 // PATCH /projects/:projectId/custom-fields/:fieldId.
 type UpdateCustomFieldDefinitionRequest struct {
-	DisplayName string             `json:"display_name"`
-	FieldType   *taskdom.FieldType `json:"field_type"`
-	Options     []string           `json:"options"`
-	IsRequired  *bool              `json:"is_required"`
+	DisplayName string                 `json:"display_name"`
+	FieldType   *taskdom.FieldType     `json:"field_type"`
+	Options     []CustomFieldOptionDTO `json:"options"`
+	IsRequired  *bool                  `json:"is_required"`
 }
 
 // CustomFieldDefinitionResponse is the public representation of a custom
 // field definition.
 type CustomFieldDefinitionResponse struct {
-	ID          uuid.UUID         `json:"id"`
-	ProjectID   uuid.UUID         `json:"project_id"`
-	FieldKey    string            `json:"field_key"`
-	DisplayName string            `json:"display_name"`
-	FieldType   taskdom.FieldType `json:"field_type"`
-	Options     []string          `json:"options"`
-	IsRequired  bool              `json:"is_required"`
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
+	ID          uuid.UUID              `json:"id"`
+	ProjectID   uuid.UUID              `json:"project_id"`
+	FieldKey    string                 `json:"field_key"`
+	DisplayName string                 `json:"display_name"`
+	FieldType   taskdom.FieldType      `json:"field_type"`
+	Options     []CustomFieldOptionDTO `json:"options"`
+	IsRequired  bool                   `json:"is_required"`
+	CreatedAt   time.Time              `json:"created_at"`
+	UpdatedAt   time.Time              `json:"updated_at"`
+}
+
+// customFieldOptionsToDomain maps request DTOs to domain options.
+func customFieldOptionsToDomain(opts []CustomFieldOptionDTO) []taskdom.CustomFieldOption {
+	if opts == nil {
+		return nil
+	}
+	out := make([]taskdom.CustomFieldOption, len(opts))
+	for i, o := range opts {
+		out[i] = taskdom.CustomFieldOption{Value: o.Value, Color: o.Color}
+	}
+	return out
+}
+
+// CustomFieldOptionsToDomain maps the create request body's options to their
+// domain representation.
+func (r CreateCustomFieldDefinitionRequest) CustomFieldOptionsToDomain() []taskdom.CustomFieldOption {
+	return customFieldOptionsToDomain(r.Options)
+}
+
+// CustomFieldOptionsToDomain maps the update request body's options to their
+// domain representation.
+func (r UpdateCustomFieldDefinitionRequest) CustomFieldOptionsToDomain() []taskdom.CustomFieldOption {
+	return customFieldOptionsToDomain(r.Options)
 }
 
 // CustomFieldDefinitionFromEntity maps a domain CustomFieldDefinition to a DTO.
 func CustomFieldDefinitionFromEntity(f *taskdom.CustomFieldDefinition) CustomFieldDefinitionResponse {
-	opts := f.Options
-	if opts == nil {
-		opts = []string{}
+	opts := make([]CustomFieldOptionDTO, len(f.Options))
+	for i, o := range f.Options {
+		opts[i] = CustomFieldOptionDTO{Value: o.Value, Color: o.Color}
 	}
 	return CustomFieldDefinitionResponse{
 		ID:          f.ID,
@@ -437,15 +548,20 @@ func CustomFieldDefinitionFromEntity(f *taskdom.CustomFieldDefinition) CustomFie
 
 // ActivityResponse is the public representation of a task activity entry.
 type ActivityResponse struct {
-	ID            uuid.UUID            `json:"id"`
-	TaskID        uuid.UUID            `json:"task_id"`
-	ActorID       *uuid.UUID           `json:"actor_id,omitempty"`
-	ActorName     string               `json:"actor_name"`
-	ActorUsername string               `json:"actor_username"`
-	ActivityType  taskdom.ActivityType `json:"activity_type"`
-	Content       json.RawMessage      `json:"content"`
-	CreatedAt     time.Time            `json:"created_at"`
-	UpdatedAt     time.Time            `json:"updated_at"`
+	ID            uuid.UUID  `json:"id"`
+	TaskID        uuid.UUID  `json:"task_id"`
+	ActorID       *uuid.UUID `json:"actor_id,omitempty"`
+	ActorName     string     `json:"actor_name"`
+	ActorUsername string     `json:"actor_username"`
+	// ActorAvatarURL/ActorAvatarThumbURL are presigned GET URLs, populated by
+	// the handler (not this mapper) via attachmentdom.AvatarService — nil
+	// when the actor has no avatar.
+	ActorAvatarURL      *string              `json:"actor_avatar_url,omitempty"`
+	ActorAvatarThumbURL *string              `json:"actor_avatar_thumb_url,omitempty"`
+	ActivityType        taskdom.ActivityType `json:"activity_type"`
+	Content             json.RawMessage      `json:"content"`
+	CreatedAt           time.Time            `json:"created_at"`
+	UpdatedAt           time.Time            `json:"updated_at"`
 }
 
 // ActivityFromEntity maps a domain Activity to an ActivityResponse DTO.

@@ -6,18 +6,23 @@ import { buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { useBranding } from "@/hooks/use-branding";
 import { useLoginForm } from "@/hooks/use-login-form";
 import { validatePassword, validateUsername } from "@/lib/auth-validation";
 import { cn } from "@/lib/utils";
 
 import { FieldError } from "./FieldError";
+import { SsoErrorNotice, SsoSignInButtons } from "./SsoSignIn";
 
-export function LoginFormPanel() {
+export function LoginFormPanel({ ssoError }: { ssoError?: string } = {}) {
 	const { t } = useTranslation("auth");
 	const { t: tCommon } = useTranslation("common");
 	const { form, serverError } = useLoginForm();
 	const [showPassword, setShowPassword] = useState(false);
-	const logoSrc = "/paca-logo.svg";
+	const branding = useBranding();
+	const logoUrl = branding?.logo_thumb_url ?? branding?.logo_url;
+	const logoSrc = logoUrl ?? "/paca-logo.svg";
+	const brandName = branding?.brand_name;
 
 	return (
 		<div className="relative flex flex-col justify-center px-8 py-10 sm:px-10">
@@ -32,7 +37,7 @@ export function LoginFormPanel() {
 						className="h-auto w-8"
 					/>
 					<span className="text-base font-bold tracking-tight text-(--sea-ink)">
-						paca
+						{brandName ?? "paca"}
 					</span>
 				</div>
 
@@ -43,6 +48,8 @@ export function LoginFormPanel() {
 				<p className="mb-8 text-sm text-(--sea-ink-soft)">
 					{t("login.subtitle")}
 				</p>
+
+				<SsoErrorNotice code={ssoError} />
 
 				<form
 					onSubmit={(event) => {
@@ -189,6 +196,10 @@ export function LoginFormPanel() {
 						)}
 					</form.Subscribe>
 				</form>
+
+				<form.Subscribe selector={(state) => state.values.rememberMe}>
+					{(rememberMe) => <SsoSignInButtons rememberMe={rememberMe} />}
+				</form.Subscribe>
 
 				{/* Divider + admin note */}
 				<div className="mt-6 border-t border-(--line) pt-5">

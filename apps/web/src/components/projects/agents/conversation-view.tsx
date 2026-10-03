@@ -1,421 +1,133 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+	type AppendMessage,
+	AssistantRuntimeProvider,
+	useExternalStoreRuntime,
+} from "@assistant-ui/react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
+import {
+	AlertTriangle,
 	Bot,
-	ChevronDown,
-	ChevronRight,
+	ExternalLink,
 	GitBranch,
 	GitPullRequest,
 	Loader2,
 	Square,
-	Terminal,
-	User,
-	Zap,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { Thread } from "@/components/assistant-ui/thread";
+import { NoPermissionState } from "@/components/shared/no-permission-state";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useProjectPermissions } from "@/hooks/use-project-permissions";
 import {
 	type AgentConversation,
-	type AgentConversationEvent,
+	agentQueryOptions,
+	CONVERSATION_HEARTBEAT_INTERVAL_MS,
+	CONVERSATION_RECONCILE_INTERVAL_MS,
 	CONVERSATION_STATUS_COLORS,
 	CONVERSATION_STATUS_LABELS,
-	conversationEventsQueryOptions,
+	chattableAgentsQueryOptions,
+	conversationEventWindowKey,
 	conversationQueryOptions,
+	globalConversationQueryOptions,
+	heartbeatConversation,
+	heartbeatGlobalConversation,
+	pauseConversation,
+	pauseGlobalConversation,
+	sendChatMessage,
+	sendConversationMessage,
+	sendGlobalChatMessage,
+	sendGlobalConversationMessage,
 	stopConversation,
+	stopGlobalConversation,
 } from "@/lib/agent-api";
+import { isForbiddenError } from "@/lib/api-error";
+import { useContextInjectionStore } from "@/lib/context-injection-store";
 import { cn } from "@/lib/utils";
-
-// ── Message extraction ────────────────────────────────────────────────────────
-
-interface ChatMessage {
-	id: string;
-	role: "agent" | "user" | "system";
-	text: string;
-	eventType: string;
-	isToolCall?: boolean;
-	toolName?: string;
-	eventIndex: number;
-	createdAt: string;
-}
-
-const THINKING_TYPES = new Set([
-	"ThinkingEvent",
-	"agent.thinkingevent",
-	"agent.thinking",
-	"thinking",
-]);
-
-// Extract plain text from a content block array [{type:"text", text:"..."}] or a bare string.
-function extractContentText(content: unknown): string | null {
-	if (Array.isArray(content)) {
-		const parts = (content as Array<unknown>)
-			.map((c) => {
-				if (typeof c === "object" && c !== null && "text" in c) {
-					const t = (c as { text: unknown }).text;
-					return typeof t === "string" ? t : null;
-				}
-				return null;
-			})
-			.filter((t): t is string => t !== null && t.trim().length > 0);
-		return parts.length > 0 ? parts.join("\n\n").trim() : null;
-	}
-	if (typeof content === "string" && content.trim().length > 0) {
-		return content.trim();
-	}
-	return null;
-}
-
-// Returns 0, 1, or 2 messages for one event.
-// ActionEvent may emit a thought bubble + a tool-call row.
-function eventToChatMessages(ev: AgentConversationEvent): ChatMessage[] {
-	const p = ev.payload;
-	const t = ev.event_type;
-
-	// Skip events that carry no user-visible content.
-	if (
-		t === "ConversationStateUpdateEvent" ||
-		t === "SystemPromptEvent" ||
-		t === "StreamingDeltaEvent"
-	) {
-		return [];
-	}
-
-	// ── User / agent text messages ─────────────────────────────────────────────
-	if (t === "MessageEvent") {
-		const llmMsg = p.llm_message as { content?: unknown } | undefined;
-		const text =
-			extractContentText(llmMsg?.content) ?? extractContentText(p.content);
-		if (!text) return [];
-		const role =
-			ev.event_source === "user"
-				? "user"
-				: ev.event_source === "system"
-					? "system"
-					: "agent";
-		return [
-			{
-				id: ev.id,
-				role,
-				text,
-				eventType: t,
-				isToolCall: false,
-				eventIndex: ev.event_index,
-				createdAt: ev.created_at,
-			},
-		];
-	}
-
-	// ── Agent action (tool call + optional visible thought) ────────────────────
-	if (t === "ActionEvent") {
-		const messages: ChatMessage[] = [];
-
-		// The "thought" array contains what the agent says before the tool call.
-		const thoughtText = extractContentText(p.thought);
-		if (thoughtText) {
-			messages.push({
-				id: `${ev.id}-thought`,
-				role: "agent",
-				text: thoughtText,
-				eventType: "MessageEvent",
-				isToolCall: false,
-				eventIndex: ev.event_index,
-				createdAt: ev.created_at,
-			});
-		}
-
-		// Tool-call row (always shown, even when thought is empty).
-		const toolCall = p.tool_call as
-			| { name?: string; arguments?: unknown }
-			| undefined;
-		const toolName =
-			toolCall?.name ??
-			(typeof p.tool_name === "string" ? p.tool_name : undefined);
-		const expandedText =
-			(typeof toolCall?.arguments === "string" ? toolCall.arguments : null) ??
-			JSON.stringify(toolCall, null, 2) ??
-			(typeof p.summary === "string" ? p.summary : null) ??
-			toolName ??
-			t;
-
-		messages.push({
-			id: ev.id,
-			role: "agent",
-			text: expandedText,
-			eventType: t,
-			isToolCall: true,
-			toolName,
-			eventIndex: ev.event_index,
-			createdAt: ev.created_at,
-		});
-
-		return messages;
-	}
-
-	// ── Tool observation ───────────────────────────────────────────────────────
-	if (t === "ObservationEvent") {
-		const obs = p.observation as Record<string, unknown> | undefined;
-		let text: string | null = null;
-		if (obs) {
-			text =
-				extractContentText(obs.content) ??
-				(typeof obs.message === "string" ? obs.message : null);
-		}
-		if (!text) {
-			text =
-				extractContentText(p.content) ??
-				(typeof p.message === "string" ? p.message : null) ??
-				(typeof p.output === "string" ? p.output : null);
-		}
-		if (!text) return [];
-		return [
-			{
-				id: ev.id,
-				role: "agent",
-				text,
-				eventType: "agent.observation",
-				isToolCall: true,
-				toolName: typeof p.tool_name === "string" ? p.tool_name : undefined,
-				eventIndex: ev.event_index,
-				createdAt: ev.created_at,
-			},
-		];
-	}
-
-	// ── Fallback for other / legacy event types ────────────────────────────────
-	const text =
-		extractContentText(p.content) ??
-		extractContentText(p.thought) ??
-		(typeof p.message === "string" ? p.message : null) ??
-		(p.tool_call ? JSON.stringify(p.tool_call, null, 2) : null) ??
-		(p.args ? JSON.stringify(p.args, null, 2) : null) ??
-		(typeof p.output === "string" ? p.output : null);
-	if (!text) return [];
-
-	const role =
-		ev.event_source === "user"
-			? "user"
-			: ev.event_source === "system"
-				? "system"
-				: "agent";
-	const isObservation =
-		t === "ObservationEvent" ||
-		t === "agent.observation" ||
-		t === "observation";
-	const isToolCall =
-		t === "ActionEvent" ||
-		t === "agent.action" ||
-		t === "action" ||
-		isObservation;
-	const toolCallObj = p.tool_call as { name?: string } | undefined;
-	const toolName =
-		toolCallObj?.name ??
-		(typeof p.action === "string" ? p.action : undefined) ??
-		(typeof p.tool === "string" ? p.tool : undefined) ??
-		(typeof p.tool_name === "string" ? p.tool_name : undefined);
-
-	return [
-		{
-			id: ev.id,
-			role,
-			text,
-			eventType: isObservation ? "agent.observation" : t,
-			isToolCall,
-			toolName,
-			eventIndex: ev.event_index,
-			createdAt: ev.created_at,
-		},
-	];
-}
-
-// ── Sub-components ────────────────────────────────────────────────────────────
-
-function ToolCallMessage({ msg }: { msg: ChatMessage }) {
-	const { t } = useTranslation("projects");
-	const [expanded, setExpanded] = useState(false);
-	const isObservation =
-		msg.eventType === "agent.observation" || msg.eventType === "observation";
-
-	return (
-		<div className="flex gap-3 my-1">
-			<div className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted/60 text-muted-foreground mt-0.5">
-				<Terminal className="size-3" />
-			</div>
-			<div className="flex-1 min-w-0">
-				<button
-					type="button"
-					onClick={() => setExpanded((p) => !p)}
-					className="flex items-center gap-1.5 text-xs text-muted-foreground/70 hover:text-foreground/70 transition-colors"
-				>
-					{expanded ? (
-						<ChevronDown className="size-3" />
-					) : (
-						<ChevronRight className="size-3" />
-					)}
-					<span className="font-mono">
-						{isObservation
-							? t("agents.conversationView.observation")
-							: msg.toolName
-								? t("agents.conversationView.toolLabel", {
-										toolName: msg.toolName,
-									})
-								: msg.eventType}
-					</span>
-				</button>
-				{expanded && (
-					<pre className="mt-1.5 rounded-lg border border-border/40 bg-muted/30 px-3 py-2 text-xs font-mono text-muted-foreground/80 overflow-x-auto whitespace-pre-wrap wrap-break-word">
-						{msg.text}
-					</pre>
-				)}
-			</div>
-		</div>
-	);
-}
-
-function ThinkingMessage({ msg }: { msg: ChatMessage }) {
-	const { t } = useTranslation("projects");
-	const [expanded, setExpanded] = useState(false);
-
-	return (
-		<div className="flex gap-3 my-1">
-			<div className="flex size-6 shrink-0 items-center justify-center rounded-md bg-primary/5 text-primary/40 mt-0.5">
-				<Zap className="size-3" />
-			</div>
-			<div className="flex-1 min-w-0">
-				<button
-					type="button"
-					onClick={() => setExpanded((p) => !p)}
-					className="flex items-center gap-1.5 text-xs text-muted-foreground/60 italic hover:text-foreground/60 transition-colors"
-				>
-					{expanded ? (
-						<ChevronDown className="size-3" />
-					) : (
-						<ChevronRight className="size-3" />
-					)}
-					{t("agents.conversationView.thinking")}
-				</button>
-				{expanded && (
-					<p className="mt-1.5 text-xs text-muted-foreground/60 italic leading-relaxed border-l-2 border-border/30 pl-3">
-						{msg.text}
-					</p>
-				)}
-			</div>
-		</div>
-	);
-}
-
-function AgentBubble({ msg }: { msg: ChatMessage }) {
-	return (
-		<div className="flex gap-3">
-			<div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary mt-0.5">
-				<Bot className="size-4" />
-			</div>
-			<div className="flex-1 min-w-0 max-w-[85%]">
-				<div className="rounded-2xl rounded-tl-md bg-card border border-border/40 px-4 py-3 shadow-sm">
-					<p className="text-sm leading-relaxed text-foreground whitespace-pre-wrap wrap-break-word">
-						{msg.text}
-					</p>
-				</div>
-				<p className="text-xs text-muted-foreground/40 mt-1 pl-1">
-					{new Date(msg.createdAt).toLocaleTimeString([], {
-						hour: "2-digit",
-						minute: "2-digit",
-					})}
-				</p>
-			</div>
-		</div>
-	);
-}
-
-function UserBubble({ msg }: { msg: ChatMessage }) {
-	return (
-		<div className="flex gap-3 flex-row-reverse">
-			<div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground mt-0.5">
-				<User className="size-4" />
-			</div>
-			<div className="flex-1 min-w-0 max-w-[85%] flex flex-col items-end">
-				<div className="rounded-2xl rounded-tr-md bg-primary text-primary-foreground px-4 py-3 shadow-sm">
-					<p className="text-sm leading-relaxed whitespace-pre-wrap wrap-break-word">
-						{msg.text}
-					</p>
-				</div>
-				<p className="text-xs text-muted-foreground/40 mt-1 pr-1">
-					{new Date(msg.createdAt).toLocaleTimeString([], {
-						hour: "2-digit",
-						minute: "2-digit",
-					})}
-				</p>
-			</div>
-		</div>
-	);
-}
-
-function SystemNote({ msg }: { msg: ChatMessage }) {
-	return (
-		<div className="flex justify-center">
-			<span className="text-xs text-muted-foreground/50 bg-muted/30 rounded-full px-3 py-0.5">
-				{msg.text}
-			</span>
-		</div>
-	);
-}
-
-function MessageItem({ msg }: { msg: ChatMessage }) {
-	if (msg.isToolCall) return <ToolCallMessage msg={msg} />;
-	if (THINKING_TYPES.has(msg.eventType)) return <ThinkingMessage msg={msg} />;
-	if (msg.role === "user") return <UserBubble msg={msg} />;
-	if (msg.role === "system") return <SystemNote msg={msg} />;
-	return <AgentBubble msg={msg} />;
-}
-
-function TypingIndicator() {
-	return (
-		<div className="flex gap-3">
-			<div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-				<Bot className="size-4" />
-			</div>
-			<div className="rounded-2xl rounded-tl-md bg-card border border-border/40 px-4 py-3 shadow-sm">
-				<div className="flex items-center gap-1">
-					<span className="size-1.5 rounded-full bg-muted-foreground/40 animate-bounce [animation-delay:0ms]" />
-					<span className="size-1.5 rounded-full bg-muted-foreground/40 animate-bounce [animation-delay:150ms]" />
-					<span className="size-1.5 rounded-full bg-muted-foreground/40 animate-bounce [animation-delay:300ms]" />
-				</div>
-			</div>
-		</div>
-	);
-}
+import { useAgentBusyPrompt } from "./agent-busy-dialog";
+import { ConversationErrorBox } from "./conversation-error-box";
+import {
+	canReplyToConversation,
+	chatSessionAccessDeniedKey,
+	eventsToThreadMessages,
+	extractTextOnlyContent,
+	isEnvironmentReady,
+} from "./conversation-to-thread-messages";
+import { LoadOlderEvents, TailFollowIndicator } from "./event-window-controls";
+import { useConversationEventWindow } from "./use-conversation-event-window";
 
 // ── Controls ──────────────────────────────────────────────────────────────────
 
 function ConversationControls({
 	projectId,
 	conversation,
+	isACP,
+	canControl,
 }: {
-	projectId: string;
+	/** Absent for a global-chat conversation (home/admin pages, no project). */
+	projectId?: string;
 	conversation: AgentConversation;
+	isACP: boolean;
+	/** False for a project member who can view but not drive this conversation (conversations.read only). */
+	canControl: boolean;
 }) {
 	const { t } = useTranslation("projects");
 	const qc = useQueryClient();
 
 	const invalidate = () => {
-		qc.invalidateQueries({
-			queryKey: ["projects", projectId, "conversations", conversation.id],
-		});
-		qc.invalidateQueries({
-			queryKey: ["projects", projectId, "conversations"],
-		});
+		if (projectId) {
+			qc.invalidateQueries({
+				queryKey: ["projects", projectId, "conversations", conversation.id],
+			});
+			qc.invalidateQueries({
+				queryKey: ["projects", projectId, "conversations"],
+			});
+		} else {
+			qc.invalidateQueries({
+				queryKey: ["global-chat", "conversations", conversation.id],
+			});
+			qc.invalidateQueries({ queryKey: ["global-chat", "conversations"] });
+		}
 	};
 
 	const stopMut = useMutation({
-		mutationFn: () => stopConversation(projectId, conversation.id),
+		mutationFn: async () => {
+			if (projectId) {
+				await stopConversation(projectId, conversation.id);
+			} else {
+				await stopGlobalConversation(conversation.id);
+			}
+		},
 		onSuccess: invalidate,
 	});
 
-	const isRunning = conversation.status === "running";
-
-	if (!isRunning) return null;
+	// assistant-ui's own composer shows a Cancel button while running, but
+	// only for chat conversations — its composer is hidden entirely for
+	// task/comment-triggered ones (see `isDisabled` below), which would
+	// otherwise have no way to stop a running conversation at all. Show this
+	// control for every non-terminal status (queued, running, paused) so a
+	// stop action is always available, regardless of trigger type.
+	//
+	// ACP is the exception: its composer is now shown for every trigger type
+	// (see canReply below), so the composer's own Cancel/pause button is
+	// always reachable there — this header Stop button (a full teardown,
+	// distinct from pause) would just be redundant. A conversation attached
+	// to a static environment gets the same exception, for the same reason:
+	// agent-runner now ends every one of its turns in a terminal status
+	// (never "paused" — see handler.Handle's own isChat/EnvironmentID
+	// branch), the same way an ACP conversation always has, so this is
+	// effectively never reachable in a non-terminal state for one anyway;
+	// excluding it explicitly rather than relying on that is what keeps this
+	// correct even mid-turn (queued/running), when isTerminal is false.
+	const isTerminal =
+		conversation.status === "finished" ||
+		conversation.status === "failed" ||
+		conversation.status === "stopped";
+	if (isTerminal || isACP || conversation.environment_id || !canControl)
+		return null;
 
 	return (
 		<div className="flex items-center gap-2">
@@ -440,38 +152,298 @@ function ConversationControls({
 // ── Main component ────────────────────────────────────────────────────────────
 
 interface ConversationViewProps {
-	projectId: string;
+	/** Absent for a global-chat conversation (home/admin pages, no project). */
+	projectId?: string;
 	conversationId: string;
 }
 
 export function ConversationView({
 	projectId,
-	conversationId,
+	conversationId: routeConversationId,
 }: ConversationViewProps) {
 	const { t } = useTranslation("projects");
-	const scrollRef = useRef<HTMLDivElement>(null);
+	const qc = useQueryClient();
 
-	const { data: conversation, isLoading: convLoading } = useQuery(
-		conversationQueryOptions(projectId, conversationId),
-	);
-	const { data: events = [], isLoading: eventsLoading } = useQuery(
-		conversationEventsQueryOptions(projectId, conversationId),
-	);
-
-	const messages: ChatMessage[] = events.flatMap(eventToChatMessages);
-
-	// Scroll to bottom when new messages arrive
-	// biome-ignore lint/correctness/useExhaustiveDependencies: events is needed to trigger scroll
+	// Normally mirrors the `conversationId` prop, but a reply can silently
+	// start a fresh conversation server-side (see onNew below) — tracking it
+	// locally lets this view follow along without the caller (route param or
+	// modal state) needing to know. Resyncs if the caller points us at a
+	// genuinely different conversation (e.g. navigating to another permalink).
+	const [conversationId, setConversationId] = useState(routeConversationId);
 	useEffect(() => {
-		requestAnimationFrame(() => {
-			const viewport = scrollRef.current?.querySelector(
-				'[data-slot="scroll-area-viewport"]',
-			) as HTMLElement;
-			if (viewport) {
-				viewport.scrollTop = viewport.scrollHeight;
+		setConversationId(routeConversationId);
+		setSendError(null);
+	}, [routeConversationId]);
+
+	// assistant-ui's onNew rejection isn't caught anywhere in its own
+	// send/append chain (ComposerRuntimeCore.send -> handleSend ->
+	// ThreadRuntimeCore.append all call the next step unawaited, so a thrown
+	// Error here becomes an unhandled promise rejection, not a rendered
+	// MessageError — that primitive reads a message's own persisted
+	// status.reason==="error", which only a server-confirmed failed turn ever
+	// has). Driven by local state and rendered via viewportOverlay instead,
+	// alongside the existing conversation.error_message box below.
+	const [sendError, setSendError] = useState<string | null>(null);
+
+	const {
+		data: conversation,
+		isLoading: convLoading,
+		isError,
+		error: conversationError,
+	} = useQuery(
+		projectId
+			? conversationQueryOptions(projectId, conversationId)
+			: globalConversationQueryOptions(conversationId),
+	);
+	// A conversation that's owner-private to a different member, or whose
+	// agent is now access-restricted, 403s the same way a genuinely invalid
+	// conversationId 404s (both leave `data` undefined, or stale data plus
+	// isError true on a later refetch) — checked so a member who's simply
+	// not allowed to see it gets told why, instead of a "not found"/"failed"
+	// message implying the conversation itself is broken or gone.
+	const noPermission = isError && isForbiddenError(conversationError);
+	const {
+		events,
+		isLoading: eventsLoading,
+		hasOlder,
+		isLoadingOlder,
+		loadOlder,
+		newBelow,
+		following,
+		setFollowing,
+		jumpToLatest,
+	} = useConversationEventWindow({
+		projectId,
+		conversationId,
+		ready: !convLoading,
+	});
+	// Project scope: GET /projects/:id/agents/:agentId (project members may
+	// always read their own project's agents). Global scope: the caller may
+	// not have agents.read (admin-gated), so this uses the unrestricted
+	// "browse global agents to chat with" list instead (same as
+	// ai-chat-float-global.tsx) and finds the agent by id client-side.
+	const { data: projectAgent } = useQuery({
+		...agentQueryOptions(projectId ?? "", conversation?.agent_id ?? ""),
+		enabled: !!projectId && !!conversation?.agent_id,
+	});
+	const { data: chattableAgents = [] } = useQuery({
+		...chattableAgentsQueryOptions,
+		enabled: !projectId && !!conversation?.agent_id,
+	});
+	const agent = projectId
+		? projectAgent
+		: chattableAgents.find((a) => a.id === conversation?.agent_id);
+	const isACP = agent?.agent_type === "acp";
+	// ACP conversations never spin up a sandbox (the local bridge daemon runs
+	// entirely on the user's own machine — see internal/acpbridge/dispatch.go's
+	// doc comment), so there's no "setting up your environment" phase for
+	// them at all; they're ready as soon as they're dispatched.
+	const environmentReady = isEnvironmentReady(isACP, events);
+
+	const isRunning =
+		conversation?.status === "queued" || conversation?.status === "running";
+	const isTerminal =
+		conversation?.status === "finished" ||
+		conversation?.status === "failed" ||
+		conversation?.status === "stopped";
+	// Global chat (no projectId) stays open to any authenticated user by
+	// design (see router.go's global chat/conversation routes); a
+	// project-scoped conversation now requires conversations.write on the
+	// backend to reply/stop/pause, so a PROJECT_VIEWER (conversations.read
+	// only) gets a read-only view here instead of controls that would just
+	// 403.
+	const { hasProjectPermission } = useProjectPermissions(projectId ?? "");
+	const canControl = !projectId || hasProjectPermission("conversations.write");
+	const canReply = canControl && canReplyToConversation(conversation, isACP);
+	const { dialog: agentBusyDialog, send: sendWithBusyPrompt } =
+		useAgentBusyPrompt();
+
+	const messages = useMemo(
+		() => eventsToThreadMessages(events, isRunning),
+		[events, isRunning],
+	);
+
+	const invalidate = (id: string = conversationId) => {
+		if (projectId) {
+			qc.invalidateQueries({
+				queryKey: ["projects", projectId, "conversations", id],
+			});
+			qc.invalidateQueries({
+				queryKey: ["projects", projectId, "conversations"],
+			});
+		} else {
+			qc.invalidateQueries({
+				queryKey: ["global-chat", "conversations", id],
+			});
+			qc.invalidateQueries({ queryKey: ["global-chat", "conversations"] });
+		}
+	};
+
+	const onNew = async (message: AppendMessage) => {
+		if (!conversation) {
+			throw new Error(t("agents.conversationView.conversationEnded"));
+		}
+		const text = extractTextOnlyContent(message);
+		if (text === null) {
+			throw new Error(t("agents.conversationView.textOnlyMessage"));
+		}
+		// Snapshot now (not read again after any await) so a badge staged
+		// mid-send can't sneak into this message or get cleared under it.
+		const contextItems = useContextInjectionStore.getState().items;
+
+		setSendError(null);
+		try {
+			if (!conversation.chat_session_id) {
+				// A conversation of a non-chat trigger type (task_assigned,
+				// comment_mention, etc.) — either ACP, or an LLM conversation
+				// attached to a static environment (see canReply's own doc
+				// comment) — reply in place on the same conversation_id rather
+				// than through a chat session. Routed through the same busy
+				// prompt as the chat-session branch below: the server enforces
+				// the exact same parallelism/folder capacity check on this
+				// resume path (see services/api's resumeConversationMessage).
+				await sendWithBusyPrompt((onBusy) =>
+					projectId
+						? sendConversationMessage(
+								projectId,
+								conversation.id,
+								text,
+								contextItems,
+								onBusy,
+							)
+						: sendGlobalConversationMessage(
+								conversation.id,
+								text,
+								contextItems,
+								onBusy,
+							),
+				);
+				useContextInjectionStore.getState().clear();
+				invalidate();
+				return;
 			}
-		});
-	}, [events]);
+
+			const chatSessionId = conversation.chat_session_id;
+			const result = await sendWithBusyPrompt((onBusy) =>
+				projectId
+					? sendChatMessage(projectId, conversation.agent_id, chatSessionId, {
+							message: text,
+							contextItems,
+							on_busy: onBusy,
+						})
+					: sendGlobalChatMessage(chatSessionId, {
+							message: text,
+							contextItems,
+							on_busy: onBusy,
+						}),
+			);
+			useContextInjectionStore.getState().clear();
+			// The previous conversation may have already ended (explicitly
+			// stopped, or reaped after 3 minutes with no heartbeat) — replying
+			// then silently starts a fresh conversation server-side. Follow it,
+			// otherwise this view keeps polling the old (now terminal)
+			// conversation and the reply appears to vanish.
+			if (result.id !== conversationId) {
+				qc.setQueryData(
+					(projectId
+						? conversationQueryOptions(projectId, result.id)
+						: globalConversationQueryOptions(result.id)
+					).queryKey,
+					result,
+				);
+				setConversationId(result.id);
+			}
+			invalidate(result.id);
+		} catch (err) {
+			const key = chatSessionAccessDeniedKey(err);
+			if (key) {
+				setSendError(t(key));
+				return;
+			}
+			throw err;
+		}
+	};
+
+	const onCancel = async () => {
+		if (!conversation) return;
+		if (projectId) {
+			await pauseConversation(projectId, conversation.id);
+		} else {
+			await pauseGlobalConversation(conversation.id);
+		}
+		invalidate();
+	};
+
+	const runtime = useExternalStoreRuntime({
+		messages,
+		isRunning,
+		convertMessage: (m) => m,
+		onNew,
+		onCancel,
+		isDisabled: !canReply,
+	});
+
+	// Pings the agent-runner service every ~30s while this chat conversation is
+	// loaded, so its sandbox's idle timer never trips as long as this view
+	// stays open — mirrors the heartbeat in ai-chat-float.tsx. Only chat
+	// conversations have a sandbox that pauses between turns; task/comment
+	// triggered ones would just be a pointless no-op server-side. ACP
+	// conversations have no cloud sandbox to keep alive either (the user's
+	// local bridge daemon owns their lifecycle instead), so heartbeating one
+	// would just be a wasted round trip. Same for a conversation attached to a
+	// static environment (environment_id set): keepSandboxAlive's
+	// EnvironmentID guard in agent-runner never registers it in the
+	// paused-sandbox registry the heartbeat control message refreshes, so a
+	// heartbeat for one is a guaranteed no-op there too — its container's
+	// idle clock is driven by TouchEnvironment after each turn instead.
+	useEffect(() => {
+		if (
+			conversation?.trigger_type !== "chat_message" ||
+			isTerminal ||
+			isACP ||
+			conversation?.environment_id
+		)
+			return;
+		const ping = () => {
+			void (
+				projectId
+					? heartbeatConversation(projectId, conversationId)
+					: heartbeatGlobalConversation(conversationId)
+			).catch(() => {});
+		};
+		ping();
+		const interval = setInterval(ping, CONVERSATION_HEARTBEAT_INTERVAL_MS);
+		return () => clearInterval(interval);
+	}, [
+		conversation?.trigger_type,
+		conversation?.environment_id,
+		isTerminal,
+		isACP,
+		projectId,
+		conversationId,
+	]);
+
+	// Safety net for a dropped realtime message — see
+	// CONVERSATION_RECONCILE_INTERVAL_MS's doc comment. Re-invalidates exactly
+	// what an "agent.*" status event already invalidates (the conversation
+	// itself and its event window), so a socket miss self-heals within one
+	// tick instead of requiring a page reload. Only while genuinely in
+	// flight: a paused/terminal conversation has nothing new to reconcile.
+	useEffect(() => {
+		if (!isRunning) return;
+		const reconcile = () => {
+			void qc.invalidateQueries({
+				queryKey: projectId
+					? ["projects", projectId, "conversations", conversationId]
+					: ["global-chat", "conversations", conversationId],
+			});
+			void qc.invalidateQueries({
+				queryKey: conversationEventWindowKey(conversationId),
+			});
+		};
+		const interval = setInterval(reconcile, CONVERSATION_RECONCILE_INTERVAL_MS);
+		return () => clearInterval(interval);
+	}, [isRunning, projectId, conversationId, qc]);
 
 	if (convLoading || eventsLoading) {
 		return (
@@ -488,6 +460,16 @@ export function ConversationView({
 	}
 
 	if (!conversation) {
+		if (noPermission) {
+			return (
+				<div className="flex h-full flex-col items-center justify-center p-6">
+					<NoPermissionState
+						title={t("agents.conversationView.noPermission.title")}
+						description={t("agents.conversationView.noPermission.description")}
+					/>
+				</div>
+			);
+		}
 		return (
 			<div className="flex flex-col h-full items-center justify-center text-muted-foreground/50 gap-3">
 				<Bot className="size-10" />
@@ -496,9 +478,53 @@ export function ConversationView({
 		);
 	}
 
+	// A previously-loaded conversation whose access was revoked mid-session
+	// (or whose agent just became restricted) keeps its last-known data
+	// while a background refetch 403s — checked ahead of the generic failure
+	// fallback below so that case reads as a permission message, not as the
+	// agent run itself having failed.
+	if (noPermission) {
+		return (
+			<div className="flex h-full flex-col items-center justify-center p-6">
+				<NoPermissionState
+					title={t("agents.conversationView.noPermission.title")}
+					description={t("agents.conversationView.noPermission.description")}
+				/>
+			</div>
+		);
+	}
+
+	// Show the error fallback only when the conversation failed AND produced
+	// no visible messages. When messages exist, render the Thread normally so
+	// the user can trace what happened before the failure — the header's
+	// status badge and the bottom error footer already convey the failure.
+	// Skipped when canReply is true (an ACP conversation, or one attached to
+	// a static environment, both of which stay replyable straight through a
+	// failure) so the user can retry instead of hitting a dead end.
+	if (
+		isError ||
+		(conversation.status === "failed" && messages.length === 0 && !canReply)
+	) {
+		return (
+			<div className="flex flex-col h-full items-center justify-center gap-4 p-6">
+				<div className="flex size-12 items-center justify-center rounded-full bg-destructive/10">
+					<AlertTriangle className="size-6 text-destructive" />
+				</div>
+				<div className="text-center space-y-1">
+					<p className="text-sm font-medium text-destructive">
+						{t("agents.conversationView.failed")}
+					</p>
+					<p className="text-xs text-muted-foreground wrap-break-word">
+						{conversation.error_message ??
+							t("agents.conversationView.noOutput")}
+					</p>
+				</div>
+			</div>
+		);
+	}
+
 	const statusColor = CONVERSATION_STATUS_COLORS[conversation.status];
 	const statusLabel = CONVERSATION_STATUS_LABELS[conversation.status];
-	const isRunning = conversation.status === "running";
 
 	return (
 		<div className="flex flex-col h-full min-h-0">
@@ -537,42 +563,62 @@ export function ConversationView({
 							{t("agents.conversationView.pr")}
 						</a>
 					)}
+					{projectId && conversation.environment_id && (
+						<Link
+							to="/projects/$projectId/environments/$environmentId/connect"
+							params={{
+								projectId,
+								environmentId: conversation.environment_id,
+							}}
+							className={buttonVariants({ variant: "outline", size: "sm" })}
+						>
+							<ExternalLink className="size-3" />
+							{t("agents.conversationView.connect")}
+						</Link>
+					)}
 					<ConversationControls
 						projectId={projectId}
 						conversation={conversation}
+						isACP={isACP}
+						canControl={canControl}
 					/>
 				</div>
 			</div>
 
-			{/* Messages */}
-			<ScrollArea ref={scrollRef} className="flex-1 min-h-0">
-				<div className="px-5 py-5 space-y-4 max-w-3xl mx-auto">
-					{messages.length === 0 && !isRunning ? (
-						<div className="flex flex-col items-center justify-center gap-3 py-16 text-muted-foreground/40">
-							<Bot className="size-10" />
-							<p className="text-sm">
-								{t("agents.conversationView.noMessages")}
-							</p>
-						</div>
-					) : (
-						<>
-							{messages.map((msg) => (
-								<MessageItem key={msg.id} msg={msg} />
-							))}
-							{isRunning && <TypingIndicator />}
-						</>
-					)}
-				</div>
-			</ScrollArea>
-
-			{/* Footer */}
-			{conversation.error_message && (
-				<div className="shrink-0 border-t border-destructive/20 bg-destructive/5 px-5 py-3">
-					<p className="text-xs text-destructive">
-						{conversation.error_message}
-					</p>
-				</div>
-			)}
+			{/* Thread */}
+			<div className="flex-1 min-h-0">
+				<AssistantRuntimeProvider runtime={runtime}>
+					<Thread
+						turnAnchor="bottom"
+						// A run starting must not pull a reader who is paging back
+						// through history.
+						scrollToBottomOnRunStart={false}
+						environmentReady={environmentReady}
+						viewportHeader={
+							<LoadOlderEvents
+								hasOlder={hasOlder}
+								isLoadingOlder={isLoadingOlder}
+								loadOlder={loadOlder}
+							/>
+						}
+						viewportOverlay={
+							<>
+								{conversation.error_message && (
+									<ConversationErrorBox message={conversation.error_message} />
+								)}
+								{sendError && <ConversationErrorBox message={sendError} />}
+								<TailFollowIndicator
+									newBelow={newBelow}
+									following={following}
+									setFollowing={setFollowing}
+									jumpToLatest={jumpToLatest}
+								/>
+							</>
+						}
+					/>
+				</AssistantRuntimeProvider>
+			</div>
+			{agentBusyDialog}
 		</div>
 	);
 }

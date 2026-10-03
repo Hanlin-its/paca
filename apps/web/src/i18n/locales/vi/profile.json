@@ -6,6 +6,8 @@
 	"fields": {
 		"fullName": "Họ và tên",
 		"fullNamePlaceholder": "Nhập họ và tên của bạn",
+		"email": "Email",
+		"emailPlaceholder": "Nhập địa chỉ email của bạn",
 		"notSet": "Chưa đặt",
 		"username": "Tên đăng nhập"
 	},
@@ -16,7 +18,20 @@
 		"cancel": "Hủy"
 	},
 	"errors": {
-		"updateFailed": "Cập nhật hồ sơ thất bại. Vui lòng thử lại."
+		"updateFailed": "Cập nhật hồ sơ thất bại. Vui lòng thử lại.",
+		"invalidEmail": "Vui lòng nhập địa chỉ email hợp lệ.",
+		"emailTaken": "Email này đã được sử dụng bởi một tài khoản khác."
+	},
+	"avatar": {
+		"change": "Đổi ảnh đại diện",
+		"remove": "Xóa ảnh đại diện",
+		"uploading": "Đang tải lên…",
+		"errors": {
+			"invalidType": "Vui lòng chọn ảnh định dạng PNG, JPEG, WEBP hoặc GIF.",
+			"tooLarge": "Ảnh phải nhỏ hơn hoặc bằng 5 MB.",
+			"uploadFailed": "Tải ảnh đại diện lên thất bại. Vui lòng thử lại.",
+			"removeFailed": "Xóa ảnh đại diện thất bại. Vui lòng thử lại."
+		}
 	},
 	"joinedOn": "Tham gia {{date}}",
 	"changePassword": {

@@ -1,62 +1,26 @@
-import { useQuery } from "@tanstack/react-query";
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { ArrowLeft } from "lucide-react";
-import { useTranslation } from "react-i18next";
+import { createFileRoute } from "@tanstack/react-router";
 import { ConversationView } from "@/components/projects/agents/conversation-view";
-import { useProjectRealtime } from "@/hooks/use-project-realtime";
-import {
-	conversationEventsQueryOptions,
-	conversationQueryOptions,
-} from "@/lib/agent-api";
-import { projectQueryOptions } from "@/lib/project-api";
+import { RouteErrorComponent } from "@/components/route-error-boundary";
 
 export const Route = createFileRoute(
 	"/_authenticated/projects/$projectId/conversations/$conversationId",
 )({
-	loader: async ({
-		context: { queryClient },
-		params: { projectId, conversationId },
-	}) => {
-		await Promise.all([
-			queryClient.ensureQueryData(
-				conversationQueryOptions(projectId, conversationId),
-			),
-			queryClient.ensureQueryData(
-				conversationEventsQueryOptions(projectId, conversationId),
-			),
-		]);
-	},
+	// The conversation itself isn't prefetched here — ConversationView's own
+	// useQuery already handles loading/not-found/permission-denied/failed
+	// states with the right UI for each (NoPermissionState for a 403,
+	// distinct from a genuinely deleted conversation or one that failed to
+	// run). Prefetching it here meant a 403 on first load bubbled past that
+	// handling entirely and showed this route's generic errorComponent
+	// instead — kept below only as a backstop for a genuinely unexpected
+	// render crash, not as the normal path for a restricted conversation.
+	errorComponent: ({ error }) => <RouteErrorComponent error={error} />,
 	component: ConversationPage,
 });
 
 function ConversationPage() {
-	const { t } = useTranslation("projects");
 	const { projectId, conversationId } = Route.useParams();
-	const { data: project } = useQuery(projectQueryOptions(projectId));
-
-	useProjectRealtime(projectId);
 
 	return (
-		<div className="flex flex-col h-full overflow-hidden bg-background">
-			{/* Back navigation */}
-			<div className="shrink-0 border-b border-border/40 px-5 py-2.5 flex items-center gap-3">
-				<Link
-					to="/projects/$projectId/agents"
-					params={{ projectId }}
-					className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-				>
-					<ArrowLeft className="size-3.5" />
-					{project?.name ?? t("layout.conversation.agentsFallback")}
-				</Link>
-			</div>
-
-			{/* Conversation view */}
-			<div className="flex-1 overflow-hidden">
-				<ConversationView
-					projectId={projectId}
-					conversationId={conversationId}
-				/>
-			</div>
-		</div>
+		<ConversationView projectId={projectId} conversationId={conversationId} />
 	);
 }

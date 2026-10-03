@@ -4,7 +4,6 @@ import {
 	useQuery,
 	useQueryClient,
 } from "@tanstack/react-query";
-import type { TFunction } from "i18next";
 import {
 	GitBranch,
 	Loader2,
@@ -25,6 +24,7 @@ import {
 	type CommentEditorHandle,
 } from "@/components/shared/comment-blocknote";
 import { ContentDiffDialog } from "@/components/shared/content-diff";
+import { EntityAvatarContent } from "@/components/shared/entity-avatar";
 import { Button } from "@/components/ui/button";
 import {
 	DropdownMenu,
@@ -33,6 +33,7 @@ import {
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { timeAgo } from "@/lib/time-ago";
 import { cn } from "@/lib/utils";
 
 export interface ActivityEntry {
@@ -40,6 +41,8 @@ export interface ActivityEntry {
 	actor_id?: string | null;
 	actor_name: string;
 	actor_username: string;
+	actor_avatar_url?: string | null;
+	actor_avatar_thumb_url?: string | null;
 	activity_type: string;
 	content: Record<string, unknown> | unknown[] | string | null;
 	created_at: string;
@@ -66,6 +69,19 @@ export interface ActivityPaneConfig<T extends ActivityEntry> {
 	currentUserId?: string;
 }
 
+type ActivityFilter = "comments" | "all";
+
+const ACTIVITY_FILTER_STORAGE_KEY = "paca:activity-filter";
+
+function readStoredActivityFilter(): ActivityFilter {
+	try {
+		const stored = localStorage.getItem(ACTIVITY_FILTER_STORAGE_KEY);
+		return stored === "all" ? "all" : "comments";
+	} catch {
+		return "comments";
+	}
+}
+
 export function ActivityPane<T extends ActivityEntry>({
 	projectId,
 	queryKey,
@@ -86,6 +102,9 @@ export function ActivityPane<T extends ActivityEntry>({
 	const scrollAreaRef = useRef<HTMLDivElement>(null);
 	const [editorFocused, setEditorFocused] = useState(false);
 	const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
+	const [filter, setFilter] = useState<ActivityFilter>(
+		readStoredActivityFilter,
+	);
 	const qc = useQueryClient();
 
 	const { data: activities = [] } = useQuery({
@@ -100,6 +119,25 @@ export function ActivityPane<T extends ActivityEntry>({
 				new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
 		);
 	}, [activities, sortAscending]);
+
+	const hasNonCommentActivity = useMemo(
+		() => sorted.some((entry) => entry.activity_type !== "comment"),
+		[sorted],
+	);
+
+	const visible = useMemo(() => {
+		if (filter === "all" || !hasNonCommentActivity) return sorted;
+		return sorted.filter((entry) => entry.activity_type === "comment");
+	}, [sorted, filter, hasNonCommentActivity]);
+
+	const handleFilterChange = (next: ActivityFilter) => {
+		setFilter(next);
+		try {
+			localStorage.setItem(ACTIVITY_FILTER_STORAGE_KEY, next);
+		} catch {
+			/* ignore */
+		}
+	};
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: activities is needed to scroll when new items are added
 	useEffect(() => {
@@ -173,15 +211,50 @@ export function ActivityPane<T extends ActivityEntry>({
 
 	return (
 		<div className="flex w-full lg:w-80 lg:shrink-0 flex-col h-full lg:overflow-hidden border-t lg:border-t-0 lg:border-l border-border/25 bg-muted/10">
-			<div className="flex shrink-0 items-center gap-2.5 border-b border-border/25 px-5 py-3 bg-muted/20">
-				<MessageSquare className="size-3.5 text-muted-foreground/70" />
-				<span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-					{t("activityPane.title")}
-				</span>
-				{sorted.length > 0 && (
-					<span className="ml-auto rounded-full bg-muted/60 px-2 py-0.5 text-xs font-bold text-muted-foreground/70 tabular-nums">
-						{sorted.length}
+			<div className="flex shrink-0 flex-col gap-2 border-b border-border/25 px-5 py-3 bg-muted/20">
+				<div className="flex items-center gap-2.5">
+					<MessageSquare className="size-3.5 text-muted-foreground/70" />
+					<span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+						{t("activityPane.title")}
 					</span>
+					{visible.length > 0 && (
+						<span className="ml-auto rounded-full bg-muted/60 px-2 py-0.5 text-xs font-bold text-muted-foreground/70 tabular-nums">
+							{visible.length}
+						</span>
+					)}
+				</div>
+				{hasNonCommentActivity && (
+					<fieldset
+						aria-label={t("activityPane.filter.label")}
+						className="flex items-center gap-0.5 rounded-lg border border-border/30 bg-background/60 p-0.5"
+					>
+						<button
+							type="button"
+							aria-pressed={filter === "comments"}
+							onClick={() => handleFilterChange("comments")}
+							className={cn(
+								"flex-1 rounded-md px-2 py-1 text-xs font-medium transition-all duration-150",
+								filter === "comments"
+									? "bg-card text-foreground shadow-sm"
+									: "text-muted-foreground/60 hover:text-foreground/80",
+							)}
+						>
+							{t("activityPane.filter.comments")}
+						</button>
+						<button
+							type="button"
+							aria-pressed={filter === "all"}
+							onClick={() => handleFilterChange("all")}
+							className={cn(
+								"flex-1 rounded-md px-2 py-1 text-xs font-medium transition-all duration-150",
+								filter === "all"
+									? "bg-card text-foreground shadow-sm"
+									: "text-muted-foreground/60 hover:text-foreground/80",
+							)}
+						>
+							{t("activityPane.filter.all")}
+						</button>
+					</fieldset>
 				)}
 			</div>
 
@@ -196,7 +269,22 @@ export function ActivityPane<T extends ActivityEntry>({
 							<p className="text-xs font-medium">{t("activityPane.empty")}</p>
 						</div>
 					)}
-					{sorted.map((entry) => (
+					{sorted.length > 0 && visible.length === 0 && (
+						<div className="flex flex-col items-center py-8 text-muted-foreground/40">
+							<MessageSquare className="size-6 mb-2" />
+							<p className="text-xs font-medium">
+								{t("activityPane.emptyComments")}
+							</p>
+							<button
+								type="button"
+								onClick={() => handleFilterChange("all")}
+								className="mt-2 text-xs font-medium text-primary hover:underline"
+							>
+								{t("activityPane.showAllActivity")}
+							</button>
+						</div>
+					)}
+					{visible.map((entry) => (
 						<ActivityItemInner
 							key={entry.id}
 							entry={entry}
@@ -238,7 +326,7 @@ export function ActivityPane<T extends ActivityEntry>({
 					)}
 					<fieldset
 						className={cn(
-							"rounded-xl border border-border/30 bg-card/80 transition-all duration-200 overflow-hidden",
+							"min-w-0 rounded-xl border border-border/30 bg-card/80 transition-all duration-200 overflow-hidden",
 							editorFocused && "border-primary/25 shadow-sm shadow-primary/5",
 							"[&_.bn-editor]:min-h-6 [&_.bn-editor]:max-h-48 [&_.bn-editor]:overflow-y-auto [&_.bn-editor]:py-1.5 [&_.bn-editor]:px-3 [&_.bn-editor]:text-sm [&_.bn-editor]:leading-relaxed",
 						)}
@@ -284,16 +372,6 @@ export function ActivityPane<T extends ActivityEntry>({
 	);
 }
 
-function timeAgo(iso: string, t: TFunction<"shared">): string {
-	const diff = Date.now() - new Date(iso).getTime();
-	const mins = Math.floor(diff / 60000);
-	if (mins < 1) return t("activityPane.timeAgo.justNow");
-	if (mins < 60) return t("activityPane.timeAgo.minutes", { count: mins });
-	const hrs = Math.floor(mins / 60);
-	if (hrs < 24) return t("activityPane.timeAgo.hours", { count: hrs });
-	return t("activityPane.timeAgo.days", { count: Math.floor(hrs / 24) });
-}
-
 interface ActivityItemInnerProps<T extends ActivityEntry> {
 	entry: T;
 	describeActivity: (entry: T) => ReactNode;
@@ -326,6 +404,7 @@ function ActivityItemInner<T extends ActivityEntry>({
 	onStartEdit,
 }: ActivityItemInnerProps<T>) {
 	const { t } = useTranslation("shared");
+	const { t: tCommon } = useTranslation("common");
 	const qc = useQueryClient();
 	const commentBlocks = getCommentBlocks(entry.content);
 	const [diffOpen, setDiffOpen] = useState(false);
@@ -386,7 +465,9 @@ function ActivityItemInner<T extends ActivityEntry>({
 						: "bg-muted/40 text-muted-foreground/80 ring-border/20",
 				)}
 			>
-				{initial}
+				<EntityAvatarContent avatarUrl={entry.actor_avatar_thumb_url}>
+					{initial}
+				</EntityAvatarContent>
 			</div>
 			<div className="flex-1 min-w-0">
 				{isComment ? (
@@ -396,7 +477,7 @@ function ActivityItemInner<T extends ActivityEntry>({
 								{displayName}
 							</span>
 							<span className="text-xs text-muted-foreground/50">
-								{timeAgo(entry.created_at, t)}
+								{timeAgo(entry.created_at, tCommon)}
 							</span>
 							{isEditing && (
 								<span className="ml-auto flex items-center gap-1 text-xs font-medium text-primary">
@@ -450,7 +531,7 @@ function ActivityItemInner<T extends ActivityEntry>({
 									{describeActivity(entry)}
 								</span>
 								<span className="text-xs text-muted-foreground/45">
-									{timeAgo(entry.created_at, t)}
+									{timeAgo(entry.created_at, tCommon)}
 								</span>
 							</div>
 							{(diffContent || canRevert) && (

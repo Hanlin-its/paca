@@ -1,9 +1,11 @@
 import type { TFunction } from "i18next";
 import {
 	type FilterConfig,
+	type ListTasksOptions,
 	resolveFilterConfig,
 	type Sprint,
 	type Task,
+	type TaskListResult,
 	type ViewLayout,
 } from "@/lib/interaction-api";
 import type {
@@ -12,6 +14,10 @@ import type {
 	TaskStatus,
 	TaskType,
 } from "@/lib/project-api";
+import {
+	createLoadMoreScrollHandler,
+	type LoadMorePagination,
+} from "@/lib/scroll-pagination";
 
 import {
 	getImportanceBucket,
@@ -152,9 +158,10 @@ export function getColumnGroupDefs(
 		if (cf.field_type === "select" || cf.field_type === "multi_select") {
 			return [
 				...cf.options.map((opt) => ({
-					key: opt,
-					label: opt,
-					fieldValue: opt,
+					key: opt.value,
+					label: opt.value,
+					color: opt.color ?? undefined,
+					fieldValue: opt.value,
 				})),
 				{ key: "__none", label: t("viewUtils.groups.none"), fieldValue: null },
 			];
@@ -209,7 +216,7 @@ export function getTaskColumnKeys(
 		return [task.sprint_id ?? "__backlog"];
 	}
 	if (columnBy === "assignee") {
-		return [task.assignee_id ?? "__unassigned"];
+		return [task.assignee_ids?.[0] ?? "__unassigned"];
 	}
 	if (columnBy === "reporter") {
 		return [task.reporter_id ?? "__none"];
@@ -350,6 +357,7 @@ export const BUILTIN_FIELDS = [
 	{ key: "story_points", labelKey: "viewUtils.fields.storyPoints" },
 	{ key: "type", labelKey: "viewUtils.fields.type" },
 	{ key: "epic", labelKey: "viewUtils.fields.epic" },
+	{ key: "tags", labelKey: "viewUtils.fields.tags" },
 	{ key: "reporter", labelKey: "viewUtils.fields.reporter" },
 	{ key: "start_date", labelKey: "viewUtils.fields.startDate" },
 	{ key: "due_date", labelKey: "viewUtils.fields.dueDate" },
@@ -440,15 +448,44 @@ export function buildAllFieldOptions(
 
 // ── Task update payload builder for column drag ───────────────────────────────
 
+/** Load-more state/handler for an epic picker fed by a paginated (20-per-page)
+ * epic query. Threaded from the view/layout root, which owns the single
+ * `useInfiniteQuery`, down to whichever picker UI (Popover/DropdownMenu/
+ * ContextMenu) is currently rendering the epic list, so every epic picker
+ * app-wide shares one "Load more" affordance instead of duplicating queries.
+ * Re-exported from the generic scroll-pagination helper — kept as a named
+ * alias here since every epic-picker call site already imports it by this
+ * name from "./view-utils". */
+export type EpicsPagination = LoadMorePagination;
+export const createEpicScrollHandler = createLoadMoreScrollHandler;
+
+/**
+ * Whether a task is still waiting for Auto (Jev) to pick its assignee — the
+ * only time the UI should show "Auto" in place of the assignees. The server
+ * keeps assignment_mode at "auto" after Jev assigns someone, so the mode
+ * alone doesn't mean the assignment is pending: once assignee_ids is set,
+ * those assignees are shown like any other. Picking someone else then
+ * switches the task back to "manual" server-side.
+ */
+export function isAutoAssignPending(task: {
+	assignment_mode?: "manual" | "auto";
+	assignee_ids?: string[] | null;
+}): boolean {
+	return (
+		task.assignment_mode === "auto" && (task.assignee_ids ?? []).length === 0
+	);
+}
+
 export type TaskFieldUpdate = Partial<{
 	status_id: string | null;
-	assignee_id: string | null;
+	assignee_ids: string[];
 	importance: number;
 	story_points: number | null;
 	task_type_id: string | null;
 	custom_fields: Record<string, unknown>;
 	sprint_id: string | null;
 	parent_task_id: string | null;
+	assignment_mode: "manual" | "auto";
 }>;
 
 /**
@@ -467,7 +504,9 @@ export function buildColumnDropUpdate(
 		return { sprint_id: (columnFieldValue as string | null) ?? null };
 	}
 	if (columnBy === "assignee") {
-		return { assignee_id: (columnFieldValue as string | null) ?? null };
+		return {
+			assignee_ids: columnFieldValue ? [columnFieldValue as string] : [],
+		};
 	}
 	if (columnBy === "importance") {
 		return { importance: Number(columnFieldValue) || 0 };
@@ -482,4 +521,99 @@ export function buildColumnDropUpdate(
 	}
 
 	return {};
+}
+
+// ── Per-column "load more" extras reconciliation ─────────────────────────────
+
+/**
+ * Whether a column's `colExtraTasks` ("load more" overflow, tracked
+ * separately from the column's base query result) is now redundant and can
+ * be dropped in favor of the base query's own data.
+ *
+ * True once the base query's data either (a) has caught up to the expanded
+ * depth the extras represent, or (b) reports there's nothing left to fetch
+ * (`next_cursor` is null/undefined) — which is authoritative even when
+ * shorter than the expected depth. (b) matters when the true total has
+ * permanently shrunk below the expected depth (an already-loaded task got
+ * deleted, or moved out of this column/filter by someone else): without it,
+ * the base query can never again return `expectedDepth` items, so extras
+ * would never clear and a deleted/moved task would linger as an unclearable
+ * ghost row indefinitely.
+ */
+export function shouldClearColumnExtras(
+	data: Pick<TaskListResult, "items" | "next_cursor"> | undefined,
+	expectedDepth: number,
+): boolean {
+	if (!data) return false;
+	return data.items.length >= expectedDepth || data.next_cursor == null;
+}
+
+// ── Selected-task resolution (survives transient gaps in the task list) ──────
+
+/**
+ * Resolves the task detail dialog's target task from the currently-loaded
+ * `tasks` list, falling back to the last-resolved task for the same id when
+ * `tasks` transiently doesn't contain it (e.g. a background refetch drops it
+ * from the loaded page right before a re-fetch restores it). Without this
+ * fallback, that gap flips the dialog's `open` prop to false and it flashes
+ * closed.
+ *
+ * `nextLastKnown` mirrors exactly what the caller should store for the next
+ * call: it only changes on a genuine selection change (cleared) or a
+ * successful lookup (updated) — a transient miss for the *same* selection
+ * leaves it untouched, so a later miss can't be masked by an unrelated
+ * earlier selection's cached task.
+ */
+export function resolveSelectedTask(
+	tasks: Task[],
+	selectedTaskId: string | null,
+	lastKnownTask: Task | null,
+): { resolved: Task | null; nextLastKnown: Task | null } {
+	if (!selectedTaskId) {
+		return { resolved: null, nextLastKnown: null };
+	}
+	const found = tasks.find((t) => t.id === selectedTaskId) ?? null;
+	if (found) {
+		return { resolved: found, nextLastKnown: found };
+	}
+	const fallback = lastKnownTask?.id === selectedTaskId ? lastKnownTask : null;
+	return { resolved: fallback, nextLastKnown: lastKnownTask };
+}
+
+// ── Scoped placeholder data for pagination queries ────────────────────────────
+
+/**
+ * Builds a React Query `placeholderData` function that keeps the previous
+ * query's result only when the *only* difference between the previous
+ * request's options and `currentOpts` is `pageSize` — i.e. this queryKey
+ * change is a "load more" page-size bump or a WS-triggered depth-restore
+ * refetch, not a genuine filter/sort/search change.
+ *
+ * These queries key on the full filter-options object, so the stock
+ * `keepPreviousData` helper (which keeps previous data across *any* queryKey
+ * change) would also kick in when a user edits a filter or types a search:
+ * the previous, now non-matching results would keep rendering — with no
+ * loading skeleton and no `isPlaceholderData` indicator — until the new
+ * request resolves. Scoping the reuse to pageSize-only changes restores the
+ * loading state for genuine filter/sort/search changes while still avoiding
+ * the pagination flash this was introduced to fix.
+ */
+export function keepPreviousDataOnPageSizeChangeOnly(
+	currentOpts: ListTasksOptions,
+) {
+	return (
+		previousData: TaskListResult | undefined,
+		previousQuery: { queryKey: readonly unknown[] } | undefined,
+	): TaskListResult | undefined => {
+		if (previousData === undefined || !previousQuery) return undefined;
+		const prevOpts = previousQuery.queryKey.at(-1) as
+			| ListTasksOptions
+			| undefined;
+		if (!prevOpts || typeof prevOpts !== "object") return undefined;
+		const { pageSize: _prevPageSize, ...prevRest } = prevOpts;
+		const { pageSize: _currPageSize, ...currRest } = currentOpts;
+		return JSON.stringify(prevRest) === JSON.stringify(currRest)
+			? previousData
+			: undefined;
+	};
 }

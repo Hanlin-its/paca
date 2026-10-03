@@ -3,13 +3,16 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
-	userdom "github.com/Paca-AI/api/internal/domain/user"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/mattn/go-sqlite3"
+
+	userdom "github.com/Paca-AI/api/internal/domain/user"
 )
 
 // openUserRepoTestDB sets up an in-memory SQLite DB for user repository tests.
@@ -36,13 +39,17 @@ func openUserRepoTestDB(t *testing.T) (*sqlx.DB, uuid.UUID) {
 			username TEXT NOT NULL,
 			password_hash TEXT NOT NULL,
 			full_name TEXT NOT NULL,
+			email TEXT,
 			role_id TEXT NOT NULL,
 			must_change_password INTEGER NOT NULL DEFAULT 0,
+			avatar_key TEXT,
+			avatar_thumb_key TEXT,
 			created_at DATETIME,
 			updated_at DATETIME,
 			deleted_at DATETIME
 		);
-		CREATE UNIQUE INDEX uni_users_username_active ON users (username) WHERE deleted_at IS NULL;`
+		CREATE UNIQUE INDEX uni_users_username_active ON users (username) WHERE deleted_at IS NULL;
+		CREATE UNIQUE INDEX uni_users_email_active ON users (email) WHERE deleted_at IS NULL AND email IS NOT NULL;`
 	if _, err := db.ExecContext(context.Background(), schema); err != nil {
 		t.Fatalf("create schema: %v", err)
 	}
@@ -219,5 +226,138 @@ func TestUserRepository_Create_AllowsUsernameReuseAfterDelete(t *testing.T) {
 	}
 	if got.ID != replacement.ID {
 		t.Fatalf("expected active user to be the replacement %s, got %s", replacement.ID, got.ID)
+	}
+}
+
+// --- uniqueViolationConstraint / userRepoErr --------------------------------
+//
+// The SQLite-backed harness above can't produce a real *pgconn.PgError (its
+// driver reports constraint violations differently), so these construct one
+// directly to test the Postgres-specific mapping in isolation: it's what
+// makes Create/Update race-safe against usersvc.Service's
+// check-then-write uniqueness pre-check for username/email (two concurrent
+// requests can both pass the pre-check for the same value; the database's
+// unique index is the actual guarantee, and its violation must still come
+// back as the same domain sentinel the pre-check itself returns).
+
+func TestUniqueViolationConstraint_MatchesPgUniqueViolation(t *testing.T) {
+	pgErr := &pgconn.PgError{Code: "23505", ConstraintName: "uni_users_email_active"}
+	wrapped := fmt.Errorf("insert: %w", pgErr)
+
+	constraint, ok := uniqueViolationConstraint(wrapped)
+	if !ok {
+		t.Fatal("expected a unique violation to be recognized")
+	}
+	if constraint != "uni_users_email_active" {
+		t.Errorf("expected constraint uni_users_email_active, got %q", constraint)
+	}
+}
+
+func TestUniqueViolationConstraint_IgnoresOtherPgErrorCodes(t *testing.T) {
+	pgErr := &pgconn.PgError{Code: "23503", ConstraintName: "users_role_id_fkey"} // FK violation, not unique
+	if _, ok := uniqueViolationConstraint(fmt.Errorf("insert: %w", pgErr)); ok {
+		t.Error("expected a non-unique-violation PgError not to be recognized")
+	}
+}
+
+func TestUniqueViolationConstraint_IgnoresNonPgErrors(t *testing.T) {
+	if _, ok := uniqueViolationConstraint(errors.New("boom")); ok {
+		t.Error("expected a plain error not to be recognized as a unique violation")
+	}
+}
+
+func TestUserRepoErr_MapsUsernameConstraint(t *testing.T) {
+	pgErr := &pgconn.PgError{Code: "23505", ConstraintName: "uni_users_username_active"}
+	err := userRepoErr("create", fmt.Errorf("insert: %w", pgErr))
+	if !errors.Is(err, userdom.ErrUsernameTaken) {
+		t.Errorf("expected ErrUsernameTaken, got %v", err)
+	}
+}
+
+func TestUserRepoErr_MapsEmailConstraint(t *testing.T) {
+	pgErr := &pgconn.PgError{Code: "23505", ConstraintName: "uni_users_email_active"}
+	err := userRepoErr("update", fmt.Errorf("update: %w", pgErr))
+	if !errors.Is(err, userdom.ErrEmailTaken) {
+		t.Errorf("expected ErrEmailTaken, got %v", err)
+	}
+}
+
+func TestUserRepoErr_WrapsUnrelatedErrorsGenerically(t *testing.T) {
+	err := userRepoErr("create", errors.New("connection reset"))
+	if err == nil {
+		t.Fatal("expected a non-nil wrapped error")
+	}
+	if errors.Is(err, userdom.ErrUsernameTaken) || errors.Is(err, userdom.ErrEmailTaken) {
+		t.Errorf("unrelated error should not map to a uniqueness sentinel, got %v", err)
+	}
+}
+
+func TestUserRepository_List_SearchRoleAndOrder(t *testing.T) {
+	db, userRoleID := openUserRepoTestDB(t)
+	adminRoleID := uuid.New()
+	now := time.Now()
+	db.MustExec(
+		`INSERT INTO global_roles (id, name, permissions, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)`,
+		adminRoleID.String(), "ADMIN", []byte("{}"), now, now,
+	)
+	repo := NewUserRepository(db)
+	ctx := context.Background()
+
+	email := func(s string) *string { return &s }
+	seed := []struct {
+		username, fullName string
+		email              *string
+		roleID             uuid.UUID
+	}{
+		{"zed", "Alice Smith", email("zed@corp.io"), userRoleID},
+		{"bob", "Bob Jones", email("bob@corp.io"), adminRoleID},
+		{"carol", "carol 100%", nil, userRoleID},
+		{"dave_x", "Dave", email("dave@other.io"), userRoleID},
+	}
+	for _, s := range seed {
+		u := testUser(uuid.New(), s.roleID)
+		u.Username, u.FullName, u.Email = s.username, s.fullName, s.email
+		if err := repo.Create(ctx, u); err != nil {
+			t.Fatalf("create %s: %v", s.username, err)
+		}
+	}
+
+	names := func(f userdom.ListFilter) []string {
+		t.Helper()
+		users, total, err := repo.List(ctx, 0, 10, f)
+		if err != nil {
+			t.Fatalf("List(%+v): %v", f, err)
+		}
+		if int(total) != len(users) {
+			t.Fatalf("total = %d, len = %d", total, len(users))
+		}
+		out := make([]string, 0, len(users))
+		for _, u := range users {
+			out = append(out, u.Username)
+		}
+		return out
+	}
+	eq := func(got, want []string) {
+		t.Helper()
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+
+	eq(names(userdom.ListFilter{}), []string{"zed", "bob", "carol", "dave_x"})
+	eq(names(userdom.ListFilter{Search: "ALICE"}), []string{"zed"})
+	eq(names(userdom.ListFilter{Search: "smith alice"}), []string{"zed"}) // all words, any order
+	eq(names(userdom.ListFilter{Search: "corp.io"}), []string{"zed", "bob"})
+	eq(names(userdom.ListFilter{Search: "100%"}), []string{"carol"})
+	eq(names(userdom.ListFilter{Search: "%"}), []string{"carol"}) // wildcard is literal
+	eq(names(userdom.ListFilter{Search: "dave_"}), []string{"dave_x"})
+	eq(names(userdom.ListFilter{Search: "a_e"}), []string{}) // "_" is literal, not any-char
+	eq(names(userdom.ListFilter{Role: "ADMIN"}), []string{"bob"})
+	eq(names(userdom.ListFilter{Role: "ADMIN", Search: "alice"}), []string{})
+
+	// total reflects the filter, not just the page.
+	users, total, err := repo.List(ctx, 0, 1, userdom.ListFilter{Search: "corp.io"})
+	if err != nil || total != 2 || len(users) != 1 {
+		t.Fatalf("paged: users=%d total=%d err=%v", len(users), total, err)
 	}
 }
