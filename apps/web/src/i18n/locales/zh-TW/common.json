@@ -1,0 +1,22 @@
+{
+	"dialog": {
+		"closeLabel": "關閉",
+		"closeButton": "關閉"
+	},
+	"sidebar": {
+		"title": "側邊欄",
+		"description": "顯示移動端側邊欄。",
+		"toggleLabel": "切換側邊欄"
+	},
+	"validation": {
+		"usernameRequired": "使用者名稱不可為空。",
+		"usernameMinLength": "使用者名稱長度至少為 {{min}} 個字元。",
+		"passwordRequired": "密碼不可為空。",
+		"passwordMinLength": "密碼長度至少為 {{min}} 個字元。",
+		"newPasswordRequired": "新密碼不可為空。",
+		"newPasswordMinLength": "新密碼長度至少為 {{min}} 個字元。",
+		"newPasswordMustDiffer": "新密碼不能與目前密碼相同。",
+		"confirmPasswordRequired": "請确認你的新密碼。",
+		"passwordsDoNotMatch": "两次輸入的密碼不一致。"
+	}
+}

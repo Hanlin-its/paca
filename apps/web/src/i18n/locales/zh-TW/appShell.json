@@ -1,0 +1,79 @@
+{
+	"language": {
+		"label": "語言",
+		"toggleTooltip": "語言：{{language}} — 按一下切換"
+	},
+	"brand": {
+		"logoAlt": "Paca 標誌"
+	},
+	"theme": {
+		"label": "主題",
+		"light": "淺色",
+		"dark": "深色",
+		"auto": "自動",
+		"cycleTooltip": "主題：{{mode}} — 按一下切換",
+		"modeAutoTooltip": "主題模式：自動（跟隨系統）。按一下切換為淺色模式。",
+		"modeTooltip": "主題模式：{{mode}}。按一下切換模式。"
+	},
+	"nav": {
+		"home": "首頁",
+		"administration": "系統管理",
+		"globalRoles": "全域角色",
+		"users": "使用者",
+		"plugins": "外掛",
+		"allProjects": "所有專案",
+		"project": "專案",
+		"agents": "AI Agent",
+		"team": "團隊",
+		"settings": "設定"
+	},
+	"projectSwitcher": {
+		"projects": "專案",
+		"yourProjects": "我的專案",
+		"noProjectsYet": "目前沒有專案",
+		"newProject": "新增專案"
+	},
+	"interactions": {
+		"title": "互動",
+		"timeline": "時間線",
+		"productBacklog": "產品待辦清單"
+	},
+	"docs": {
+		"documentation": "文件",
+		"noDocumentsYet": "目前沒有文件",
+		"emptyFolder": "空資料夾",
+		"add": "新增",
+		"newDocument": "新增文件",
+		"newFolder": "新增資料夾",
+		"newFolderDefaultName": "新增資料夾",
+		"newSubfolder": "新增子資料夾",
+		"rename": "重新命名",
+		"delete": "刪除",
+		"untitled": "無標題"
+	},
+	"notifications": {
+		"title": "通知",
+		"empty": "目前沒有通知",
+		"markAllAsRead": "全部標示為已讀",
+		"text": {
+			"assigned": "{{actor}} 將任務 #{{taskNumber}} — {{taskTitle}} 指派給你",
+			"mentioned": "{{actor}} 在 #{{taskNumber}} — {{taskTitle}} 中提及你"
+		},
+		"timeAgo": {
+			"justNow": "剛剛",
+			"minutes_one": "{{count}} 分鐘前",
+			"minutes_other": "{{count}} 分鐘前",
+			"hours_one": "{{count}} 小時前",
+			"hours_other": "{{count}} 小時前",
+			"days_one": "{{count}} 天前",
+			"days_other": "{{count}} 天前"
+		}
+	},
+	"userMenu": {
+		"signIn": "登入",
+		"myProfile": "個人資料",
+		"apiKeys": "API 金鑰",
+		"logOut": "登出",
+		"loggingOut": "正在登出…"
+	}
+}

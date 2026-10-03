@@ -1,0 +1,38 @@
+{
+	"marketplace": {
+		"loading": "正在載入外掛市集...",
+		"searchPlaceholder": "搜尋外掛",
+		"empty": "找不到任何外掛市集外掛。",
+		"card": {
+			"installed": "已安裝",
+			"updateAvailable": "有可用更新",
+			"source": "來源",
+			"upgrading": "正在升級...",
+			"upgradeTo": "升級到 {{version}}",
+			"uninstalling": "正在卸載...",
+			"uninstall": "卸載",
+			"installing": "正在安裝...",
+			"install": "安裝",
+			"features": {
+				"backend": "後端",
+				"frontend": "前端",
+				"migrations": "資料庫遷移",
+				"mcp": "MCP"
+			}
+		}
+	},
+	"preferences": {
+		"empty": "尚未安裝任何帶擴充點的外掛。",
+		"actions": {
+			"show": "顯示",
+			"hide": "隱藏"
+		},
+		"extensionPoints": {
+			"sidebarGeneral": "側邊欄 — 通用",
+			"sidebarProject": "側邊欄 — 專案",
+			"taskDetail": "任務詳細資料",
+			"projectSettingsTab": "專案設定標籤頁",
+			"customView": "自訂檢視"
+		}
+	}
+}

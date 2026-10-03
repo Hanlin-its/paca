@@ -1,0 +1,106 @@
+{
+	"page": {
+		"title": "個人資料",
+		"subtitle": "檢視並更新你的帳號資訊。"
+	},
+	"fields": {
+		"fullName": "姓名",
+		"fullNamePlaceholder": "請輸入你的姓名",
+		"notSet": "未設定",
+		"username": "使用者名稱"
+	},
+	"actions": {
+		"editProfile": "編輯資料",
+		"saveChanges": "儲存變更",
+		"saving": "正在儲存…",
+		"cancel": "取消"
+	},
+	"errors": {
+		"updateFailed": "更新資料失敗，請重試。"
+	},
+	"joinedOn": "加入於 {{date}}",
+	"changePassword": {
+		"title": "修改密碼",
+		"description": "更新你的帳號密碼。",
+		"descriptionMustChange": "你必須先設定新密碼才能繼續。",
+		"temporaryPasswordNotice": "系統已為你的帳號設定了暫時密碼，請立即修改。",
+		"success": "密碼修改成功。",
+		"fields": {
+			"currentPassword": "目前密碼",
+			"newPassword": "新密碼",
+			"confirmPassword": "确認新密碼",
+			"passwordPlaceholder": "••••••••",
+			"newPasswordHint": "請使用至少 8 個字元，並選擇與目前密碼不同的密碼。"
+		},
+		"aria": {
+			"showCurrentPassword": "顯示目前密碼",
+			"hideCurrentPassword": "隱藏目前密碼",
+			"showNewPassword": "顯示新密碼",
+			"hideNewPassword": "隱藏新密碼",
+			"showConfirmPassword": "顯示确認密碼",
+			"hideConfirmPassword": "隱藏确認密碼"
+		},
+		"actions": {
+			"submit": "修改密碼",
+			"updating": "正在更新…"
+		},
+		"errors": {
+			"currentPasswordRequired": "目前密碼不可為空。",
+			"currentPasswordIncorrect": "目前密碼不正確。",
+			"sessionExpired": "你的工作階段已過期，請重新登入。",
+			"serverError": "伺服器出現錯誤，請重試。",
+			"changeFailed": "修改密碼失敗。"
+		}
+	},
+	"apiKeys": {
+		"title": "API 金鑰",
+		"subtitle": "API 金鑰允許你在不使用Session Cookie 的情況下驗證 API 請求。請像對待密碼一樣妥善保管，切勿與他人分享。",
+		"empty": "目前沒有 API 金鑰。建立一個以開始使用。",
+		"yourKeys": {
+			"title": "你的金鑰",
+			"description": "金鑰僅顯示前 8 個字元用於識別。"
+		},
+		"table": {
+			"name": "名稱",
+			"prefix": "前綴",
+			"created": "建立時間",
+			"expires": "過期時間",
+			"lastUsed": "最後使用時間"
+		},
+		"actions": {
+			"newKey": "新增金鑰",
+			"cancel": "取消",
+			"creating": "正在建立…",
+			"createKey": "建立金鑰",
+			"done": "完成",
+			"revoking": "正在撤銷…",
+			"revokeKey": "撤銷金鑰",
+			"revokeKeyAria": "撤銷金鑰",
+			"copyKeyAria": "複製金鑰"
+		},
+		"createDialog": {
+			"title": "建立 API 金鑰",
+			"description": "為金鑰設定一個描述性名稱，方便你日後識別。",
+			"nameLabel": "名稱",
+			"namePlaceholder": "例如：CI 流水線、本地開發",
+			"expiryLabel": "過期日期",
+			"expiryOptional": "（可選）"
+		},
+		"revealDialog": {
+			"title": "API 金鑰已建立",
+			"description": "請立即複製你的新金鑰，之後將無法再次檢視。",
+			"copied": "已複製到剪貼闆！"
+		},
+		"revokeDialog": {
+			"title": "撤銷 API 金鑰",
+			"confirmPrefix": "确定要撤銷",
+			"confirmSuffix": "嗎？使用此金鑰的所有請求將立即停止工作。"
+		},
+		"errors": {
+			"nameRequired": "名稱不可為空。",
+			"nameTooLong": "名稱長度不能超過 100 個字元。",
+			"createFailed": "建立金鑰失敗，請重試。",
+			"copyFailed": "複製失敗，請手動複製金鑰。"
+		}
+	}
+}

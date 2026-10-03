@@ -1,0 +1,1083 @@
+{
+	"project": {
+		"notFound": "找不到專案或存取被拒絕。",
+		"settingsPage": {
+			"title": "設定",
+			"subtitle": "調整專案設定、角色和權限",
+			"nav": {
+				"general": "通用",
+				"roles": "角色",
+				"taskStatuses": "任務狀態",
+				"taskTypes": "任務類型",
+				"customFields": "自訂欄位",
+				"dangerZone": "危險區域",
+				"plugins": "外掛"
+			}
+		}
+	},
+	"agents": {
+		"createDialog": {
+			"title": "建立 AI Agent",
+			"step1Description": "設定 AI Agent 的身分和角色",
+			"step2Description": "設定驅動AI Agent 的 AI 模型",
+			"stepIndicator": "{{step}} / 2",
+			"startFromPreset": "從預設開始",
+			"nameLabel": "名稱",
+			"handleLabel": "Handle",
+			"handleHint": "自動根據名稱生成，用於留言中的 @提及。",
+			"projectRoleLabel": "專案角色",
+			"projectRolePlaceholder": "選擇專案角色…",
+			"projectRoleHint": "控制 AI Agent 在此專案中可以讀取和修改的內容。",
+			"modelSection": "模型",
+			"providerLabel": "提供者",
+			"modelLabel": "模型",
+			"customOption": "自訂…",
+			"apiKeyLabel": "API 金鑰",
+			"hideApiKey": "隱藏 API 金鑰",
+			"showApiKey": "顯示 API 金鑰",
+			"apiKeyHint": "加密儲存 — 不會在 API 回應中暴露。",
+			"baseUrlLabel": "Base URL",
+			"systemPromptLabel": "系統提示詞",
+			"optional": "（可選）",
+			"charsCount": "{{count}} 個字元",
+			"createFailed": "建立 AI Agent 失敗，請重試。",
+			"cancel": "取消",
+			"continue": "繼續",
+			"back": "返回",
+			"creating": "正在建立…",
+			"createAgent": "建立 AI Agent",
+			"namePlaceholder": "Dev Bot",
+			"systemPromptPlaceholder": "你是一名資深軟體工程師…"
+		},
+		"card": {
+			"configure": "設定",
+			"delete": "刪除",
+			"repos": "程式碼儲存庫",
+			"configureAndViewActivity": "設定並檢視活動",
+			"deleteDialog": {
+				"title": "刪除 {{name}}？",
+				"description": "這將永久刪除該 AI Agent 並將其從專案中移除。正在進行的對話將被終止。",
+				"cancel": "取消",
+				"delete": "刪除"
+			}
+		},
+		"page": {
+			"title": "AI Agent",
+			"subtitle": "處理任務並與團隊溝通的自主 AI Agent",
+			"newAgent": "新增 AI Agent",
+			"empty": {
+				"title": "目前沒有 AI Agent",
+				"description": "新增一個 AI Agent 來自動處理任務、審查程式碼、編寫文件等。",
+				"createFirstAgent": "建立你的第一個 AI Agent"
+			},
+			"chatShortcutPrefix": "按一下",
+			"chatShortcutSuffix": "任何AI Agent 即可聊天、檢視對話，並管理 MCP 伺服器和技能。"
+		},
+		"detail": {
+			"tabs": {
+				"overview": "概覽",
+				"mcpServers": "MCP 伺服器",
+				"skills": "技能",
+				"envVars": "環境變數",
+				"conversations": "對話"
+			},
+			"overview": {
+				"nameLabel": "名稱",
+				"llmConfiguration": "LLM 設定",
+				"providerLabel": "提供者",
+				"modelLabel": "模型",
+				"customOption": "自訂…",
+				"apiKeyUpdateLabel": "更新 API 金鑰",
+				"apiKeyUpdateHint": "（留空以保留目前金鑰）",
+				"baseUrlLabel": "Base URL",
+				"triggerPrompts": {
+					"title": "自動附加的觸發提示詞",
+					"hint": "根據 AI Agent 的呼叫方式，執行時會自動附加到系統提示詞中。",
+					"taskAssignment": "任務指派 / 任務留言",
+					"docCommentMention": "文件留言 @提及",
+					"directChat": "直接聊天",
+					"writeDescription": "使用 AI 編寫任務描述"
+				},
+				"capabilities": "能力",
+				"cloneRepositories": "複製程式碼儲存庫",
+				"cloneRepositoriesHint": "允許 AI Agent 在本機 git clone 程式碼儲存庫",
+				"gitCommitterIdentity": "Git 提交者身分",
+				"gitCommitterHint": "該 AI Agent 提交程式碼時使用的姓名和電子郵件。",
+				"committerNameLabel": "提交者姓名",
+				"committerEmailLabel": "提交者電子郵件",
+				"saveChanges": "儲存變更",
+				"saved": "已儲存",
+				"saveFailed": "儲存失敗，請重試。",
+				"systemPromptLabel": "系統提示詞"
+			},
+			"mcp": {
+				"serverCount_one": "已設定 {{count}} 個伺服器",
+				"serverCount_other": "已設定 {{count}} 個伺服器",
+				"addServer": "新增伺服器",
+				"empty": {
+					"title": "尚未新增 MCP 伺服器",
+					"addFirstServer": "新增你的第一個伺服器"
+				},
+				"addDialog": {
+					"title": "新增 MCP 伺服器",
+					"description": "連接一個 MCP 伺服器以擴充 AI Agent 的能力。",
+					"serverNameLabel": "伺服器名稱",
+					"transportLabel": "傳輸方式",
+					"commandLabel": "指令",
+					"argsLabel": "參數",
+					"argsHint": "（以空格分隔）",
+					"urlLabel": "URL",
+					"cancel": "取消",
+					"addServer": "新增伺服器"
+				}
+			},
+			"envVars": {
+				"count_one": "已設定 {{count}} 個變數",
+				"count_other": "已設定 {{count}} 個變數",
+				"addVariable": "新增變數",
+				"empty": {
+					"title": "尚未新增環境變數",
+					"addFirst": "新增你的第一個變數"
+				},
+				"addDialog": {
+					"title": "新增環境變數",
+					"description": "金鑰值在儲存時會被加密，並在執行時注入到 AI Agent 的沙箱環境中。儲存後將無法再次檢視此值。",
+					"keyLabel": "鍵",
+					"keyPlaceholder": "GITHUB_TOKEN",
+					"keyHint": "（字母、數字、下劃線，必須以字母或下劃線開頭）",
+					"valueLabel": "值",
+					"cancel": "取消",
+					"addVariable": "新增變數"
+				}
+			},
+			"skills": {
+				"skillCount_one": "已附加 {{count}} 項技能",
+				"skillCount_other": "已附加 {{count}} 項技能",
+				"addSkill": "新增技能",
+				"empty": {
+					"title": "目前沒有技能",
+					"addFirstSkill": "新增第一項技能"
+				},
+				"addDialog": {
+					"title": "新增技能",
+					"description": "為 AI Agent 提供專門的指令或能力。",
+					"skillNameLabel": "技能名稱",
+					"sourceLabel": "來源",
+					"sourceInline": "內嵌（在此處編寫內容）",
+					"sourceMarketplace": "外掛市集",
+					"sourceGithubUrl": "GitHub URL",
+					"skillContentLabel": "技能內容（Markdown）",
+					"urlLabel": "URL",
+					"cancel": "取消",
+					"addSkill": "新增技能"
+				}
+			},
+			"conversations": {
+				"triggerChat": "聊天",
+				"triggerWriteDescription": "編寫描述",
+				"triggerTask": "任務",
+				"iterations_one": "{{count}} 次迭代",
+				"iterations_other": "{{count}} 次迭代",
+				"prOpened": "PR 已建立",
+				"watch": "檢視",
+				"empty": {
+					"title": "目前沒有對話",
+					"description": "當任務指派給該 AI Agent 或有人向其傳送訊息時，對話將開始。"
+				}
+			}
+		},
+		"conversationView": {
+			"thinking": "思考中…",
+			"observation": "觀察結果",
+			"toolLabel": "工具：{{toolName}}",
+			"stop": "停止",
+			"notFound": "找不到對話",
+			"chatSession": "聊天工作階段",
+			"taskSession": "任務工作階段",
+			"pr": "PR",
+			"noMessages": "目前沒有訊息"
+		}
+	},
+	"docs": {
+		"editorPage": {
+			"notFound": {
+				"title": "找不到文件",
+				"description": "該文件可能已被刪除，或連結無效。"
+			},
+			"unsaved": "未儲存",
+			"saving": "正在儲存…",
+			"saved": "已儲存",
+			"commentsAndActivity": "留言和活動"
+		},
+		"activity": {
+			"created": "建立了此文件",
+			"updated": "更新了該文件",
+			"updatedFields": "更新了 {{fields}}",
+			"deleted": "刪除了該文件",
+			"moved": "移動了該文件",
+			"contentChangeDiff": "內容變更差異"
+		}
+	},
+	"roles": {
+		"deleteDialog": {
+			"title": "刪除角色",
+			"confirmTextPrefix": "确定要刪除",
+			"confirmTextSuffix": "嗎？目前指派此角色的所有成員將失去相應存取權限。此操作無法撤銷。",
+			"cancel": "取消",
+			"deleteRole": "刪除角色",
+			"errors": {
+				"notFound": "該角色已不存在。",
+				"hasMembers": "該角色仍被指派給一個或多個成員，無法刪除。",
+				"forbidden": "你沒有權限刪除該角色。",
+				"internalError": "出現錯誤，請重試。",
+				"generic": "出現錯誤。"
+			}
+		},
+		"formDialog": {
+			"editTitle": "編輯角色",
+			"createTitle": "新增角色",
+			"editDescription": "更新角色名稱並設定其權限授與。",
+			"createDescription": "定義一個新的專案角色，並設定其授與成員的權限。",
+			"roleNameLabel": "角色名稱",
+			"roleNamePlaceholder": "例如：PROJECT_REVIEWER",
+			"permissionsLabel": "權限",
+			"enabledCount_one": "已啟用 {{count}} 項",
+			"enabledCount_other": "已啟用 {{count}} 項",
+			"cancel": "取消",
+			"saveChanges": "儲存變更",
+			"createRole": "建立角色",
+			"errors": {
+				"nameTaken": "已存在同名角色。",
+				"nameInvalid": "角色名稱只能使用大寫字母、數字和下劃線。",
+				"notFound": "該角色已不存在，可能已被刪除。",
+				"forbidden": "你沒有權限執行此操作。",
+				"internalError": "伺服器出現錯誤，請重試。",
+				"generic": "出現錯誤。"
+			}
+		},
+		"permissions": {
+			"projectsRead": {
+				"label": "檢視專案",
+				"description": "檢視專案詳細資料和設定"
+			},
+			"projectsWrite": {
+				"label": "編輯專案",
+				"description": "更新專案名稱、描述和設定"
+			},
+			"projectsDelete": {
+				"label": "刪除專案",
+				"description": "永久刪除此專案"
+			},
+			"membersRead": {
+				"label": "檢視成員",
+				"description": "列出並檢視專案成員"
+			},
+			"membersWrite": {
+				"label": "管理成員",
+				"description": "新增、移除和重新指派專案成員"
+			},
+			"rolesRead": {
+				"label": "檢視角色",
+				"description": "列出並檢視專案角色定義"
+			},
+			"rolesWrite": {
+				"label": "管理角色",
+				"description": "建立、編輯和刪除專案角色"
+			},
+			"tasksRead": {
+				"label": "檢視任務",
+				"description": "瀏覽並讀取專案中的任務"
+			},
+			"tasksWrite": {
+				"label": "編輯任務",
+				"description": "建立、更新和移動任務"
+			},
+			"sprintsRead": {
+				"label": "檢視 Sprint",
+				"description": "瀏覽Sprint 看板和待辦清單"
+			},
+			"sprintsWrite": {
+				"label": "管理 Sprint",
+				"description": "建立、更新和結束Sprint"
+			},
+			"docsRead": {
+				"label": "檢視文件",
+				"description": "瀏覽並讀取專案中的文件"
+			},
+			"docsWrite": {
+				"label": "編輯文件",
+				"description": "建立、更新和刪除文件及資料夾"
+			},
+			"agentsRead": {
+				"label": "檢視 AI Agent",
+				"description": "瀏覽 AI Agent 並檢視其設定"
+			},
+			"agentsWrite": {
+				"label": "管理 AI Agent",
+				"description": "建立、設定和刪除 AI Agent"
+			}
+		},
+		"permissionGroups": {
+			"project": "專案",
+			"members": "成員",
+			"roles": "角色",
+			"tasks": "任務",
+			"sprints": "Sprint",
+			"documents": "文件",
+			"aiAgents": "AI Agent"
+		}
+	},
+	"settings": {
+		"general": {
+			"title": "通用",
+			"projectNameLabel": "專案名稱",
+			"projectNamePlaceholder": "我的精彩專案",
+			"taskIdPrefixLabel": "任務編號前綴",
+			"taskIdPrefixHint": "例如：PACA → PACA-1、PACA-2…",
+			"taskIdPrefixPlaceholder": "PROJ",
+			"descriptionLabel": "描述",
+			"descriptionPlaceholder": "描述一下這個專案是關於什麼的…",
+			"publicProjectLabel": "公開專案",
+			"publicProjectHintPublic": "任何擁有連結的人都可以檢視此專案。匿名使用者擁有唯讀權限。",
+			"publicProjectHintPrivate": "僅團隊成員可以存取此專案。",
+			"saveChanges": "儲存變更",
+			"saved": "已儲存 ✓",
+			"noPermission": "你沒有權限編輯此專案。",
+			"errors": {
+				"nameTaken": "已存在同名專案。",
+				"nameInvalid": "專案名稱為空或無效。",
+				"prefixInvalid": "前綴必須為 1–10 個大寫字母/數字（例如 PACA）。",
+				"updateFailed": "更新專案失敗，請重試。"
+			}
+		},
+		"roles": {
+			"title": "專案角色",
+			"description": "管理此專案成員的角色和權限。",
+			"newRole": "新增角色",
+			"noPermissionsAssigned": "未指派權限",
+			"editRole": "編輯角色",
+			"deleteRole": "刪除角色",
+			"rolesDefined_one": "個已定義角色",
+			"rolesDefined_other": "個已定義角色",
+			"permissionGrants": "項套用於所有角色的權限授與",
+			"empty": {
+				"title": "尚未定義任何角色",
+				"description": "建立你的第一個角色，開始為成員指派權限。",
+				"createRole": "建立角色"
+			},
+			"table": {
+				"name": "名稱",
+				"permissions": "權限",
+				"created": "建立時間"
+			},
+			"systemRolesNote": "系統角色是共享模闆，無法編輯或刪除。"
+		},
+		"taskStatuses": {
+			"title": "任務狀態",
+			"description": "定義此專案中任務流轉的工作流程狀態。",
+			"newStatus": "新增狀態",
+			"reorderFailed": "儲存新順序失敗，請重試。",
+			"empty": {
+				"title": "未定義狀態",
+				"description": "建立狀態以定義此專案中任務的工作流程。",
+				"createStatus": "建立狀態"
+			},
+			"table": {
+				"name": "名稱",
+				"category": "類別",
+				"default": "預設"
+			},
+			"default": "預設",
+			"setAsDefault": "設為預設狀態",
+			"editStatus": "編輯狀態",
+			"deleteStatus": "刪除狀態"
+		},
+		"taskTypes": {
+			"title": "任務類型",
+			"description": "使用自訂類型（如 Bug、功能、故事）對任務進行分類。",
+			"newType": "新增類型",
+			"empty": {
+				"title": "未定義任務類型",
+				"description": "建立類型以按種類對任務分類 — 例如 Bug、功能、故事。",
+				"createType": "建立類型"
+			},
+			"table": {
+				"icon": "圖標",
+				"name": "名稱",
+				"description": "描述",
+				"default": "預設"
+			},
+			"default": "預設",
+			"setAsDefault": "設為預設類型",
+			"editType": "編輯類型",
+			"deleteType": "刪除類型"
+		},
+		"customFields": {
+			"title": "自訂欄位",
+			"description": "定義專案級的自訂任務欄位，為任務擴展符合你工作流程程的額外資料。",
+			"newField": "新增自訂欄位",
+			"empty": {
+				"title": "目前沒有自訂欄位",
+				"description": "自訂欄位可讓你記錄特定於工作流程程的資料 — Sprint、嚴重程度級別、發布標籤等。",
+				"createFirstField": "建立第一個欄位"
+			},
+			"table": {
+				"displayName": "顯示名稱",
+				"fieldKey": "欄位鍵",
+				"type": "類型",
+				"required": "必填"
+			},
+			"yes": "是",
+			"no": "否",
+			"editField": "編輯欄位",
+			"deleteField": "刪除欄位",
+			"cancel": "取消",
+			"saveChanges": "儲存變更",
+			"displayNameLabel": "顯示名稱",
+			"displayNamePlaceholder": "例如：發布標籤",
+			"fieldKeyLabel": "欄位鍵",
+			"fieldKeyHint": "用作 API 和數據導出中的標識符。",
+			"fieldKeyImmutableHint": "欄位鍵建立後不可變更。",
+			"fieldTypeLabel": "欄位類型",
+			"fieldTypeImmutableHint": "欄位類型建立後不可變更。",
+			"optionsLabel": "選項",
+			"addOptionPlaceholder": "新增選項…",
+			"addOption": "新增",
+			"requiredLabel": "必填",
+			"requiredHint": "使用者在建立或編輯任務時必須填寫此欄位。",
+			"fieldTypes": {
+				"text": "文字",
+				"number": "數字",
+				"date": "日期",
+				"checkbox": "覈取方塊",
+				"select": "單選",
+				"multiSelect": "多選",
+				"url": "URL"
+			},
+			"createDialog": {
+				"title": "建立自訂欄位",
+				"description": "定義一個新欄位，用於記錄此專案中任務的額外資料。",
+				"createField": "建立欄位",
+				"errors": {
+					"keyTaken": "該專案中已存在使用此鍵的欄位。",
+					"keyInvalid": "欄位鍵為空或無效。",
+					"nameInvalid": "顯示名稱為空或無效。",
+					"createFailed": "建立欄位失敗，請重試。"
+				}
+			},
+			"editDialog": {
+				"title": "編輯自訂欄位",
+				"description": "更新欄位設定。",
+				"errors": {
+					"nameInvalid": "顯示名稱為空或無效。",
+					"saveFailed": "儲存變更失敗，請重試。"
+				}
+			},
+			"deleteDialog": {
+				"title": "刪除自訂欄位",
+				"confirmTextPrefix": "刪除",
+				"confirmTextSuffix": "？此欄位中儲存的任務數據將丢失。此操作無法撤銷。",
+				"deleteFailed": "刪除欄位失敗，請重試。",
+				"deleteField": "刪除欄位"
+			}
+		},
+		"dangerZone": {
+			"title": "危險區域",
+			"deleteProjectTitle": "刪除此專案",
+			"deleteProjectDescription": "永久刪除該專案及其所有數據。此操作無法撤銷。",
+			"deleteProjectButton": "刪除專案",
+			"deleteDialog": {
+				"title": "刪除專案",
+				"confirmTextPrefix": "這將永久刪除",
+				"confirmTextSuffix": "及其所有數據，包括成員、角色和互動記錄。此操作無法撤銷。",
+				"typeToConfirmPrefix": "請輸入",
+				"typeToConfirmSuffix": "以确認",
+				"deleteFailed": "刪除專案失敗，請重試。",
+				"cancel": "取消",
+				"deletePermanently": "永久刪除"
+			}
+		}
+	},
+	"taskStatuses": {
+		"deleteDialog": {
+			"title": "刪除狀態",
+			"confirmTextPrefix": "刪除",
+			"confirmTextSuffix": "？使用此狀態的任務將失去其狀態。此操作無法撤銷。",
+			"deleteFailed": "刪除狀態失敗，請重試。",
+			"cancel": "取消",
+			"deleteStatus": "刪除狀態"
+		},
+		"formDialog": {
+			"editTitle": "編輯狀態",
+			"createTitle": "建立狀態",
+			"editDescription": "更新此工作流程狀態。",
+			"createDescription": "為專案工作流程新增狀態。",
+			"nameLabel": "名稱",
+			"namePlaceholder": "例如：審覈中",
+			"categoryLabel": "類別",
+			"colorLabel": "顏色",
+			"customColorTitle": "自訂顏色",
+			"cancel": "取消",
+			"saveChanges": "儲存變更",
+			"createStatus": "建立狀態",
+			"errors": {
+				"nameInvalid": "狀態名稱為空或無效。",
+				"categoryInvalid": "選擇的類別無效。",
+				"saveFailed": "儲存狀態失敗，請重試。"
+			}
+		}
+	},
+	"team": {
+		"title": "團隊",
+		"subtitle": "管理專案成員和角色",
+		"addMember": "新增成員",
+		"memberCount_one": "{{count}} 名成員",
+		"memberCount_other": "{{count}} 名成員",
+		"empty": {
+			"title": "目前沒有成員",
+			"description": "為此專案新增隊友或 AI Agent 以開始使用。",
+			"addFirstMember": "新增第一位成員"
+		},
+		"addMemberDialog": {
+			"title": "新增成員",
+			"description": "選擇一名使用者並為其指派此專案中的角色。",
+			"userLabel": "使用者",
+			"change": "變更",
+			"searchPlaceholder": "按姓名或使用者名稱搜尋…",
+			"noUsersMatch": "沒有符合搜尋條件的使用者。",
+			"noUsersAvailable": "沒有可新增的使用者。",
+			"roleLabel": "角色",
+			"rolePlaceholder": "選擇角色…",
+			"cancel": "取消",
+			"addMember": "新增成員",
+			"errors": {
+				"addFailed": "新增成員失敗，請重試。"
+			}
+		},
+		"roleChip": {
+			"changeRole": "變更角色",
+			"changeFailed": "變更角色失敗。"
+		},
+		"memberRow": {
+			"removeMember": "移除成員"
+		},
+		"removeDialog": {
+			"title": "移除成員",
+			"removePrefix": "移除",
+			"fromInfix": "從",
+			"confirmSuffix": "中移除？該成員將立即失去存取權限。",
+			"removeFailed": "移除成員失敗，請重試。",
+			"cancel": "取消",
+			"remove": "移除"
+		}
+	},
+	"aiChat": {
+		"chatWithAgent": "與 AI Agent聊天",
+		"newConversation": "新增對話",
+		"agentLabel": "AI Agent",
+		"noAgentsConfigured": "此專案尚未設定 AI Agent。",
+		"selectAgentPlaceholder": "選擇 AI Agent…",
+		"messageLabel": "訊息",
+		"messageHint": "（按 Enter 傳送，Shift+Enter 換行）",
+		"messagePlaceholder": "你希望AI Agent 幫你做什麼？",
+		"send": "傳送"
+	},
+	"taskTypes": {
+		"deleteDialog": {
+			"title": "刪除任務類型",
+			"confirmTextPrefix": "刪除",
+			"confirmTextSuffix": "？使用此類型的任務將失去其類型指派。此操作無法撤銷。",
+			"deleteFailed": "刪除任務類型失敗，請重試。",
+			"cancel": "取消",
+			"deleteType": "刪除類型"
+		},
+		"formDialog": {
+			"editTitle": "編輯任務類型",
+			"createTitle": "建立任務類型",
+			"editDescription": "更新此任務類型。",
+			"createDescription": "為此專案新增類型以對任務進行分類。",
+			"nameLabel": "名稱",
+			"namePlaceholder": "例如：Bug、功能、故事",
+			"iconLabel": "圖標",
+			"optional": "（可選）",
+			"clear": "清除",
+			"colorLabel": "顏色",
+			"customColorTitle": "自訂顏色",
+			"descriptionLabel": "描述",
+			"descriptionPlaceholder": "描述何時使用此類型…",
+			"cancel": "取消",
+			"saveChanges": "儲存變更",
+			"createType": "建立類型",
+			"errors": {
+				"nameInvalid": "類型名稱為空或無效。",
+				"saveFailed": "儲存任務類型失敗，請重試。"
+			}
+		}
+	},
+	"taskDetail": {
+		"common": {
+			"empty": "空",
+			"dash": "—",
+			"unassigned": "未指派"
+		},
+		"notFound": {
+			"title": "找不到任務",
+			"description": "該任務可能已被刪除，或連結無效。",
+			"ariaLabel": "任務詳細資料",
+			"backToProject": "返回專案",
+			"projectFallback": "專案"
+		},
+		"header": {
+			"created": "建立於 {{date}}",
+			"copied": "已複製！",
+			"share": "分享",
+			"taskActions": "任務操作",
+			"delete": "刪除",
+			"closeTaskDetail": "關閉任務詳細資料",
+			"deleteDialog": {
+				"title": "刪除任務？",
+				"description": "這將永久刪除“{{title}}”及其所有數據。此操作無法撤銷。",
+				"cancel": "取消",
+				"delete": "刪除"
+			}
+		},
+		"properties": {
+			"title": "屬性",
+			"status": "狀態",
+			"dates": "日期",
+			"trackTime": "記錄時間",
+			"addTime": "新增時間",
+			"type": "類型",
+			"relationships": "關聯關系",
+			"assignees": "負責人",
+			"importance": "重要程度",
+			"none": "無",
+			"storyPoints": "故事點",
+			"tags": "標籤",
+			"reporter": "回報者",
+			"sprint": "Sprint",
+			"productBacklog": "產品待辦清單",
+			"epic": "Epic",
+			"viewEpic": "檢視 Epic",
+			"removeEpic": "移除 Epic",
+			"parent": "父任務",
+			"viewParent": "檢視父任務",
+			"removeParent": "移除父任務",
+			"addFields": "新增欄位"
+		},
+		"description": {
+			"title": "描述",
+			"writeWithAI": "用 AI 撰寫",
+			"writeWithAIDialog": {
+				"title": "用 AI 撰寫",
+				"description": "選擇 AI Agent 來撰寫任務描述。",
+				"noAgents": "此專案尚未設定 AI Agent。",
+				"cancel": "取消",
+				"starting": "正在啟動...",
+				"writeButton": "撰寫描述"
+			}
+		},
+		"subtasks": {
+			"title": "子任務",
+			"addButton": "新增子任務",
+			"titlePlaceholder": "子任務標題…",
+			"empty": "目前沒有子任務"
+		},
+		"links": {
+			"title": "關聯任務",
+			"addButton": "新增關聯",
+			"openTask": "打開任務",
+			"removeLink": "移除關聯",
+			"empty": "目前沒有關聯任務"
+		},
+		"attachments": {
+			"title": "附件",
+			"uploadLabel": "上傳附件",
+			"dropZoneTitle": "將文件拖放到此處上傳",
+			"dropZoneSubtitle": "或按一下瀏覽",
+			"previewLabel": "預覽 {{fileName}}",
+			"downloadLabel": "下載 {{fileName}}",
+			"deleteLabel": "刪除 {{fileName}}",
+			"unitBytes_one": "{{count}} B",
+			"unitBytes_other": "{{count}} B",
+			"unitKilobytes": "{{value}} KB",
+			"unitMegabytes": "{{value}} MB"
+		},
+		"addFieldDialog": {
+			"title": "建立自訂欄位",
+			"displayNameLabel": "顯示名稱",
+			"displayNamePlaceholder": "例如：發布標籤",
+			"fieldKeyLabel": "欄位鍵",
+			"fieldKeyPlaceholder": "release_tag",
+			"fieldTypeLabel": "欄位類型",
+			"requiredLabel": "必填",
+			"cancel": "取消",
+			"creating": "正在建立…",
+			"createField": "建立欄位",
+			"fieldTypes": {
+				"text": "文字",
+				"number": "數字",
+				"date": "日期",
+				"checkbox": "覈取方塊",
+				"select": "單選",
+				"multiSelect": "多選",
+				"url": "URL"
+			}
+		},
+		"addTaskLinkModal": {
+			"title": "關聯任務",
+			"relationship": "關系",
+			"searchPlaceholder": "按標題或編號搜尋任務...",
+			"loadingTasks": "正在載入任務…",
+			"noTasksFound": "找不到任務",
+			"linkTypes": {
+				"blocks": {
+					"label": "阻塞",
+					"description": "此任務必須在另一任務之前完成"
+				},
+				"isBlockedBy": {
+					"label": "被阻塞於",
+					"description": "此任務需等待另一任務完成後才能開始"
+				},
+				"relatesTo": {
+					"label": "相關",
+					"description": "這些任務相關但無依賴關系"
+				},
+				"duplicates": {
+					"label": "重復於",
+					"description": "此任務與另一任務重復"
+				}
+			}
+		},
+		"propertyField": {
+			"dateEditor": {
+				"datePlaceholder": "日期",
+				"clearDate": "清除日期",
+				"startDate": "開始日期",
+				"dueDate": "到期日"
+			},
+			"storyPointsEditor": {
+				"decrease": "減少故事點",
+				"increase": "增加故事點"
+			},
+			"tagsEditor": {
+				"addTag": "新增標籤",
+				"addTagPlaceholder": "新增標籤..."
+			},
+			"multiSelectEditor": {
+				"addOption": "新增選項"
+			}
+		},
+		"panel": {
+			"priority": "優先級",
+			"assignee": "負責人",
+			"assigned": "已指派",
+			"sprint": "Sprint",
+			"created": "建立時間",
+			"updated": "更新時間"
+		},
+		"activity": {
+			"none": "無",
+			"system": "系統",
+			"created": "建立了此任務",
+			"deleted": "刪除了此任務",
+			"updated": "更新了此任務",
+			"changedStatus": "將狀態從“{{oldVal}}”改為“{{newVal}}”",
+			"setStatus": "將狀態設定為“{{newVal}}”",
+			"clearedStatus": "清除狀態",
+			"changedType": "將類型從“{{oldVal}}”改為“{{newVal}}”",
+			"setType": "將類型設定為“{{newVal}}”",
+			"clearedType": "清除類型",
+			"renamed": "將標題從“{{oldVal}}”改為“{{newVal}}”",
+			"setTitle": "將標題設定為“{{newVal}}”",
+			"changedPriority": "將優先級從 {{oldVal}} 改為 {{newVal}}",
+			"setPriority": "將優先級設定為 {{newVal}}",
+			"changedAssignee": "將負責人從 {{oldName}} 改為 {{newName}}",
+			"assignedTo": "指派給了 {{newName}}",
+			"removedAssignee": "移除負責人 {{oldName}}",
+			"changedReporter": "將回報者從 {{oldName}} 改為 {{newName}}",
+			"setReporter": "將回報者設定為 {{newName}}",
+			"removedReporter": "移除回報者 {{oldName}}",
+			"movedSprint": "從 Sprint“{{oldSprint}}”移動到“{{newSprint}}”",
+			"addedToSprint": "新增到 Sprint“{{newSprint}}”",
+			"removedFromSprint": "從 Sprint“{{oldSprint}}”移除",
+			"setParentTask": "設定了父任務",
+			"removedParentTask": "移除父任務",
+			"changedDueDate": "將到期日從 {{oldVal}} 改為 {{newVal}}",
+			"setDueDate": "將到期日設定為 {{newVal}}",
+			"removedDueDate": "移除到期日",
+			"changedStartDate": "將開始日期從 {{oldVal}} 改為 {{newVal}}",
+			"setStartDate": "將開始日期設定為 {{newVal}}",
+			"removedStartDate": "移除開始日期",
+			"updatedDescription": "更新了描述",
+			"updatedTags": "更新了標籤",
+			"updatedCustomFields": "更新了自訂欄位",
+			"updatedField": "更新了 {{field}}",
+			"addedAttachment": "新增了附件",
+			"addedAttachmentNamed": "新增了附件：{{fileName}}",
+			"removedAttachment": "移除附件",
+			"removedAttachmentNamed": "移除附件：{{fileName}}",
+			"linkTypeBlocks": "阻塞",
+			"linkTypeRelatedTo": "相關於",
+			"linkTypeDuplicates": "重復於",
+			"addedTaskLink": "新增了任務關聯（{{linkType}}）",
+			"removedTaskLink": "移除任務關聯",
+			"startedAiSession": "啟動了一個 AI 工作階段",
+			"watchSession": "檢視工作階段",
+			"madeChange": "進行了變更",
+			"descriptionChangeDiff": "描述變更差異"
+		},
+		"timeAgo": {
+			"justNow": "剛剛",
+			"minutes_one": "{{count}} 分鐘前",
+			"minutes_other": "{{count}} 分鐘前",
+			"hours_one": "{{count}} 小時前",
+			"hours_other": "{{count}} 小時前",
+			"days_one": "{{count}} 天前",
+			"days_other": "{{count}} 天前"
+		}
+	},
+	"board": {
+		"common": {
+			"none": "無"
+		},
+		"view": {
+			"noTasks": "目前沒有任務",
+			"loading": "正在載入…",
+			"viewMore": "檢視更多",
+			"expandColumn": "展開列",
+			"collapseColumn": "摺疊列"
+		},
+		"taskCard": {
+			"unassigned": "未指派",
+			"priorityLabel": "優先級",
+			"reporterTitle": "回報者",
+			"epicLabel": "Epic",
+			"noEpic": "無 Epic",
+			"storyPointsTitle": "故事點"
+		},
+		"listGroup": {
+			"columnHeaders": {
+				"id": "編號",
+				"title": "標題"
+			},
+			"loading": "正在載入…",
+			"viewMore": "檢視更多",
+			"startSprint": "開始 Sprint",
+			"newSprint": "新增 Sprint",
+			"noTasks": "目前沒有任務"
+		},
+		"taskRow": {
+			"columnHeaders": {
+				"type": "類型",
+				"importance": "重要程度",
+				"storyPoints": "故事點",
+				"status": "狀態",
+				"assignee": "負責人",
+				"reporter": "回報者",
+				"startDate": "開始日期",
+				"dueDate": "到期日",
+				"epic": "Epic",
+				"created": "建立時間"
+			},
+			"unassigned": "未指派",
+			"noEpic": "無 Epic"
+		},
+		"addTaskRow": {
+			"addTask": "新增任務",
+			"placeholder": "任務標題…",
+			"cancel": "取消",
+			"create": "建立"
+		},
+		"taskTypeSelector": {
+			"noType": "—"
+		},
+		"backlog": {
+			"title": "產品待辦清單",
+			"description": "所有未指派到 Sprint的工作項。"
+		}
+	},
+	"layout": {
+		"shell": {
+			"newSprint": "新增 Sprint",
+			"renameView": "重新命名檢視",
+			"deleteView": "刪除檢視",
+			"searchTasksPlaceholder": "搜尋任務…",
+			"pluginNotAvailable": "外掛不可用"
+		},
+		"viewSettings": {
+			"viewSettingsAriaLabel": "檢視設定",
+			"title": "檢視設定",
+			"chooseFields": "選擇欄位",
+			"back": "← 返回",
+			"clearFilters": "清除篩選",
+			"display": "顯示",
+			"filters": "篩選",
+			"noSelection": "—",
+			"titleField": "標題",
+			"fieldsLabel": "欄位",
+			"columnByLabel": "按列分組",
+			"swimlanesLabel": "泳道",
+			"sortByLabel": "排序方式",
+			"fieldSumLabel": "欄位匯總",
+			"initialSizeLabel": "初始數量",
+			"perPageLabel": "每頁數量",
+			"sprintsLabel": "Sprint",
+			"statusesLabel": "狀態",
+			"assigneesLabel": "負責人",
+			"taskTypesLabel": "任務類型",
+			"reset": "重設",
+			"saving": "正在儲存…",
+			"save": "儲存",
+			"sprintFilter": {
+				"noSprints": "目前沒有 Sprint",
+				"allSprints": "所有 Sprint"
+			},
+			"statusFilter": {
+				"noStatuses": "目前沒有狀態",
+				"allStatuses": "所有狀態",
+				"clear": "清除",
+				"all": "全部"
+			},
+			"assigneeFilter": {
+				"allAssignees": "所有負責人",
+				"noMembers": "目前沒有成員",
+				"unassigned": "未指派"
+			},
+			"taskTypeFilter": {
+				"normalTypes": "普通類型",
+				"allNormalTypesDynamic": "所有普通類型（活動）",
+				"systemTypes": "系統類型",
+				"noTaskTypes": "目前沒有任務類型"
+			}
+		},
+		"roadmap": {
+			"taskColumnLabel": "任務",
+			"noTasksToDisplay": "沒有可顯示的任務",
+			"noDatesSet": "未設定日期",
+			"dateRangeTooltip": "{{start}} → {{end}}",
+			"startDateTooltip": "開始：{{date}}",
+			"dueDateTooltip": "截止：{{date}}",
+			"loading": "正在載入…",
+			"viewMore": "檢視更多"
+		},
+		"newViewPopover": {
+			"addView": "新增檢視",
+			"addViewAriaLabel": "新增檢視",
+			"title": "新增檢視",
+			"viewNameLabel": "檢視名稱",
+			"defaultName": "新增{{layout}}",
+			"layoutLabel": "版面設定",
+			"creating": "正在建立…",
+			"createView": "建立檢視",
+			"layouts": {
+				"board": "看板",
+				"table": "錶格",
+				"roadmap": "Roadmap",
+				"plugin": "外掛"
+			}
+		},
+		"renameViewDialog": {
+			"title": "重新命名檢視",
+			"cancel": "取消",
+			"renaming": "正在重新命名…",
+			"rename": "重新命名"
+		},
+		"startSprintModal": {
+			"title": "開始 Sprint",
+			"nameLabel": "名稱",
+			"goalLabel": "目標",
+			"optional": "（可選）",
+			"goalPlaceholder": "此次 Sprint應達成什麼目標？",
+			"startDateLabel": "開始日期",
+			"endDateLabel": "結束日期",
+			"cancel": "取消",
+			"starting": "正在啟動…",
+			"startSprint": "開始 Sprint"
+		},
+		"timeline": {
+			"title": "時間線",
+			"description": "在 Roadmap上展示 Epic與長期規劃。"
+		},
+		"sprintDetail": {
+			"notFound": "找不到 Sprint或存取被拒絕。",
+			"statusActive": "進行中",
+			"statusPlanned": "已規劃",
+			"statusCompleted": "已完成",
+			"description": "{{status}} 的 Sprint",
+			"descriptionWithStartDate": "{{status}} 的 Sprint · 開始於 {{date}}",
+			"completeSprint": "完成 Sprint",
+			"completeSprintModal": {
+				"title": "完成 Sprint",
+				"willBeMovedTo_one": "{{count}} 個未完成任務將被移動到：",
+				"willBeMovedTo_other": "{{count}} 個未完成任務將被移動到：",
+				"noIncompleteTasks": "此 Sprint中沒有剩餘的未完成任務。",
+				"productBacklog": "產品待辦清單",
+				"unassignedHint": "任務將從所有 Sprint中取消指派",
+				"cancel": "取消",
+				"completing": "正在完成…",
+				"completeSprint": "完成 Sprint"
+			}
+		},
+		"conversation": {
+			"agentsFallback": "AI Agent"
+		}
+	},
+	"priority": {
+		"none": "無",
+		"low": "低",
+		"medium": "中",
+		"high": "高",
+		"critical": "緊急"
+	},
+	"viewUtils": {
+		"groups": {
+			"backlog": "待辦清單",
+			"unassigned": "未指派",
+			"noReporter": "無回報者",
+			"noType": "無類型",
+			"none": "無",
+			"yes": "是",
+			"no": "否"
+		},
+		"columnBy": {
+			"status": "狀態",
+			"sprint": "Sprint",
+			"assignee": "負責人",
+			"importance": "重要程度",
+			"type": "類型",
+			"reporter": "回報者"
+		},
+		"sortBy": {
+			"manual": "手動",
+			"importance": "重要程度",
+			"storyPoints": "故事點",
+			"title": "標題",
+			"created": "建立時間",
+			"startDate": "開始日期",
+			"dueDate": "到期日"
+		},
+		"swimlanes": {
+			"none": "無",
+			"assignee": "負責人",
+			"importance": "重要程度",
+			"type": "類型"
+		},
+		"fieldSum": {
+			"count": "數量",
+			"storyPoints": "故事點"
+		},
+		"fields": {
+			"assignee": "負責人",
+			"status": "狀態",
+			"importance": "重要程度",
+			"storyPoints": "故事點",
+			"type": "類型",
+			"epic": "Epic",
+			"reporter": "回報者",
+			"startDate": "開始日期",
+			"dueDate": "到期日",
+			"created": "建立時間"
+		}
+	}
+}

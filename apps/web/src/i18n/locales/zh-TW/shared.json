@@ -1,0 +1,151 @@
+{
+	"activityPane": {
+		"title": "活動",
+		"empty": "目前沒有活動",
+		"editingComment": "正在編輯留言...",
+		"cancel": "取消",
+		"sendHint": "⌘↵ 傳送",
+		"systemActor": "系統",
+		"editing": "編輯中",
+		"edit": "編輯",
+		"delete": "刪除",
+		"viewDiff": "檢視差異",
+		"revert": "還原",
+		"timeAgo": {
+			"justNow": "剛剛",
+			"minutes_one": "{{count}} 分鐘前",
+			"minutes_other": "{{count}} 分鐘前",
+			"hours_one": "{{count}} 小時前",
+			"hours_other": "{{count}} 小時前",
+			"days_one": "{{count}} 天前",
+			"days_other": "{{count}} 天前"
+		},
+		"errors": {
+			"revertFailed": "還原失敗，請重試。"
+		}
+	},
+	"contentDiff": {
+		"emptyLine": "（空行）",
+		"noDifferences": "無文字差異",
+		"changeDiff": "變更差異",
+		"removed": "已刪除",
+		"added": "已新增"
+	},
+	"home": {
+		"greeting": {
+			"morning": "早上好",
+			"afternoon": "下午好",
+			"evening": "晚上好",
+			"fallbackName": "你好"
+		},
+		"hero": {
+			"badge": "Scrumban 工作區",
+			"subtitleWithProjects_one": "你有 {{count}} 個進行中的專案，繼續上次的工作吧。",
+			"subtitleWithProjects_other": "你有 {{count}} 個進行中的專案，繼續上次的工作吧。",
+			"subtitleEmpty": "你的工作區已就緒。建立一個專案、邀請你的團隊，開始推進工作吧。",
+			"newProject": "新增專案"
+		},
+		"stats": {
+			"projects": {
+				"label": "專案",
+				"subEmpty": "目前沒有專案",
+				"subActive": "{{count}} 個進行中"
+			},
+			"openTasks": {
+				"label": "未完成任務",
+				"sub": "跨所有專案"
+			},
+			"teamMembers": {
+				"label": "團隊成員",
+				"sub": "包括你自己"
+			},
+			"aiAgents": {
+				"label": "AI Agent",
+				"sub": "尚未設定"
+			}
+		},
+		"projectsSection": {
+			"title": "專案",
+			"countInWorkspace_one": "你的工作區中有 {{count}} 個專案",
+			"countInWorkspace_other": "你的工作區中有 {{count}} 個專案",
+			"newShort": "新增",
+			"newProjectCard": "新增專案"
+		},
+		"projectCard": {
+			"public": "公開",
+			"noDescription": "目前沒有描述"
+		},
+		"gettingStarted": {
+			"title": "快速開始",
+			"progress": "{{completed}} / {{total}}",
+			"subtitle": "完成以下步驟，解鎖 Paca 的全部功能。",
+			"steps": {
+				"createProject": {
+					"title": "建立你的第一個專案",
+					"description": "搭建一個 scrumban 看板來管理團隊的工作。"
+				},
+				"inviteTeam": {
+					"title": "邀請你的團隊",
+					"description": "新增人類協作者並指派角色。"
+				},
+				"configureAgent": {
+					"title": "設定一個 AI Agent",
+					"description": "連接一個 AI 來自主處理任務。"
+				},
+				"runSprint": {
+					"title": "開始你的第一個 Sprint",
+					"description": "推動任務經歷規劃 → 執行 → 檢查 → 調整的循環。"
+				}
+			}
+		},
+		"quickActions": {
+			"title": "快捷操作",
+			"newProject": {
+				"label": "新增專案",
+				"description": "建立一個 scrumban 看板"
+			},
+			"inviteTeam": {
+				"label": "邀請團隊",
+				"description": "新增成員或 AI Agent"
+			},
+			"addAiAgent": {
+				"label": "新增 AI Agent",
+				"description": "設定自動化流程"
+			}
+		},
+		"about": {
+			"title": "Paca 是如何運作的",
+			"descriptionLead": "在共享的 scrumban 看板上，將人類的創造力與 AI 的速度相結合。任務流經",
+			"workflow": "規劃 → 執行 → 檢查 → 調整",
+			"descriptionTrail": "並完全透明地展示是誰 — 人類還是 AI — 完成了什麼。",
+			"openSource": "開源 · Apache-2.0"
+		},
+		"createDialog": {
+			"title": "新增專案",
+			"description": "為你的團隊建立一個 scrumban 工作區。建立後你可以邀請成員並調整設定。",
+			"nameLabel": "專案名稱 *",
+			"namePlaceholder": "例如：Platform v3",
+			"prefixLabel": "任務編號前綴",
+			"prefixHint": "（例如 PACA）",
+			"prefixPlaceholder": "PROJ",
+			"prefixExampleLead": "任務編號將標示為",
+			"descriptionLabel": "描述",
+			"optionalHint": "（可選）",
+			"descriptionPlaceholder": "這個專案是關於什麼的？",
+			"publicProject": {
+				"label": "公開專案",
+				"publicHint": "任何擁有連結的人都可以檢視此專案。匿名使用者擁有唯讀權限。",
+				"privateHint": "僅團隊成員可以存取此專案。"
+			},
+			"cancel": "取消",
+			"submit": "建立專案",
+			"errors": {
+				"nameRequired": "專案名稱不可為空。",
+				"nameTaken": "已存在同名專案。",
+				"nameInvalid": "專案名稱為空或無效。",
+				"prefixInvalid": "前綴必須為 1–10 個大寫字母/數字（例如 PACA）。",
+				"generic": "出現錯誤，請重試。"
+			}
+		}
+	}
+}

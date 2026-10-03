@@ -1,0 +1,264 @@
+{
+	"users": {
+		"header": {
+			"title": "使用者管理",
+			"description": "檢視並管理使用者帳號及其指派的角色。",
+			"newUser": "新增使用者"
+		},
+		"stats": {
+			"userCount_one": "{{count}} 名使用者",
+			"userCount_other": "{{count}} 名使用者",
+			"inSystem": "系統中",
+			"mustChangePassword": "需修改密碼"
+		},
+		"empty": {
+			"title": "找不到使用者",
+			"description": "建立你的第一個使用者以開始使用。",
+			"createUser": "建立使用者"
+		},
+		"errors": {
+			"loadFailed": "載入使用者失敗",
+			"tryAgain": "請刷新頁面後重試。"
+		},
+		"noPermission": {
+			"title": "你沒有權限檢視使用者",
+			"description": "你仍可以使用上方的按鈕建立新使用者。"
+		},
+		"table": {
+			"columnUsername": "使用者名稱",
+			"columnFullName": "姓名",
+			"columnRole": "角色",
+			"columnCreated": "建立時間",
+			"pwdResetBadge": "密碼已重設",
+			"youBadge": "你",
+			"noFullName": "—",
+			"resetPasswordAction": "重設密碼",
+			"editAction": "編輯使用者",
+			"deleteAction": "刪除使用者"
+		},
+		"formDialog": {
+			"createdTitle": "使用者已建立",
+			"createdDescriptionSuffix": "已建立。請分享以下暫時密碼 — 使用者將在首次登入時被要求修改密碼。",
+			"temporaryPasswordLabel": "暫時密碼",
+			"hidePassword": "隱藏密碼",
+			"showPassword": "顯示密碼",
+			"copyPassword": "複製密碼",
+			"passwordNotShownAgain": "此密碼將不會再次顯示，請立即複製。",
+			"done": "完成",
+			"editTitle": "編輯使用者",
+			"createTitle": "建立使用者",
+			"editDescription": "更新使用者的顯示名稱和角色指派。",
+			"createDescription": "系統將自動生成一個安全的暫時密碼。使用者將在首次登入時被要求修改密碼。",
+			"usernameLabel": "使用者名稱",
+			"usernamePlaceholder": "例如：john.doe",
+			"fullNameLabel": "姓名",
+			"fullNamePlaceholder": "例如：John Doe",
+			"roleLabel": "角色",
+			"roleOptionalHint": "（可選 — 預設為 USER）",
+			"rolePlaceholder": "選擇角色…",
+			"cancel": "取消",
+			"saving": "正在儲存…",
+			"creating": "正在建立…",
+			"saveChanges": "儲存變更",
+			"createUser": "建立使用者",
+			"errors": {
+				"fullNameRequired": "姓名不可為空。",
+				"usernameTaken": "該使用者名稱已被占用。",
+				"userNotFound": "找不到該使用者，可能已被刪除。",
+				"forbidden": "你沒有權限執行此操作。",
+				"internalError": "伺服器出現錯誤，請重試。",
+				"generic": "出現錯誤。"
+			}
+		},
+		"resetPasswordDialog": {
+			"title": "重設密碼",
+			"descriptionSuccessPrefix": "使用者",
+			"descriptionSuccessSuffix": "的密碼已重設。請分享以下暫時密碼 — 之後將不會再次顯示。",
+			"descriptionConfirmPrefix": "系統將生成一個強暫時密碼並指派給",
+			"descriptionConfirmSuffix": "使用者下次登入時將被要求修改密碼。",
+			"temporaryPasswordLabel": "暫時密碼",
+			"hidePassword": "隱藏密碼",
+			"showPassword": "顯示密碼",
+			"copyPassword": "複製密碼",
+			"notShownAgain": "⚠ 關閉後此密碼將不會再次顯示。",
+			"done": "完成",
+			"cancel": "取消",
+			"resetting": "正在重設…",
+			"resetButton": "重設密碼",
+			"errors": {
+				"userNotFound": "該使用者已不存在。",
+				"forbidden": "你沒有權限重設該使用者的密碼。",
+				"internalError": "出現錯誤，請重試。",
+				"generic": "出現錯誤。"
+			}
+		},
+		"deleteDialog": {
+			"title": "刪除使用者",
+			"confirmTextPrefix": "确定要刪除",
+			"confirmTextSuffix": "嗎？該帳號將被永久移除。",
+			"cannotBeUndone": "此操作無法撤銷。",
+			"cancel": "取消",
+			"deleting": "正在刪除…",
+			"confirmButton": "刪除使用者",
+			"errors": {
+				"userNotFound": "該使用者已不存在。",
+				"forbidden": "你沒有權限刪除該使用者。",
+				"internalError": "出現錯誤，請重試。",
+				"generic": "出現錯誤。"
+			}
+		}
+	},
+	"globalRoles": {
+		"header": {
+			"title": "全域角色",
+			"description": "管理系統級角色及其授與使用者的權限。",
+			"newRole": "新增角色"
+		},
+		"stats": {
+			"roleCount_one": "{{count}} 個角色",
+			"roleCount_other": "{{count}} 個角色",
+			"defined": "已定義",
+			"permissionGrants": "項套用於所有角色的權限授與"
+		},
+		"empty": {
+			"title": "尚未定義任何角色",
+			"description": "建立你的第一個角色，開始管理使用者權限。",
+			"createRole": "建立角色"
+		},
+		"errors": {
+			"loadFailed": "載入角色失敗",
+			"tryAgain": "請刷新頁面後重試。"
+		},
+		"noPermission": {
+			"title": "你沒有權限檢視角色",
+			"description": "你仍可以使用上方的按鈕建立新角色。"
+		},
+		"table": {
+			"columnName": "名稱",
+			"columnPermissions": "權限",
+			"columnCreated": "建立時間",
+			"noPermissionsAssigned": "未指派權限",
+			"editAction": "編輯角色",
+			"deleteAction": "刪除角色"
+		},
+		"formDialog": {
+			"editTitle": "編輯角色",
+			"createTitle": "建立角色",
+			"editDescription": "更新角色名稱及其權限授與。",
+			"createDescription": "定義一個新的系統級角色並設定其權限。",
+			"roleNameLabel": "角色名稱",
+			"roleNamePlaceholder": "例如：SECURITY_ADMIN",
+			"permissionsLabel": "權限",
+			"enabledCount_one": "已啟用 {{count}} 項",
+			"enabledCount_other": "已啟用 {{count}} 項",
+			"cancel": "取消",
+			"saving": "正在儲存…",
+			"saveChanges": "儲存變更",
+			"createRole": "建立角色",
+			"errors": {
+				"roleNameRequired": "角色名稱不可為空。",
+				"nameTaken": "已存在同名角色。",
+				"nameInvalid": "角色名稱只能包含大寫字母、數字和下劃線。",
+				"roleNotFound": "該角色已不存在，可能已被刪除。",
+				"forbidden": "你沒有權限執行此操作。",
+				"internalError": "伺服器出現錯誤，請重試。",
+				"generic": "出現錯誤。"
+			}
+		},
+		"deleteDialog": {
+			"title": "刪除角色",
+			"confirmTextPrefix": "确定要刪除",
+			"confirmTextSuffix": "嗎？這也會移除所有使用者對該角色的指派。",
+			"cannotBeUndone": "此操作無法撤銷。",
+			"cancel": "取消",
+			"deleting": "正在刪除…",
+			"confirmButton": "刪除角色",
+			"errors": {
+				"roleNotFound": "該角色已不存在。",
+				"hasUsersWarning": "該角色仍被指派給一個或多個使用者，無法刪除。",
+				"forbidden": "你沒有權限刪除該角色。",
+				"internalError": "出現錯誤，請重試。",
+				"generic": "出現錯誤。"
+			}
+		},
+		"permissions": {
+			"globalRolesRead": {
+				"label": "檢視全域角色",
+				"description": "檢視全域角色定義"
+			},
+			"globalRolesWrite": {
+				"label": "編輯全域角色",
+				"description": "建立和更新全域角色定義"
+			},
+			"globalRolesAssign": {
+				"label": "指派全域角色",
+				"description": "將全域角色指派給使用者"
+			},
+			"usersRead": {
+				"label": "檢視使用者",
+				"description": "檢視使用者資料和列錶"
+			},
+			"usersWrite": {
+				"label": "編輯使用者",
+				"description": "建立和更新使用者帳號"
+			},
+			"usersDelete": {
+				"label": "刪除使用者",
+				"description": "移除使用者帳號"
+			},
+			"projectsRead": {
+				"label": "檢視所有專案",
+				"description": "檢視工作區中的所有專案"
+			},
+			"projectsCreate": {
+				"label": "建立專案",
+				"description": "建立新專案"
+			},
+			"projectsWrite": {
+				"label": "編輯專案",
+				"description": "更新專案詳細資料"
+			},
+			"projectsDelete": {
+				"label": "刪除專案",
+				"description": "永久刪除專案"
+			},
+			"projectMembersRead": {
+				"label": "檢視專案成員",
+				"description": "檢視任何專案的成員"
+			},
+			"projectMembersWrite": {
+				"label": "編輯專案成員",
+				"description": "在任何專案中新增、移除和更新成員"
+			},
+			"projectRolesRead": {
+				"label": "檢視專案角色",
+				"description": "檢視任何專案中定義的角色"
+			},
+			"projectRolesWrite": {
+				"label": "編輯專案角色",
+				"description": "在任何專案中建立和更新角色"
+			}
+		},
+		"permissionGroups": {
+			"globalRoles": "全域角色",
+			"users": "使用者",
+			"projects": "專案"
+		}
+	},
+	"plugins": {
+		"title": "外掛設定",
+		"description": "為所有使用者管理系統級外掛面闆的排序和可見性。",
+		"tabs": {
+			"marketplace": "外掛市集",
+			"layout": "擴充點版面設定"
+		},
+		"marketplace": {
+			"title": "外掛市集",
+			"description": "從公開的 paca-plugins 目錄安裝或卸載外掛。"
+		},
+		"layout": {
+			"title": "擴充點版面設定",
+			"description": "拖動以重新排列各擴充點內的外掛面闆。切換可見性以為所有使用者顯示或隱藏面闆。"
+		}
+	}
+}

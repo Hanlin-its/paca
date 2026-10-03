@@ -22,6 +22,12 @@ describe("LanguageToggle", () => {
 		expect(trigger).toHaveTextContent("EN");
 
 		await user.click(trigger);
+		expect(
+			await screen.findByRole("menuitemradio", {
+				name: "繁體中文",
+			}),
+		).toBeInTheDocument();
+
 		const vietnamese = await screen.findByRole("menuitemradio", {
 			name: "Tiếng Việt",
 		});
