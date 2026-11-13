@@ -30,6 +30,14 @@ func (m *mockNotificationSvc) NotifyAssigned(_ context.Context, _ notificationdo
 	return nil
 }
 
+func (m *mockNotificationSvc) NotifyDocCommentMentioned(_ context.Context, _ notificationdom.NotifyDocCommentMentionedInput) error {
+	return nil
+}
+
+func (m *mockNotificationSvc) NotifyQuestion(_ context.Context, _ notificationdom.NotifyQuestionInput) error {
+	return nil
+}
+
 func (m *mockNotificationSvc) NotifyMentioned(_ context.Context, _ notificationdom.NotifyMentionedInput) error {
 	return nil
 }
@@ -151,17 +159,17 @@ func TestNotificationHandler_List_Success(t *testing.T) {
 	taskID := uuid.New()
 	notifs := []*notificationdom.Notification{
 		{
-			ID:              uuid.New(),
-			RecipientUserID: userID,
-			Type:            notificationdom.NotificationTypeAssigned,
-			ActorFullName:   "Jane Doe",
-			ActorUsername:   "janedoe",
-			TaskID:          &taskID,
-			TaskTitle:       "Do the thing",
-			TaskNumber:      7,
-			ProjectID:       uuid.New(),
-			ProjectName:     "Paca",
-			CreatedAt:       now,
+			ID:                 uuid.New(),
+			RecipientAccountID: userID,
+			Type:               notificationdom.NotificationTypeAssigned,
+			ActorFullName:      "Jane Doe",
+			ActorUsername:      "janedoe",
+			TaskID:             &taskID,
+			TaskTitle:          "Do the thing",
+			TaskNumber:         7,
+			ProjectID:          uuid.New(),
+			ProjectName:        "Paca",
+			CreatedAt:          now,
 		},
 	}
 

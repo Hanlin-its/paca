@@ -14,6 +14,7 @@ import (
 	"github.com/Paca-AI/api/internal/apierr"
 	agentdom "github.com/Paca-AI/api/internal/domain/agent"
 	projectdom "github.com/Paca-AI/api/internal/domain/project"
+	"github.com/Paca-AI/api/internal/platform/authz/iam"
 	"github.com/Paca-AI/api/internal/transport/http/dto"
 	"github.com/Paca-AI/api/internal/transport/http/middleware"
 	"github.com/Paca-AI/api/internal/transport/http/presenter"
@@ -70,6 +71,14 @@ func parseCreatedBeforeBound(raw string) (*time.Time, bool) {
 type ConversationHandler struct {
 	svc        agentdom.Service
 	memberRepo projectdom.MemberRepository
+	listScoper ListScoper
+}
+
+// WithConversationListScoper limits the project's conversation list to the
+// conversations the caller may read, inside the query (see scopedContext).
+func (h *ConversationHandler) WithConversationListScoper(s ListScoper) *ConversationHandler {
+	h.listScoper = s
+	return h
 }
 
 // NewConversationHandler returns a ConversationHandler wired to the agent service.
@@ -86,31 +95,10 @@ func (h *ConversationHandler) WithMemberRepo(repo projectdom.MemberRepository) *
 	return h
 }
 
-// resolveMemberID maps the authenticated caller's user ID to their
-// project_members.id within projectID. Mirrors AgentHandler.resolveMemberID —
-// agent_chat_sessions.member_id and agent_conversations.triggered_by_member_id
-// both store a project_members.id, never the raw user id, so callers must not
-// use claims.Subject directly.
-func (h *ConversationHandler) resolveMemberID(r *http.Request, projectID uuid.UUID) (uuid.UUID, error) {
-	if h.memberRepo == nil {
-		return uuid.Nil, apierr.New(apierr.CodeInternalError, "member resolver not available")
-	}
-	claims := middleware.ClaimsFrom(r)
-	userID, err := uuid.Parse(claims.Subject)
-	if err != nil {
-		return uuid.Nil, apierr.New(apierr.CodeBadRequest, "invalid subject claim")
-	}
-	member, err := h.memberRepo.FindMemberByUserProject(r.Context(), userID, projectID)
-	if err != nil {
-		return uuid.Nil, err
-	}
-	return member.ID, nil
-}
-
 // parseConversationListQuery parses the query params shared by
 // ListConversations and ListGlobalConversations into a filter + page size.
 // Callers are responsible for setting the scope fields (ProjectID/GlobalOnly/
-// ActorUserID) on the returned filter themselves.
+// ActorAccountID) on the returned filter themselves.
 //
 // Supported query params (all optional, combine with AND):
 //   - agent_id=<uuid>|<uuid,uuid,...>       filter by one or more agents
@@ -208,7 +196,7 @@ func (h *ConversationHandler) ListConversations(w http.ResponseWriter, r *http.R
 		presenter.Error(w, r, err)
 		return
 	}
-	memberID, err := h.resolveMemberID(r, projectID)
+	memberID, err := callerMemberID(r, h.memberRepo, projectID)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
@@ -216,7 +204,12 @@ func (h *ConversationHandler) ListConversations(w http.ResponseWriter, r *http.R
 	filter.ProjectID = &projectID
 	filter.ViewerMemberID = &memberID
 
-	convs, hasMore, err := h.svc.ListConversations(r.Context(), filter, pageSize)
+	ctx, err := scopedContext(r, h.listScoper, iam.ActionConversationsRead, projectID, "conversation")
+	if err != nil {
+		presenter.Error(w, r, err)
+		return
+	}
+	convs, hasMore, err := h.svc.ListConversations(ctx, filter, pageSize)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
@@ -228,7 +221,7 @@ func (h *ConversationHandler) ListConversations(w http.ResponseWriter, r *http.R
 // the caller's own global-chat conversations — see
 // agentdom.Service.ListGlobalConversations.
 func (h *ConversationHandler) ListGlobalConversations(w http.ResponseWriter, r *http.Request) {
-	userID, err := callerUserID(r)
+	accountID, err := callerAccountID(r)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
@@ -239,7 +232,7 @@ func (h *ConversationHandler) ListGlobalConversations(w http.ResponseWriter, r *
 		return
 	}
 
-	convs, hasMore, err := h.svc.ListGlobalConversations(r.Context(), userID, filter, pageSize)
+	convs, hasMore, err := h.svc.ListGlobalConversations(r.Context(), accountID, filter, pageSize)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
@@ -259,7 +252,7 @@ func (h *ConversationHandler) GetConversation(w http.ResponseWriter, r *http.Req
 		presenter.Error(w, r, err)
 		return
 	}
-	memberID, err := h.resolveMemberID(r, projectID)
+	memberID, err := callerMemberID(r, h.memberRepo, projectID)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
@@ -314,7 +307,7 @@ func (h *ConversationHandler) UpdateConversation(w http.ResponseWriter, r *http.
 		presenter.Error(w, r, err)
 		return
 	}
-	memberID, err := h.resolveMemberID(r, projectID)
+	memberID, err := callerMemberID(r, h.memberRepo, projectID)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
@@ -339,7 +332,7 @@ func (h *ConversationHandler) DeleteConversation(w http.ResponseWriter, r *http.
 		presenter.Error(w, r, err)
 		return
 	}
-	memberID, err := h.resolveMemberID(r, projectID)
+	memberID, err := callerMemberID(r, h.memberRepo, projectID)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
@@ -363,7 +356,7 @@ func currentConversationIDFromHeader(r *http.Request) uuid.UUID {
 }
 
 // GetConversationForAgent handles GET /agents/me/conversations/:conversationId
-// — an agent (X-Agent-ID authenticated, no human member/actor identity of
+// — an agent (authenticated with its own API key, no human member/actor identity of
 // its own) reading a conversation by ID, e.g. the read_conversation MCP
 // tool. See agentdom.Service.GetConversationForAgent's doc comment for the
 // full authorization rule; it's deliberately not projectId-scoped in the
@@ -505,7 +498,7 @@ func (h *ConversationHandler) ListConversationEvents(w http.ResponseWriter, r *h
 		presenter.Error(w, r, err)
 		return
 	}
-	memberID, err := h.resolveMemberID(r, projectID)
+	memberID, err := callerMemberID(r, h.memberRepo, projectID)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
@@ -543,7 +536,7 @@ func (h *ConversationHandler) StopConversation(w http.ResponseWriter, r *http.Re
 		presenter.Error(w, r, err)
 		return
 	}
-	memberID, err := h.resolveMemberID(r, projectID)
+	memberID, err := callerMemberID(r, h.memberRepo, projectID)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
@@ -567,7 +560,7 @@ func (h *ConversationHandler) PauseConversation(w http.ResponseWriter, r *http.R
 		presenter.Error(w, r, err)
 		return
 	}
-	memberID, err := h.resolveMemberID(r, projectID)
+	memberID, err := callerMemberID(r, h.memberRepo, projectID)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
@@ -591,7 +584,7 @@ func (h *ConversationHandler) Heartbeat(w http.ResponseWriter, r *http.Request) 
 		presenter.Error(w, r, err)
 		return
 	}
-	memberID, err := h.resolveMemberID(r, projectID)
+	memberID, err := callerMemberID(r, h.memberRepo, projectID)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
@@ -627,7 +620,7 @@ func (h *ConversationHandler) SendConversationMessage(w http.ResponseWriter, r *
 	// Resolve the caller to a project_members.id — agent_conversations store a
 	// member id, not the raw user id (see resolveMemberID). Using claims.Subject
 	// here directly would compare/send the wrong identity on every owner check.
-	memberID, err := h.resolveMemberID(r, projectID)
+	memberID, err := callerMemberID(r, h.memberRepo, projectID)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
@@ -655,12 +648,12 @@ func (h *ConversationHandler) GetGlobalConversation(w http.ResponseWriter, r *ht
 		presenter.Error(w, r, err)
 		return
 	}
-	userID, err := callerUserID(r)
+	accountID, err := callerAccountID(r)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
 	}
-	conv, err := h.svc.GetGlobalConversation(r.Context(), convID, userID)
+	conv, err := h.svc.GetGlobalConversation(r.Context(), convID, accountID)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
@@ -680,12 +673,12 @@ func (h *ConversationHandler) UpdateGlobalConversation(w http.ResponseWriter, r 
 		presenter.Error(w, r, err)
 		return
 	}
-	userID, err := callerUserID(r)
+	accountID, err := callerAccountID(r)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
 	}
-	conv, err := h.svc.UpdateGlobalConversationTitle(r.Context(), convID, userID, title)
+	conv, err := h.svc.UpdateGlobalConversationTitle(r.Context(), convID, accountID, title)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
@@ -700,12 +693,12 @@ func (h *ConversationHandler) DeleteGlobalConversation(w http.ResponseWriter, r 
 		presenter.Error(w, r, err)
 		return
 	}
-	userID, err := callerUserID(r)
+	accountID, err := callerAccountID(r)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
 	}
-	if err := h.svc.DeleteGlobalConversation(r.Context(), convID, userID); err != nil {
+	if err := h.svc.DeleteGlobalConversation(r.Context(), convID, accountID); err != nil {
 		presenter.Error(w, r, err)
 		return
 	}
@@ -723,12 +716,12 @@ func (h *ConversationHandler) GetGlobalConversationEvents(w http.ResponseWriter,
 		presenter.Error(w, r, err)
 		return
 	}
-	userID, err := callerUserID(r)
+	accountID, err := callerAccountID(r)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
 	}
-	if _, err := h.svc.GetGlobalConversation(r.Context(), convID, userID); err != nil {
+	if _, err := h.svc.GetGlobalConversation(r.Context(), convID, accountID); err != nil {
 		presenter.Error(w, r, err)
 		return
 	}
@@ -752,12 +745,12 @@ func (h *ConversationHandler) StopGlobalConversation(w http.ResponseWriter, r *h
 		presenter.Error(w, r, err)
 		return
 	}
-	userID, err := callerUserID(r)
+	accountID, err := callerAccountID(r)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
 	}
-	if err := h.svc.StopGlobalConversation(r.Context(), convID, userID); err != nil {
+	if err := h.svc.StopGlobalConversation(r.Context(), convID, accountID); err != nil {
 		presenter.Error(w, r, err)
 		return
 	}
@@ -771,12 +764,12 @@ func (h *ConversationHandler) PauseGlobalConversation(w http.ResponseWriter, r *
 		presenter.Error(w, r, err)
 		return
 	}
-	userID, err := callerUserID(r)
+	accountID, err := callerAccountID(r)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
 	}
-	if err := h.svc.PauseGlobalConversation(r.Context(), convID, userID); err != nil {
+	if err := h.svc.PauseGlobalConversation(r.Context(), convID, accountID); err != nil {
 		presenter.Error(w, r, err)
 		return
 	}
@@ -790,12 +783,12 @@ func (h *ConversationHandler) GlobalConversationHeartbeat(w http.ResponseWriter,
 		presenter.Error(w, r, err)
 		return
 	}
-	userID, err := callerUserID(r)
+	accountID, err := callerAccountID(r)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
 	}
-	if err := h.svc.GlobalHeartbeat(r.Context(), convID, userID); err != nil {
+	if err := h.svc.GlobalHeartbeat(r.Context(), convID, accountID); err != nil {
 		presenter.Error(w, r, err)
 		return
 	}
@@ -818,13 +811,13 @@ func (h *ConversationHandler) SendGlobalConversationMessage(w http.ResponseWrite
 		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, err.Error()))
 		return
 	}
-	userID, err := callerUserID(r)
+	accountID, err := callerAccountID(r)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
 	}
 
-	if err := h.svc.SendGlobalConversationMessage(r.Context(), convID, req.Message, userID, req.ContextItems, req.OnBusy); err != nil {
+	if err := h.svc.SendGlobalConversationMessage(r.Context(), convID, req.Message, accountID, req.ContextItems, req.OnBusy); err != nil {
 		presenter.Error(w, r, err)
 		return
 	}

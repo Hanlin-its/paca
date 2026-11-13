@@ -9,10 +9,13 @@ import type {
 	UpdateFolderInput,
 } from "../types/index.js";
 import { formatApiRequestError, markdownToBlocknote } from "../utils/index.js";
+import { type Page, type PageOptions, toPage, withPaging } from "./paginate.js";
 
 /**
  * Extended API client for Document features.
  */
+/** Most timeline entries a tool call collects (the newest ones). */
+
 export class PacaAPIDocClient {
 	private config: PacaConfig;
 
@@ -30,9 +33,6 @@ export class PacaAPIDocClient {
 			"Content-Type": "application/json",
 			"X-API-Key": this.config.apiKey,
 		};
-		if (this.config.agentId) {
-			headers["X-Agent-ID"] = this.config.agentId;
-		}
 
 		const options: RequestInit = {
 			method,
@@ -92,14 +92,34 @@ export class PacaAPIDocClient {
 
 	// ==================== Document Folders ====================
 
-	async listFolders(projectId: string): Promise<DocumentFolder[]> {
-		const response = await this.get(
-			`/api/v1/projects/${projectId}/docs/folders`,
+	/** One page of the folders directly inside `parentId` (the top level when
+	 *  omitted). `name` narrows to an exact, case-insensitive folder name. */
+	async listFolders(
+		projectId: string,
+		opts: PageOptions & { parentId?: string | null; name?: string } = {},
+	): Promise<Page<DocumentFolder>> {
+		const filters = new URLSearchParams();
+		filters.set("parent_id", opts.parentId ?? "null");
+		if (opts.name) filters.set("name", opts.name);
+		return toPage<DocumentFolder>(
+			await this.get(
+				withPaging(
+					`/api/v1/projects/${projectId}/docs/folders?${filters.toString()}`,
+					opts,
+				),
+			),
 		);
-		if (Array.isArray(response)) {
-			return response;
-		}
-		return response.items || response.folders || response.data || [];
+	}
+
+	/** The folders from the top level down to (and including) `folderId`. */
+	async getFolderPath(
+		projectId: string,
+		folderId: string,
+	): Promise<DocumentFolder[]> {
+		const response = await this.get(
+			`/api/v1/projects/${projectId}/docs/folders/${folderId}/path`,
+		);
+		return Array.isArray(response) ? response : (response?.items ?? []);
 	}
 
 	async createFolder(
@@ -129,14 +149,17 @@ export class PacaAPIDocClient {
 	async listSnapshots(
 		projectId: string,
 		docId: string,
-	): Promise<DocumentSnapshot[]> {
-		const response = await this.get(
-			`/api/v1/projects/${projectId}/docs/${docId}/snapshots`,
+		opts: PageOptions = {},
+	): Promise<Page<DocumentSnapshot>> {
+		// One page, newest first; list items carry no body (getSnapshot returns it).
+		return toPage<DocumentSnapshot>(
+			await this.get(
+				withPaging(
+					`/api/v1/projects/${projectId}/docs/${docId}/snapshots`,
+					opts,
+				),
+			),
 		);
-		if (Array.isArray(response)) {
-			return response;
-		}
-		return response.items || response.snapshots || response.data || [];
 	}
 
 	async getSnapshot(
@@ -154,14 +177,17 @@ export class PacaAPIDocClient {
 	async listDocumentActivities(
 		projectId: string,
 		docId: string,
-	): Promise<DocumentActivity[]> {
-		const response = await this.get(
-			`/api/v1/projects/${projectId}/docs/${docId}/activities`,
+		opts: PageOptions = {},
+	): Promise<Page<DocumentActivity>> {
+		// One page, newest first; next pages reach further back in time.
+		return toPage<DocumentActivity>(
+			await this.get(
+				withPaging(
+					`/api/v1/projects/${projectId}/docs/${docId}/activities`,
+					opts,
+				),
+			),
 		);
-		if (Array.isArray(response)) {
-			return response;
-		}
-		return response.items || response.activities || response.data || [];
 	}
 
 	// ==================== Document Comments ====================

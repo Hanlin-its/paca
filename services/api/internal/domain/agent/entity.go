@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	roledom "github.com/Paca-AI/api/internal/domain/role"
 )
 
 // Agent represents an AI agent. A project-scoped agent (AgentScope ==
@@ -23,13 +25,14 @@ type Agent struct {
 	// AgentScope is "project" (default) or "global". See the Agent doc
 	// comment above.
 	AgentScope AgentScope
-	// GlobalRoleID is the global_roles row governing what this agent may do
-	// via admin-shaped tools (create users, manage global roles, manage
-	// projects) when acting with no project context. Only ever set for
-	// AgentScopeGlobal agents; nil means no global-scope permissions.
-	GlobalRoleID *uuid.UUID
-	Name         string
-	Handle       string
+	// Roles are the platform roles attached to this agent: what it may do via
+	// admin-shaped tools (create users, manage roles, manage projects) when
+	// acting with no project context. Only populated for AgentScopeGlobal
+	// agents (by ListGlobalAgents, FindAgentByID and CreateGlobalAgent); empty
+	// means no platform-wide permissions.
+	Roles  []roledom.Summary
+	Name   string
+	Handle string
 	// Description is free text describing what this agent is for. Shown to
 	// Jev (the AI decision API, see internal/platform/jev) as the criteria
 	// description when deciding which agent should handle a chat in Auto
@@ -47,7 +50,7 @@ type Agent struct {
 	LLMModel        string
 	LLMAPIKeySecret string // reference to secrets store entry
 	LLMBaseURL      string
-	// ACPProvider is one of claude-code | codex | gemini-cli | goose | custom;
+	// ACPProvider is one of claude-code | codex | gemini-cli | goose | opencode | custom;
 	// nil for llm-type agents.
 	ACPProvider *string
 	// ACPCommand is the command + args used to launch the ACP server. Only
@@ -57,6 +60,11 @@ type Agent struct {
 	// via a small local override in apps/acp-bridge's runner.py (the SDK's
 	// registry doesn't know about goose).
 	ACPCommand []string
+	// ACPModel/ACPEffort optionally pin the model and reasoning effort the
+	// ACP agent runs with; empty means the provider's own default. Only
+	// meaningful for acp-type agents.
+	ACPModel  string
+	ACPEffort string
 	// CLIProvider is one of claude-code | codex | cursor-agent | gemini-cli;
 	// nil unless AgentType == provider_cli. Unlike ACPProvider (which names
 	// the ACP client the *user's own machine* runs via apps/acp-bridge),
@@ -103,11 +111,6 @@ type Agent struct {
 	// HasMCPAPIKey reports whether an MCP API key has been generated; the
 	// key itself (and its hash) are never exposed here.
 	HasMCPAPIKey bool
-	// MCPAPIKeyHash is the SHA-256 hex digest of the current MCP API key,
-	// used only for verification — never serialized to API responses.
-	// Generating a new key overwrites this, so the previous key stops
-	// authenticating immediately (only ever one live key per agent).
-	MCPAPIKeyHash string
 	// SystemPrompt, GitCommitterName, and GitCommitterEmail are LLM-only —
 	// an ACP agent runs via the user's own local ACP client (see
 	// ACPProvider), which owns its own system prompt and git identity, so
@@ -166,27 +169,10 @@ type Agent struct {
 	// that would exceed it is held in agent_pending_triggers instead of
 	// being dispatched — see PendingTrigger.
 	ParallelismLimit int
-	// AccessMode is "open" (default — any project member holding
-	// agents.read/conversations.* may use this agent) or "restricted" (only
-	// members with an AgentAccessGrant may chat with it — see
-	// Service.HasAgentUsageAccess). Deliberately independent of
-	// agents.write: reconfiguring a restricted agent's MCP servers/skills/
-	// env vars stays gated purely on the existing permission, project-wide,
-	// same as today — this only adds a per-instance gate on top of the
-	// *usage* actions (chat sessions, conversations).
-	//
-	// For a global-scope agent (AgentScope == AgentScopeGlobal), this is one
-	// shared switch, not per-project — the same as every other mutable
-	// field on a global agent (LLM settings, skills, etc.), editable from
-	// any project it's invited into. Restricting it takes effect everywhere
-	// it's invited at once; AgentAccessGrant.MemberID (a project_members.id)
-	// is what then lets each project's own admin independently decide which
-	// of *their* members regain access.
-	AccessMode string
-	CreatedBy  *uuid.UUID
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
-	DeletedAt  *time.Time
+	CreatedBy        *uuid.UUID
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	DeletedAt        *time.Time
 	// Member ID in project_members (populated on create / list)
 	MemberID   *uuid.UUID
 	MCPServers []*AgentMCPServer
@@ -211,32 +197,13 @@ const (
 	AgentScopeGlobal  AgentScope = "global"
 )
 
-// AccessMode values — see Agent.AccessMode's doc comment.
-const (
-	AccessModeOpen       = "open"
-	AccessModeRestricted = "restricted"
-)
-
-// AgentAccessGrant is an explicit per-member exception to a restricted
-// agent's default deny. MemberID references project_members.id, not a raw
-// user/agent id — same convention AgentChatSession.MemberID already uses,
-// which is what naturally scopes a *global* agent's grants per project (the
-// same agent can be open in one project and restricted in another, since it
-// gets a separate project_members row per project it's invited into).
-type AgentAccessGrant struct {
-	ID        uuid.UUID
-	AgentID   uuid.UUID
-	MemberID  uuid.UUID
-	GrantedBy *uuid.UUID
-	CreatedAt time.Time
-}
-
 // ACPProvider values.
 const (
 	ACPProviderClaudeCode = "claude-code"
 	ACPProviderCodex      = "codex"
 	ACPProviderGeminiCLI  = "gemini-cli"
 	ACPProviderGoose      = "goose"
+	ACPProviderOpenCode   = "opencode"
 	ACPProviderCustom     = "custom"
 )
 
@@ -246,6 +213,7 @@ var ValidACPProviders = map[string]bool{
 	ACPProviderCodex:      true,
 	ACPProviderGeminiCLI:  true,
 	ACPProviderGoose:      true,
+	ACPProviderOpenCode:   true,
 	ACPProviderCustom:     true,
 }
 
@@ -370,13 +338,13 @@ type SkillTemplate struct {
 // ConversationAudience discriminates who may read/write a conversation's
 // transcript. It is a STORED GENERATED column (see migration
 // 000038_add_agent_conversation_audience) derived from chat_session_id /
-// actor_user_id, so it can never drift from those source columns.
+// actor_account_id, so it can never drift from those source columns.
 type ConversationAudience string
 
 // ConversationAudience values.
 const (
 	// AudienceOwnerPrivate marks a chat conversation (project chat backed by a
-	// chat session, or global chat backed by actor_user_id): only the acting
+	// chat session, or global chat backed by actor_account_id): only the acting
 	// member (project) or actor user (global) may read/write the transcript.
 	AudienceOwnerPrivate ConversationAudience = "owner_private"
 	// AudienceProjectShared marks a sessionless run (task_assigned /
@@ -467,13 +435,13 @@ type AgentConversation struct {
 	ChatSessionID *uuid.UUID
 	// TriggeredByMemberID is nil for conversations triggered by the
 	// automation-workflow engine (no human member behind it) OR by the
-	// global chat (ActorUserID is set instead — see below). Never set
-	// together with ActorUserID.
+	// global chat (ActorAccountID is set instead — see below). Never set
+	// together with ActorAccountID.
 	TriggeredByMemberID *uuid.UUID
-	// ActorUserID is set only for a global-chat conversation (ProjectID is
+	// ActorAccountID is set only for a global-chat conversation (ProjectID is
 	// uuid.Nil): the human user who sent the message, identified directly
 	// since there may be no project_members row for them at all.
-	ActorUserID *uuid.UUID
+	ActorAccountID *uuid.UUID
 	// Audience is the derived transcript audience (owner_private |
 	// project_shared) — see ConversationAudience. Read-only on this entity:
 	// it is a generated column, never set by the repository on write.
@@ -589,19 +557,19 @@ const (
 
 // AgentChatSession is a persistent chat session between a user and an agent.
 // A project-scoped session (started from a project's own chat) has
-// ProjectID and MemberID set and ActorUserID nil; a global-chat session
+// ProjectID and MemberID set and ActorAccountID nil; a global-chat session
 // (started from the home page / admin pages, no project context) has
-// ProjectID and MemberID zero-valued and ActorUserID set instead — the
+// ProjectID and MemberID zero-valued and ActorAccountID set instead — the
 // human's identity carried directly, since they may not be a member of any
 // project.
 type AgentChatSession struct {
-	ID            uuid.UUID
-	AgentID       uuid.UUID
-	ProjectID     uuid.UUID // zero value (uuid.Nil) for a global chat session
-	MemberID      uuid.UUID // zero value (uuid.Nil) for a global chat session
-	ActorUserID   *uuid.UUID
-	Title         *string
-	LastMessageAt *time.Time
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	ID             uuid.UUID
+	AgentID        uuid.UUID
+	ProjectID      uuid.UUID // zero value (uuid.Nil) for a global chat session
+	MemberID       uuid.UUID // zero value (uuid.Nil) for a global chat session
+	ActorAccountID *uuid.UUID
+	Title          *string
+	LastMessageAt  *time.Time
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }

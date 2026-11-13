@@ -25,6 +25,8 @@ const PREFIX = "E2E_SSO_";
 const RUN_ID = newRunId();
 const run = RUN_ID.toLowerCase();
 const SETTINGS_URL = `${BASE_URL}/admin/settings`;
+// Settings opens on Workspace branding; SSO is its own section.
+const SSO_SETTINGS_URL = `${SETTINGS_URL}?section=sso`;
 
 // Accounts the provider creates are named after preferred_username, which
 // the API lowercases.
@@ -193,7 +195,7 @@ test.describe("Single sign-on (SSO)", () => {
 				username,
 				roleName: `${PREFIX}ROLE_${label}_${RUN_ID}`,
 				// projects.read lets the account reach the home page.
-				permissions: { "projects.read": true, ...permissions },
+				permissions: { "projects:read": true, ...permissions },
 			});
 			await signIn(page, username, RESTRICTED_PASSWORD);
 			await page.goto(SETTINGS_URL);
@@ -205,7 +207,7 @@ test.describe("Single sign-on (SSO)", () => {
 			playwright,
 		}) => {
 			await signInWithPermissions(page, request, playwright, "BRAND", {
-				"settings.write": true,
+				"settings:write": true,
 			});
 			await expect(
 				page.getByRole("heading", { name: "Logo & Favicon" }),
@@ -221,7 +223,7 @@ test.describe("Single sign-on (SSO)", () => {
 			playwright,
 		}) => {
 			await signInWithPermissions(page, request, playwright, "SSOADMIN", {
-				"settings.sso.write": true,
+				"settings.sso:write": true,
 			});
 			await expect(
 				page.getByRole("heading", { name: "Single sign-on (SSO)" }),
@@ -240,7 +242,7 @@ test.describe("Single sign-on (SSO)", () => {
 
 		test("An administrator adds a provider", async ({ page }) => {
 			await signIn(page);
-			await page.goto(SETTINGS_URL);
+			await page.goto(SSO_SETTINGS_URL);
 			await page.getByRole("button", { name: "Add provider" }).click();
 
 			const dialog = page.getByRole("dialog", { name: "Add SSO provider" });
@@ -325,7 +327,7 @@ test.describe("Single sign-on (SSO)", () => {
 			browser,
 		}) => {
 			await signIn(page);
-			await page.goto(SETTINGS_URL);
+			await page.goto(SSO_SETTINGS_URL);
 			await page
 				.getByRole("button", { name: `Delete ${PROVIDER_NAME}` })
 				.click();

@@ -30,7 +30,8 @@
 		"conversations": "對話",
 		"automation": "自動化",
 		"changelog": "最新消息",
-		"activity": "動態"
+		"activity": "動態",
+		"serviceAccounts": "服務帳號"
 	},
 	"projectSwitcher": {
 		"projects": "專案",
@@ -73,12 +74,18 @@
 		"unmuteSound": "取消靜音通知提示音",
 		"text": {
 			"assigned": "{{actor}} 將任務 #{{taskNumber}} — {{taskTitle}} 指派給你",
-			"mentioned": "{{actor}} 在 #{{taskNumber}} — {{taskTitle}} 中提及你"
-		}
+			"mentioned": "{{actor}} 在 #{{taskNumber}} — {{taskTitle}} 中提及你",
+			"question": "{{actor}} 在 {{title}} 中向你提問",
+			"mentionedInDoc": "{{actor}} 在文件 {{title}} 中提及了你",
+			"automation": "自動化：{{message}}（#{{taskNumber}} — {{taskTitle}}）"
+		},
+		"untitledConversation": "無標題對話",
+		"globalChat": "全域聊天",
+		"untitledDocument": "無標題文件"
 	},
 	"userMenu": {
 		"signIn": "登入",
-		"myProfile": "個人資料",
+		"myProfile": "帳號",
 		"apiKeys": "API 金鑰",
 		"logOut": "登出",
 		"loggingOut": "正在登出…"

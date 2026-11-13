@@ -6,6 +6,7 @@ import type {
 import {
 	ApiErrorCode,
 	getApiErrorCode,
+	getApiErrorMessage,
 	isForbiddenError,
 } from "@/lib/api-error";
 import { parseContextItems } from "@/lib/context-items";
@@ -28,9 +29,8 @@ export function extractTextOnlyContent(message: AppendMessage): string | null {
 // (see the "Type 'string' is not assignable to type ..." error this
 // produces if loosened).
 type ChatSessionAccessDeniedKey =
-	| "agents.conversationView.agentAccessRestricted"
-	| "agents.conversationView.environmentAccessRestricted"
-	| "agents.conversationView.chatNoPermission";
+	| "agents.conversationView.chatNoPermission"
+	| "agents.conversationView.cliProviderNeedsEnvironment";
 
 // Classifies a failed chat-session dispatch (startChatSession/sendChatMessage
 // and their sibling calls in new-conversation-thread.tsx,
@@ -42,25 +42,33 @@ type ChatSessionAccessDeniedKey =
 // throwing and letting assistant-ui catch it: a thrown error from onNew
 // becomes an unhandled promise rejection rather than a rendered message, so
 // re-throwing is reserved for cases the caller still wants propagated.
-// Returns null for anything that isn't a 403, so the caller re-throws the
-// original error unchanged rather than misreporting a network failure or
-// busy-dialog cancellation as a permission problem. Stays i18n-free like
-// the rest of this file — callers own translating the returned key, this
-// only classifies.
+// Returns null for anything it doesn't classify, so the caller falls back to
+// chatSessionApiErrorMessage, or re-throws the original error unchanged
+// rather than misreporting a network failure or busy-dialog cancellation as
+// a permission problem. Stays i18n-free like the rest of this file — callers
+// own translating the returned key, this only classifies.
 export function chatSessionAccessDeniedKey(
 	err: unknown,
 ): ChatSessionAccessDeniedKey | null {
-	const code = getApiErrorCode(err);
-	if (code === ApiErrorCode.AgentAccessRestricted) {
-		return "agents.conversationView.agentAccessRestricted";
-	}
-	if (code === ApiErrorCode.EnvironmentAccessRestricted) {
-		return "agents.conversationView.environmentAccessRestricted";
-	}
 	if (isForbiddenError(err)) {
 		return "agents.conversationView.chatNoPermission";
 	}
+	if (
+		getApiErrorCode(err) ===
+		ApiErrorCode.AgentDefaultEnvironmentRequiredForCLIProvider
+	) {
+		return "agents.conversationView.cliProviderNeedsEnvironment";
+	}
 	return null;
+}
+
+// The API's own message for a rejected chat request (4xx only: a 5xx message
+// can carry server internals and is not meant for the person). Null when
+// there is none, so the caller re-throws.
+export function chatSessionApiErrorMessage(err: unknown): string | null {
+	const status = (err as { response?: { status?: number } })?.response?.status;
+	if (typeof status !== "number" || status < 400 || status >= 500) return null;
+	return getApiErrorMessage(err);
 }
 
 // Extract plain text from a content block array [{type:"text", text:"..."}] or a bare string.
@@ -184,6 +192,19 @@ function extractFileEditorDiff(
 	}
 
 	return null;
+}
+
+// ACP tool_call/tool_call_update carry the tool's input as `rawInput` (any
+// JSON value, often absent on the initial tool_call and filled in by a later
+// update). Rendered as pretty JSON, or verbatim when already a string, so the
+// tool card can show exactly what was run.
+function formatRawInput(rawInput: unknown): string | null {
+	if (rawInput === undefined || rawInput === null) return null;
+	if (typeof rawInput === "string")
+		return rawInput.length > 0 ? rawInput : null;
+	if (typeof rawInput === "object" && Object.keys(rawInput).length === 0)
+		return null;
+	return JSON.stringify(rawInput, null, 2);
 }
 
 type MutableToolCallPart = {
@@ -419,19 +440,24 @@ export function eventsToThreadMessages(
 		// asked), so without this a chat conversation's own messages
 		// wouldn't render at all, only the agent's replies.
 		if (t === "user_message") {
-			const text = extractAcpBlockText(p.content);
-			if (!text) continue;
-			flushCurrent();
+			const text = extractAcpBlockText(p.content) ?? "";
 			// context_items (snake_case, as persisted by
 			// services/agent-runner's handler.go) round-trips back into the
 			// camelCase ContextItem[] shape here so thread.tsx's UserMessage
 			// can render a read-only badge row via metadata.custom.contextItems.
 			const contextItems = parseContextItems(p.context_items);
+			// A turn with attached context but no typed text still shows its
+			// badges (the bubble hides itself when empty); only a turn with
+			// neither is dropped.
+			if (!text && contextItems.length === 0) continue;
+			flushCurrent();
 			messages.push({
 				id: ev.id,
 				role: "user",
 				createdAt: new Date(ev.created_at),
-				content: [{ type: "text", text }],
+				// No part at all for a context-only turn: an empty text part still
+				// renders a <p>, which would defeat the bubble's empty:hidden.
+				content: text ? [{ type: "text", text }] : [],
 				...(contextItems.length > 0
 					? { metadata: { custom: { contextItems } } }
 					: {}),
@@ -485,7 +511,7 @@ export function eventsToThreadMessages(
 				type: "tool-call",
 				toolCallId: nextToolCallId(current, toolCallId),
 				toolName,
-				argsText: "",
+				argsText: formatRawInput(p.rawInput) ?? "",
 			};
 			current.parts.push(part);
 			const queue = current.openToolCalls.get(toolCallId);
@@ -521,7 +547,9 @@ export function eventsToThreadMessages(
 			// leaves it in place, so a call that gets more than one update
 			// before finishing still accumulates them all onto the same part.
 			const openPart = openQueue?.[0];
+			const argsText = formatRawInput(p.rawInput);
 			if (openPart) {
+				if (argsText) openPart.argsText = argsText;
 				if (resultText) openPart.result = resultText;
 				if (status === "failed") openPart.isError = true;
 				if (diffs) openPart.artifact = { diffs };
@@ -538,7 +566,7 @@ export function eventsToThreadMessages(
 					type: "tool-call",
 					toolCallId: nextToolCallId(current, rawId),
 					toolName: "tool",
-					argsText: "",
+					argsText: argsText ?? "",
 					result: resultText,
 					...(status === "failed" ? { isError: true } : {}),
 					...(diffs ? { artifact: { diffs } } : {}),

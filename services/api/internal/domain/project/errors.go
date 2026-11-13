@@ -10,10 +10,9 @@ var (
 	ErrPrefixInvalid      = errors.New("project: task ID prefix must be 1–10 uppercase letters/digits")
 	ErrMemberAlreadyAdded = errors.New("project: user is already a member")
 	ErrMemberNotFound     = errors.New("project: member not found")
-	ErrRoleNotFound       = errors.New("project: role not found")
-	ErrRoleNameTaken      = errors.New("project: role name already in use")
-	ErrRoleNameInvalid    = errors.New("project: role name is empty or invalid")
-	ErrRoleHasMembers     = errors.New("project: role still has members assigned")
+	// ErrInvalidMemberCursor is returned when a client-supplied member list
+	// cursor cannot be decoded or no longer points at a member of the project.
+	ErrInvalidMemberCursor = errors.New("project: invalid member cursor")
 	// ErrAgentNotInvitable is returned when trying to invite a
 	// project-scoped agent into a project — only global-scope agents can be
 	// invited; a project-scoped agent already belongs to exactly one

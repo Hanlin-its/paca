@@ -30,7 +30,8 @@
 		"team": "Team",
 		"settings": "Settings",
 		"changelog": "What's New",
-		"activity": "Activity"
+		"activity": "Activity",
+		"serviceAccounts": "Service Accounts"
 	},
 	"projectSwitcher": {
 		"projects": "Projects",
@@ -73,12 +74,18 @@
 		"unmuteSound": "Unmute notification sound",
 		"text": {
 			"assigned": "{{actor}} assigned you to task #{{taskNumber}} — {{taskTitle}}",
-			"mentioned": "{{actor}} mentioned you in #{{taskNumber}} — {{taskTitle}}"
-		}
+			"mentioned": "{{actor}} mentioned you in #{{taskNumber}} — {{taskTitle}}",
+			"question": "{{actor}} asked you a question in {{title}}",
+			"mentionedInDoc": "{{actor}} mentioned you in document {{title}}",
+			"automation": "Automation: {{message}} (#{{taskNumber}} — {{taskTitle}})"
+		},
+		"untitledConversation": "Untitled conversation",
+		"globalChat": "Global chat",
+		"untitledDocument": "Untitled document"
 	},
 	"userMenu": {
 		"signIn": "Sign in",
-		"myProfile": "My Profile",
+		"myProfile": "Account",
 		"apiKeys": "API Keys",
 		"logOut": "Log out",
 		"loggingOut": "Logging out…"

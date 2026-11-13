@@ -18,7 +18,7 @@ vi.mock("./api-client", () => ({
 
 import {
 	type APIKey,
-	apiKeysQueryOptions,
+	apiKeysPageQueryOptions,
 	type CreateAPIKeyResponse,
 	createAPIKey,
 	listAPIKeys,
@@ -42,11 +42,27 @@ describe("apikey-api", () => {
 	describe("listAPIKeys", () => {
 		it("calls GET /users/me/api-keys and unwraps data", async () => {
 			mockGet.mockResolvedValue({
-				data: { data: [mockKey], error_code: null, message: "ok" },
+				data: {
+					data: {
+						items: [mockKey],
+						page_size: 30,
+						next_cursor: null,
+						total_count: 1,
+					},
+					error_code: null,
+					message: "ok",
+				},
 			});
 
-			await expect(listAPIKeys()).resolves.toEqual([mockKey]);
-			expect(mockGet).toHaveBeenCalledWith("/users/me/api-keys");
+			await expect(listAPIKeys()).resolves.toEqual({
+				items: [mockKey],
+				page_size: 30,
+				next_cursor: null,
+				total_count: 1,
+			});
+			expect(mockGet).toHaveBeenCalledWith("/users/me/api-keys", {
+				params: { page_size: 30, page: undefined },
+			});
 		});
 
 		it("throws when the API returns an error", async () => {
@@ -110,27 +126,45 @@ describe("apikey-api", () => {
 		});
 	});
 
-	describe("apiKeysQueryOptions", () => {
+	describe("apiKeysPageQueryOptions", () => {
 		it("has the expected query key", () => {
-			expect(apiKeysQueryOptions.queryKey).toEqual(["api-keys"]);
+			expect(apiKeysPageQueryOptions(2, 50).queryKey).toEqual([
+				"api-keys",
+				"page",
+				2,
+				50,
+			]);
 		});
 
 		it("uses listAPIKeys as the query function", async () => {
 			mockGet.mockResolvedValue({
-				data: { data: [mockKey], error_code: null, message: "ok" },
+				data: {
+					data: {
+						items: [mockKey],
+						page_size: 30,
+						next_cursor: null,
+						total_count: 1,
+					},
+					error_code: null,
+					message: "ok",
+				},
 			});
 
-			if (typeof apiKeysQueryOptions.queryFn !== "function") {
+			if (typeof apiKeysPageQueryOptions(2, 50).queryFn !== "function") {
 				throw new Error("queryFn is not a function");
 			}
 
 			// @ts-expect-error - queryFn type can be complex but it's a function here
-			const result = await apiKeysQueryOptions.queryFn({
-				queryKey: ["api-keys"],
+			const result = await apiKeysPageQueryOptions(2, 50).queryFn({
+				queryKey: ["api-keys", "page", 2, 50],
 				meta: undefined,
 			});
-			expect(result).toEqual([mockKey]);
-			expect(mockGet).toHaveBeenCalledWith("/users/me/api-keys");
+			expect(result).toEqual({
+				items: [mockKey],
+				page_size: 30,
+				next_cursor: null,
+				total_count: 1,
+			});
 		});
 	});
 });

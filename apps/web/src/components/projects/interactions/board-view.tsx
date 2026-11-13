@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { LoadMoreSentinel } from "@/components/shared/load-more-sentinel";
 
 import {
 	type Sprint,
@@ -47,8 +48,19 @@ interface BoardViewProps {
 	statuses: TaskStatus[];
 	taskTypes: TaskType[];
 	members?: ProjectMember[];
+	reporters?: ProjectMember[];
+	/** The columns the API lists for a column_by whose columns come from the
+	 *  data — see ViewContext.dynamicColumns. */
+	dynamicColumns?: { key: string; label: string }[];
 	customFields?: CustomFieldDefinition[];
 	sprints?: Sprint[];
+	/** Load-more state for the sprint groups when columns are by sprint. */
+	sprintsPagination?: {
+		hasMore: boolean;
+		isLoadingMore: boolean;
+		isError?: boolean;
+		onLoadMore: () => void;
+	};
 	viewConfig?: ViewConfig;
 	canCreate: boolean;
 	canEdit: boolean;
@@ -194,8 +206,11 @@ export function BoardView({
 	statuses,
 	taskTypes,
 	members = [],
+	reporters,
+	dynamicColumns,
 	customFields = [],
 	sprints = [],
+	sprintsPagination,
 	viewConfig,
 	canCreate,
 	canEdit,
@@ -275,8 +290,24 @@ export function BoardView({
 			: DEFAULT_VISIBLE_FIELDS;
 
 	const viewCtx = useMemo(
-		() => ({ statuses, taskTypes, members, customFields, sprints }),
-		[statuses, taskTypes, members, customFields, sprints],
+		() => ({
+			statuses,
+			taskTypes,
+			members,
+			reporters,
+			customFields,
+			sprints,
+			dynamicColumns,
+		}),
+		[
+			statuses,
+			taskTypes,
+			members,
+			reporters,
+			customFields,
+			sprints,
+			dynamicColumns,
+		],
 	);
 
 	// Static column definitions (all possible values)
@@ -740,7 +771,6 @@ export function BoardView({
 							task={task}
 							statuses={statuses}
 							taskTypes={taskTypes}
-							members={members}
 							epics={epics}
 							epicsPagination={epicsPagination}
 							canEdit={!!canEdit}
@@ -757,7 +787,6 @@ export function BoardView({
 								taskIdPrefix={taskIdPrefix}
 								statuses={statuses}
 								taskTypes={taskTypes}
-								members={members}
 								customFields={customFields}
 								epics={epics}
 								epicsPagination={epicsPagination}
@@ -1045,6 +1074,11 @@ export function BoardView({
 					</div>
 				);
 			})}
+			{columnBy === "sprint" && sprintsPagination?.hasMore && (
+				<div className="flex w-40 shrink-0 items-start pt-2">
+					<LoadMoreSentinel {...sprintsPagination} />
+				</div>
+			)}
 		</div>
 	);
 }

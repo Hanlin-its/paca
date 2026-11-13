@@ -20,7 +20,8 @@
 		},
 		"errors": {
 			"revertFailed": "還原失敗，請重試。"
-		}
+		},
+		"resize": "調整活動面板大小"
 	},
 	"contentDiff": {
 		"emptyLine": "（空行）",
@@ -92,7 +93,6 @@
 			"loadingMore": "正在載入更多…"
 		},
 		"projectCard": {
-			"public": "公開",
 			"noDescription": "目前沒有描述"
 		},
 		"gettingStarted": {
@@ -152,11 +152,6 @@
 			"descriptionLabel": "描述",
 			"optionalHint": "（可選）",
 			"descriptionPlaceholder": "這個專案是關於什麼的？",
-			"publicProject": {
-				"label": "公開專案",
-				"publicHint": "任何擁有連結的人都可以檢視此專案。匿名使用者擁有唯讀權限。",
-				"privateHint": "僅團隊成員可以存取此專案。"
-			},
 			"cancel": "取消",
 			"submit": "建立專案",
 			"errors": {
@@ -166,6 +161,48 @@
 				"prefixInvalid": "前綴必須為 1–10 個大寫字母/數字（例如 PACA）。",
 				"generic": "出現錯誤，請重試。"
 			}
+		},
+		"legacyPluginsBanner": {
+			"title_one": "外掛需要更新",
+			"title_other": "外掛需要更新",
+			"description_one": "{{names}} 仍使用舊版 requirePermissions 權限模型。它可以繼續運作，但在作者發布使用 requireActions 的版本前，無法重新安裝或升級。",
+			"description_other": "{{names}} 仍使用舊版 requirePermissions 權限模型。這些外掛可以繼續運作，但在作者發布使用 requireActions 的版本前，無法重新安裝或升級。",
+			"manage": "管理外掛",
+			"dismiss": "關閉"
 		}
+	},
+	"roleChange": {
+		"adding": "正在新增",
+		"removing": "正在移除",
+		"noChanges": "尚無變更。請在上方選取或取消選取角色。"
+	},
+	"roleBadge": {
+		"fullAccess": "完整存取權限",
+		"builtIn": "內建",
+		"default": "預設",
+		"current": "目前",
+		"noDescription": "沒有描述",
+		"noRoles": "沒有角色",
+		"showMore": "顯示更多角色（+{{count}}）",
+		"allRoles": "所有角色（{{count}}）"
+	},
+	"roleSelect": {
+		"searchLabel": "搜尋角色",
+		"searchPlaceholder": "搜尋角色…",
+		"clearSearch": "清除搜尋",
+		"noMatch": "沒有符合「{{query}}」的角色",
+		"selectedCount": "已選取：{{count}}",
+		"minOne": "至少需要一個角色。",
+		"clear": "清除",
+		"placeholder": "選擇角色"
+	},
+	"askQuestion": {
+		"otherPlaceholder": "或輸入自己的回答…",
+		"submit": "送出回答",
+		"answered": "你的回答：{{answer}}"
+	},
+	"paneResize": {
+		"sidebar": "調整側邊欄大小",
+		"taskColumn": "調整任務欄大小"
 	}
 }

@@ -1,4 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+	useInfiniteQuery,
+	useMutation,
+	useQuery,
+	useQueryClient,
+} from "@tanstack/react-query";
 import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import {
 	AlertCircle,
@@ -10,20 +15,21 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-
 import { InteractionLayout } from "@/components/projects/interactions/interaction-layout";
 import { SprintFormModal } from "@/components/projects/interactions/sprint-form-modal";
 import { SprintStatusBadge } from "@/components/projects/interactions/sprint-status-badge";
 import { StartSprintModal } from "@/components/projects/interactions/start-sprint-modal";
+import { LoadMoreSentinel } from "@/components/shared/load-more-sentinel";
 import { useProjectPermissions } from "@/hooks/use-project-permissions";
 import { ApiErrorCode, getApiErrorCode } from "@/lib/api-error";
 import { formatDate } from "@/lib/format-date";
 import {
 	completeSprint,
 	deleteSprint,
+	listSprints,
 	sprintQueryOptions,
-	sprintsQueryOptions,
-	sprintTasksQueryOptions,
+	sprintsInfiniteQueryOptions,
+	sprintTaskCountQueryOptions,
 	type UpdateSprintPayload,
 	updateSprint,
 } from "@/lib/interaction-api";
@@ -64,22 +70,18 @@ function SprintPage() {
 	const { data: sprint, isError } = useQuery(
 		sprintQueryOptions(projectId, sprintId),
 	);
-	const { data: allSprints = [] } = useQuery(sprintsQueryOptions(projectId));
-	const { data: tasksResult } = useQuery(
-		sprintTasksQueryOptions(projectId, sprintId),
-	);
 	const { data: taskStatuses = [] } = useQuery(
 		taskStatusesQueryOptions(projectId),
 	);
 
-	const canCreate = hasProjectPermission("tasks.write");
-	const canEdit = hasProjectPermission("tasks.write");
+	const canCreate = hasProjectPermission("tasks:write");
+	const canEdit = hasProjectPermission("tasks:write");
 	// views.* was split out from sprints.write as its own permission (see
 	// authz.PermissionViewsWrite's doc comment) — projects.write governs
 	// only the project entity itself (name/description), an unrelated
 	// permission that happened to be reused here.
-	const canManageViews = hasProjectPermission("views.write");
-	const canManageSprints = hasProjectPermission("sprints.write");
+	const canManageViews = hasProjectPermission("views:write");
+	const canManageSprints = hasProjectPermission("sprints:write");
 
 	const [completeOpen, setCompleteOpen] = useState(false);
 	const [completeSprintError, setCompleteSprintError] = useState<string | null>(
@@ -110,24 +112,46 @@ function SprintPage() {
 		return () => document.removeEventListener("keydown", handleKeyDown);
 	}, [deleteConfirmOpen]);
 
-	const sprintTasks = tasksResult?.items ?? [];
+	const doneStatusIds = taskStatuses
+		.filter((s) => s.category === "done")
+		.map((s) => s.id);
 
-	const doneStatusIds = new Set(
-		taskStatuses.filter((s) => s.category === "done").map((s) => s.id),
-	);
-	const incompleteTasks = sprintTasks.filter(
-		(task) => !task.status_id || !doneStatusIds.has(task.status_id),
-	);
+	// Only the dialog's count is needed, so ask the server for totals instead
+	// of paging through the sprint's tasks.
+	const { data: sprintTaskCount = 0 } = useQuery({
+		...sprintTaskCountQueryOptions(projectId, sprintId),
+		enabled: completeOpen,
+	});
+	const { data: doneTaskCount = 0 } = useQuery({
+		...sprintTaskCountQueryOptions(projectId, sprintId, doneStatusIds),
+		enabled: completeOpen && doneStatusIds.length > 0,
+	});
+	const incompleteCount = Math.max(0, sprintTaskCount - doneTaskCount);
 
-	const otherSprints = allSprints.filter(
-		(s) => s.id !== sprintId && s.status !== "completed",
-	);
+	// Open sprints the unfinished tasks can move to; paged as the dialog
+	// scrolls. The sprint being completed is dropped client-side.
+	const openSprintsQuery = useInfiniteQuery({
+		...sprintsInfiniteQueryOptions(projectId, {
+			status: ["active", "planned"],
+		}),
+		enabled: completeOpen,
+	});
+	const otherSprints = (
+		openSprintsQuery.data?.pages.flatMap((p) => p.items) ?? []
+	).filter((s) => s.id !== sprintId);
 
 	// Surfaced as a non-blocking warning in the Start Sprint dialog — Scrum
 	// favors one active sprint at a time, but this doesn't prevent starting
-	// a second one.
+	// a second one. At most two active sprints are fetched: enough to find one
+	// other than this sprint.
+	const { data: activeSprints } = useQuery({
+		queryKey: ["projects", projectId, "sprints", "active-pair"],
+		queryFn: () => listSprints(projectId, { status: ["active"], pageSize: 2 }),
+		enabled: startSprintOpen,
+		staleTime: 30_000,
+	});
 	const otherActiveSprint =
-		allSprints.find((s) => s.status === "active" && s.id !== sprintId) ?? null;
+		activeSprints?.items.find((s) => s.id !== sprintId) ?? null;
 
 	const completeSprintMutation = useMutation({
 		mutationFn: () =>
@@ -339,16 +363,16 @@ function SprintPage() {
 							{t("layout.sprintDetail.completeSprintModal.title")}
 						</h2>
 						<p className="text-sm text-muted-foreground mb-5">
-							{incompleteTasks.length > 0
+							{incompleteCount > 0
 								? t("layout.sprintDetail.completeSprintModal.willBeMovedTo", {
-										count: incompleteTasks.length,
+										count: incompleteCount,
 									})
 								: t(
 										"layout.sprintDetail.completeSprintModal.noIncompleteTasks",
 									)}
 						</p>
 
-						{incompleteTasks.length > 0 && (
+						{incompleteCount > 0 && (
 							<div className="flex flex-col gap-2 mb-5">
 								{/* Backlog option */}
 								<label
@@ -406,6 +430,12 @@ function SprintPage() {
 										</div>
 									</label>
 								))}
+								<LoadMoreSentinel
+									hasMore={!!openSprintsQuery.hasNextPage}
+									isLoadingMore={openSprintsQuery.isFetchingNextPage}
+									isError={openSprintsQuery.isFetchNextPageError}
+									onLoadMore={() => void openSprintsQuery.fetchNextPage()}
+								/>
 							</div>
 						)}
 

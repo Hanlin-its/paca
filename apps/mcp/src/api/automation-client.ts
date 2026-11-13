@@ -15,6 +15,7 @@ import type {
 	UpdateAutomationNodeInput,
 } from "../types/index.js";
 import { formatApiRequestError } from "../utils/index.js";
+import { type Page, type PageOptions, toPage, withPaging } from "./paginate.js";
 
 /**
  * API client for automation-graph endpoints.
@@ -36,9 +37,6 @@ export class PacaAPIAutomationClient {
 			"Content-Type": "application/json",
 			"X-API-Key": this.config.apiKey,
 		};
-		if (this.config.agentId) {
-			headers["X-Agent-ID"] = this.config.agentId;
-		}
 
 		const options: RequestInit = {
 			method,
@@ -100,16 +98,17 @@ export class PacaAPIAutomationClient {
 
 	async listAutomations(
 		projectId: string,
-		status?: AutomationStatus,
-	): Promise<Automation[]> {
-		const queryString = status ? `?status=${status}` : "";
-		const response = await this.get(
-			`/api/v1/projects/${projectId}/automations${queryString}`,
+		opts: PageOptions & { status?: AutomationStatus } = {},
+	): Promise<Page<Automation>> {
+		const queryString = opts.status ? `?status=${opts.status}` : "";
+		return toPage<Automation>(
+			await this.get(
+				withPaging(
+					`/api/v1/projects/${projectId}/automations${queryString}`,
+					opts,
+				),
+			),
 		);
-		if (Array.isArray(response)) {
-			return response;
-		}
-		return response.items || response.data || [];
 	}
 
 	async getAutomation(
@@ -238,14 +237,17 @@ export class PacaAPIAutomationClient {
 	async listAutomationRuns(
 		projectId: string,
 		automationId: string,
-	): Promise<AutomationRun[]> {
-		const response = await this.get(
-			`/api/v1/projects/${projectId}/automations/${automationId}/runs`,
+		opts: PageOptions = {},
+	): Promise<Page<AutomationRun>> {
+		// One page, newest first.
+		return toPage<AutomationRun>(
+			await this.get(
+				withPaging(
+					`/api/v1/projects/${projectId}/automations/${automationId}/runs`,
+					opts,
+				),
+			),
 		);
-		if (Array.isArray(response)) {
-			return response;
-		}
-		return response.items || response.data || [];
 	}
 
 	async listAutomationRunSteps(

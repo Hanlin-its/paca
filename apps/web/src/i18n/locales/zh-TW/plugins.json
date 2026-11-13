@@ -28,6 +28,11 @@
 				"notFound": "此外掛已不在外掛市集中提供。",
 				"nameTaken": "已安裝同名外掛。",
 				"generic": "發生錯誤，請再試一次。"
+			},
+			"official": "Paca 官方外掛",
+			"legacyPermissions": {
+				"badge": "使用舊版權限",
+				"description": "此外掛仍使用舊版 requirePermissions 權限模型。它可以繼續運作，但在作者發布使用 requireActions 的版本前，無法重新安裝或升級。"
 			}
 		}
 	},

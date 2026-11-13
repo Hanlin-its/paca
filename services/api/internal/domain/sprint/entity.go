@@ -158,7 +158,7 @@ type FilterConfig struct {
 //     resolved option values, same recursive semantics as FilterConfig)
 //   - number → Min / Max (inclusive range; either may be nil)
 //   - date → After / Before (inclusive range, "YYYY-MM-DD"; either may be nil)
-//   - text / url → Contains (case-insensitive substring match)
+//   - text / url / long_text → Contains (case-insensitive substring match)
 type CustomFieldFilter struct {
 	Selector *FilterConfig `json:"selector,omitempty"`
 	Min      *float64      `json:"min,omitempty"`
@@ -198,6 +198,10 @@ type ViewConfig struct {
 	// of this view, independent of PageSize. Zero means unset; the client
 	// falls back to its own per-layout default.
 	InitialPageSize int `json:"initial_page_size,omitempty"`
+	// SubtaskMode controls how Table and Timeline views show subtasks:
+	// "collapsed" (nested, collapsed — also the meaning of empty), "expanded"
+	// (nested, expanded by default) or "hidden" (flat, no nesting).
+	SubtaskMode string `json:"subtask_mode,omitempty"`
 	// Plugin view fields (only set when view_type = "plugin")
 	// PluginID stores the plugin manifest identifier (reverse-DNS), not the
 	// plugin UUID used by plugin-extension-settings APIs.

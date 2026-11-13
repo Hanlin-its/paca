@@ -12,7 +12,7 @@ import (
 	attachmentdom "github.com/Paca-AI/api/internal/domain/attachment"
 	projectdom "github.com/Paca-AI/api/internal/domain/project"
 	sprintdom "github.com/Paca-AI/api/internal/domain/sprint"
-	"github.com/Paca-AI/api/internal/platform/authz"
+	"github.com/Paca-AI/api/internal/platform/authz/iam"
 	"github.com/Paca-AI/api/internal/platform/jev"
 	"github.com/Paca-AI/api/internal/platform/secret"
 	"github.com/Paca-AI/api/internal/transport/http/dto"
@@ -41,17 +41,34 @@ type projectJevConfigService interface {
 	UpdateJevConfig(ctx context.Context, projectID uuid.UUID, apiKey, baseURL, model *string) (*projectdom.Project, error)
 }
 
+// ProjectsScoper is the part of *iam.Authorizer a list spanning projects uses
+// to learn, per project, which resources of a kind the caller may act on (see
+// ListScoper, which answers for one project).
+type ProjectsScoper interface {
+	ListScopes(ctx context.Context, p iam.Principal, action string, projectIDs []string, kind string) (map[string]*iam.Node, error)
+}
+
+// projectAuthorizer is what ProjectHandler asks the IAM engine: single
+// decisions and a caller's effective actions. Satisfied by *iam.Authorizer.
+type projectAuthorizer interface {
+	iam.Checker
+	EffectiveActions(ctx context.Context, p iam.Principal, projectID string) ([]string, error)
+}
+
 // ProjectHandler handles project management endpoints.
 type ProjectHandler struct {
 	svc          projectdom.Service
-	authorizer   *authz.Authorizer
+	authorizer   projectAuthorizer // nil = deny-all
 	viewSvc      sprintdom.ViewService
 	taskTypeSvc  taskTypeLister
 	taskSvc      taskServiceForStats
 	userSvc      userServiceForStats
 	avatarSvc    attachmentdom.AvatarService
 	jevConfigSvc projectJevConfigService
-	encryptor    *secret.Encryptor
+	// taskScoper limits the workspace open-task count to the tasks the caller
+	// may read in each project. Nil leaves it unscoped.
+	taskScoper ProjectsScoper
+	encryptor  *secret.Encryptor
 	// jevHTTPClient is the transport TestJevConfig's Jev client uses. Nil
 	// means "use jev.New's own SSRF-safe default" — see
 	// WithProjectJevHTTPClient.
@@ -79,6 +96,13 @@ func WithProjectStatsServices(taskSvc taskServiceForStats, userSvc userServiceFo
 		h.taskSvc = taskSvc
 		h.userSvc = userSvc
 	}
+}
+
+// WithProjectTaskScoper limits the workspace stats' open-task count to the
+// tasks the caller may read, per project, inside the count query (see
+// iam.WithProjectScopes).
+func WithProjectTaskScoper(s ProjectsScoper) ProjectHandlerOption {
+	return func(h *ProjectHandler) { h.taskScoper = s }
 }
 
 // WithProjectAvatarService configures avatar URL resolution for member
@@ -127,8 +151,11 @@ func WithProjectJevConfigService(svc projectJevConfigService, enc *secret.Encryp
 }
 
 // NewProjectHandler returns a ProjectHandler wired to the service and authorizer.
-func NewProjectHandler(svc projectdom.Service, authorizer *authz.Authorizer, opts ...ProjectHandlerOption) *ProjectHandler {
-	h := &ProjectHandler{svc: svc, authorizer: authorizer}
+func NewProjectHandler(svc projectdom.Service, authorizer *iam.Authorizer, opts ...ProjectHandlerOption) *ProjectHandler {
+	h := &ProjectHandler{svc: svc}
+	if authorizer != nil { // never store a typed nil in the interface
+		h.authorizer = authorizer
+	}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(h)
@@ -152,7 +179,6 @@ func (h *ProjectHandler) toProjectResponse(ctx context.Context, p *projectdom.Pr
 // Users with the global projects.read permission receive all projects.
 // All other authenticated users receive only the projects they are a member of.
 func (h *ProjectHandler) ListProjects(w http.ResponseWriter, r *http.Request) {
-	claims := middleware.ClaimsFrom(r)
 	page, pageSize, err := pagingParams(r)
 	if err != nil {
 		presenter.Error(w, r, err)
@@ -164,15 +190,12 @@ func (h *ProjectHandler) ListProjects(w http.ResponseWriter, r *http.Request) {
 		total    int64
 	)
 
-	userID, parseErr := uuid.Parse(claims.Subject)
-	if parseErr != nil {
-		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "invalid subject claim"))
+	accountID, ok := requireAccountID(w, r)
+	if !ok {
 		return
 	}
 
-	hasGlobalRead, authzErr := h.authorizer.HasPermissions(
-		r.Context(), userID, nil, authz.PermissionProjectsRead,
-	)
+	hasGlobalRead, authzErr := h.hasPlatformProjectsRead(r)
 	if authzErr != nil {
 		presenter.Error(w, r, authzErr)
 		return
@@ -181,7 +204,7 @@ func (h *ProjectHandler) ListProjects(w http.ResponseWriter, r *http.Request) {
 	if hasGlobalRead {
 		projects, total, err = h.svc.List(r.Context(), page, pageSize)
 	} else {
-		projects, total, err = h.svc.ListAccessible(r.Context(), userID, page, pageSize)
+		projects, total, err = h.svc.ListAccessible(r.Context(), accountID, page, pageSize)
 	}
 	if err != nil {
 		presenter.Error(w, r, err)
@@ -195,6 +218,20 @@ func (h *ProjectHandler) ListProjects(w http.ResponseWriter, r *http.Request) {
 	presenter.OK(w, r, map[string]any{"items": resp, "total": total, "page": page, "page_size": pageSize})
 }
 
+// hasPlatformProjectsRead reports whether the caller may read every project:
+// projects:read on the project collection "project" (the platform-wide
+// projects.read). Judged as the token's subject, as before.
+func (h *ProjectHandler) hasPlatformProjectsRead(r *http.Request) (bool, error) {
+	if h.authorizer == nil {
+		return false, nil
+	}
+	principal, err := middleware.IAMPrincipalFrom(r)
+	if err != nil {
+		return false, err
+	}
+	return iam.AllowedAll(r.Context(), h.authorizer, principal, "project", iam.ActionProjectsRead)
+}
+
 // GetWorkspaceStats handles GET /projects/workspace-stats.
 // It returns workspace-wide aggregate counts for the authenticated user:
 // open tasks and AI agents across all accessible projects, plus
@@ -202,20 +239,12 @@ func (h *ProjectHandler) ListProjects(w http.ResponseWriter, r *http.Request) {
 // platform-wide user count (see userdom.Service.CountUsers), not scoped to
 // the caller's accessible projects.
 func (h *ProjectHandler) GetWorkspaceStats(w http.ResponseWriter, r *http.Request) {
-	claims := middleware.ClaimsFrom(r)
-	if claims == nil {
-		presenter.Error(w, r, apierr.New(apierr.CodeUnauthenticated, "unauthenticated"))
-		return
-	}
-	userID, parseErr := uuid.Parse(claims.Subject)
-	if parseErr != nil {
-		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "invalid subject claim"))
+	accountID, ok := requireAccountID(w, r)
+	if !ok {
 		return
 	}
 
-	hasGlobalRead, authzErr := h.authorizer.HasPermissions(
-		r.Context(), userID, nil, authz.PermissionProjectsRead,
-	)
+	hasGlobalRead, authzErr := h.hasPlatformProjectsRead(r)
 	if authzErr != nil {
 		presenter.Error(w, r, authzErr)
 		return
@@ -228,7 +257,7 @@ func (h *ProjectHandler) GetWorkspaceStats(w http.ResponseWriter, r *http.Reques
 	if hasGlobalRead {
 		projects, _, err = h.svc.List(r.Context(), 1, 10000)
 	} else {
-		projects, _, err = h.svc.ListAccessible(r.Context(), userID, 1, 10000)
+		projects, _, err = h.svc.ListAccessible(r.Context(), accountID, 1, 10000)
 	}
 	if err != nil {
 		presenter.Error(w, r, err)
@@ -256,8 +285,28 @@ func (h *ProjectHandler) GetWorkspaceStats(w http.ResponseWriter, r *http.Reques
 	g, gctx := errgroup.WithContext(r.Context())
 
 	if h.taskSvc != nil {
+		// Each project contributes the scope of the tasks the caller may read
+		// there; a project they may read none of adds nothing.
+		countCtx := gctx
+		if h.taskScoper != nil {
+			principal, perr := middleware.IAMPrincipalFrom(r)
+			if perr != nil {
+				presenter.Error(w, r, perr)
+				return
+			}
+			ids := make([]string, len(projectIDs))
+			for i, id := range projectIDs {
+				ids[i] = id.String()
+			}
+			byProject, serr := h.taskScoper.ListScopes(r.Context(), principal, string(iam.ActionTasksRead), ids, "task")
+			if serr != nil {
+				presenter.Error(w, r, serr)
+				return
+			}
+			countCtx = iam.WithProjectScopes(gctx, "task", byProject)
+		}
 		g.Go(func() error {
-			count, err := h.taskSvc.CountOpenTasksByProjects(gctx, projectIDs)
+			count, err := h.taskSvc.CountOpenTasksByProjects(countCtx, projectIDs)
 			if err != nil {
 				return err
 			}
@@ -320,24 +369,17 @@ func (h *ProjectHandler) CreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The caller is the creator, whatever kind of account it is: an agent that
+	// creates a project does so with its own permissions and owns the result.
 	var createdBy *uuid.UUID
-	if actorUserID, ok := middleware.AgentActorUserIDFromRequest(r); ok {
-		// A global agent's MCP tool call acting on behalf of a specific human
-		// (e.g. "create a project for me" from the home-page chat) — attribute
-		// the project to that human, not the shared agent-bot identity that
-		// claims.Subject would otherwise resolve to. See parseActorUserIDHeader.
-		createdBy = &actorUserID
-	} else if claims := middleware.ClaimsFrom(r); claims != nil {
-		if uid, err := uuid.Parse(claims.Subject); err == nil {
-			createdBy = &uid
-		}
+	if p, ok := middleware.PrincipalFrom(r); ok {
+		createdBy = &p.AccountID
 	}
 
 	p, err := h.svc.Create(r.Context(), projectdom.CreateProjectInput{
 		Name:         req.Name,
 		Description:  req.Description,
 		TaskIDPrefix: req.TaskIDPrefix,
-		IsPublic:     req.IsPublic,
 		Settings:     req.Settings,
 		CreatedBy:    createdBy,
 	})
@@ -373,7 +415,6 @@ func (h *ProjectHandler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 		Name:         req.Name,
 		Description:  req.Description,
 		TaskIDPrefix: req.TaskIDPrefix,
-		IsPublic:     req.IsPublic,
 		Settings:     req.Settings,
 	})
 	if err != nil {
@@ -479,14 +520,8 @@ func (h *ProjectHandler) InitiateAvatarUpload(w http.ResponseWriter, r *http.Req
 		presenter.Error(w, r, err)
 		return
 	}
-	claims := middleware.ClaimsFrom(r)
-	if claims == nil {
-		presenter.Error(w, r, apierr.New(apierr.CodeUnauthenticated, "unauthenticated"))
-		return
-	}
-	uploaderID, err := uuid.Parse(claims.Subject)
-	if err != nil {
-		presenter.Error(w, r, apierr.New(apierr.CodeUnauthenticated, "invalid subject in token"))
+	uploaderID, ok := requireAccountID(w, r)
+	if !ok {
 		return
 	}
 

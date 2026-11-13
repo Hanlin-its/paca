@@ -1,7 +1,7 @@
 {
 	"page": {
-		"title": "個人資料",
-		"subtitle": "檢視並更新你的帳號資訊。"
+		"title": "帳號",
+		"subtitle": "管理你的個人資料、登入安全與存取權限。"
 	},
 	"fields": {
 		"fullName": "姓名",
@@ -116,6 +116,96 @@
 			"tooLarge": "圖片大小不得超過 5 MB。",
 			"uploadFailed": "頭像上傳失敗，請再試一次。",
 			"removeFailed": "頭像移除失敗，請再試一次。"
+		}
+	},
+	"nav": {
+		"profile": "個人資料",
+		"security": "安全性",
+		"apiKeys": "API 金鑰",
+		"preferences": "通知"
+	},
+	"preferences": {
+		"title": "通知",
+		"subtitle": "選擇接收通知的方式。"
+	},
+	"security": {
+		"title": "安全性",
+		"subtitle": "保護你的帳號並管理登入方式。",
+		"mfa": {
+			"title": "兩步驟驗證",
+			"description": "登入時除了密碼，還需要輸入驗證器應用程式的驗證碼。",
+			"on": "已開啟",
+			"off": "已關閉",
+			"enable": "設定兩步驟驗證",
+			"recoveryLeft": "剩餘復原碼：{{count}}",
+			"recoveryLow": "你的復原碼即將用完。請在無法存取帳號前產生新的復原碼。",
+			"codeOrRecovery": "驗證碼或復原碼",
+			"codes": {
+				"copy": "複製",
+				"copied": "已複製",
+				"download": "下載"
+			},
+			"errors": {
+				"generic": "發生錯誤，請重試。",
+				"invalidCode": "代碼無效或已使用。",
+				"unavailable": "無法使用兩步驟驗證：伺服器尚未設定加密金鑰。請聯絡管理員。",
+				"load": "無法載入你的兩步驟驗證狀態。"
+			},
+			"setup": {
+				"title": "設定兩步驟驗證",
+				"description": "請使用驗證器應用程式，例如 1Password、Google Authenticator 或 Authy。",
+				"scan": "使用驗證器應用程式掃描此 QR code。",
+				"orEnterKey": "無法掃描？請改為輸入此金鑰。",
+				"copyKey": "複製設定金鑰",
+				"qrLabel": "設定兩步驟驗證的 QR code",
+				"codeLabel": "輸入應用程式中的 6 位數驗證碼",
+				"verify": "驗證並開啟",
+				"codesTitle": "保存復原碼",
+				"codesDescription": "若無法使用驗證器應用程式，每組復原碼可使用一次。",
+				"codesWarning": "這些復原碼僅在此時顯示。請在關閉前妥善保存。",
+				"saved": "我已保存"
+			},
+			"disable": {
+				"button": "關閉",
+				"title": "關閉兩步驟驗證",
+				"description": "你的帳號將僅受密碼保護。請輸入目前的代碼以確認。",
+				"confirm": "關閉"
+			},
+			"regenerate": {
+				"button": "新的復原碼",
+				"title": "產生新的復原碼",
+				"description": "這會取代你目前所有的復原碼。請輸入目前的代碼以確認。",
+				"confirm": "產生",
+				"doneTitle": "你的新復原碼"
+			}
+		},
+		"passkeys": {
+			"title": "通行金鑰",
+			"description": "登入時使用指紋、臉部、螢幕鎖定或安全金鑰作為第二步驗證，取代驗證碼。",
+			"add": "新增通行金鑰",
+			"unsupported": "此瀏覽器不支援通行金鑰。",
+			"empty": "你尚未新增通行金鑰。",
+			"added": "新增於 {{date}}",
+			"lastUsed": "最後使用於 {{date}}",
+			"neverUsed": "從未使用",
+			"removeLabel": "移除 {{name}}",
+			"defaultName": "通行金鑰",
+			"addTitle": "新增通行金鑰",
+			"addDescription": "請取一個容易辨識的名稱，然後依照瀏覽器提示操作。",
+			"nameLabel": "名稱",
+			"namePlaceholder": "例如：工作用筆記型電腦",
+			"continue": "繼續",
+			"removeTitle": "移除通行金鑰",
+			"removeDescription": "「{{name}}」將無法再用於登入。系統會要求你使用其中一個通行金鑰確認。",
+			"remove": "移除",
+			"errors": {
+				"load": "無法載入你的通行金鑰。",
+				"cancelled": "通行金鑰提示已取消或逾時。",
+				"alreadyRegistered": "此裝置或金鑰已註冊為通行金鑰。",
+				"limit": "通行金鑰數量已達上限，請先移除一個。",
+				"invalid": "無法驗證通行金鑰，請重試。",
+				"generic": "發生錯誤，請重試。"
+			}
 		}
 	}
 }

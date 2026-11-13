@@ -82,6 +82,7 @@ const (
 	FieldTypeMultiSelect FieldType = "multi_select"
 	FieldTypeBoolean     FieldType = "boolean"
 	FieldTypeURL         FieldType = "url"
+	FieldTypeLongText    FieldType = "long_text"
 )
 
 // ValidFieldTypes is the set of allowed field type values.
@@ -93,6 +94,28 @@ var ValidFieldTypes = map[FieldType]bool{
 	FieldTypeMultiSelect: true,
 	FieldTypeBoolean:     true,
 	FieldTypeURL:         true,
+	FieldTypeLongText:    true,
+}
+
+// Visible-line bounds for long_text custom fields.
+const (
+	DefaultLongTextRows = 3
+	MinLongTextRows     = 2
+	MaxLongTextRows     = 20
+)
+
+// ClampLongTextRows returns rows limited to [MinLongTextRows, MaxLongTextRows],
+// or DefaultLongTextRows when rows is unset (<= 0).
+func ClampLongTextRows(rows int) int {
+	switch {
+	case rows <= 0:
+		return DefaultLongTextRows
+	case rows < MinLongTextRows:
+		return MinLongTextRows
+	case rows > MaxLongTextRows:
+		return MaxLongTextRows
+	}
+	return rows
 }
 
 // CustomFieldOption is one selectable value of a select / multi_select
@@ -120,6 +143,10 @@ type CustomFieldDefinition struct {
 	FieldType   FieldType
 	Options     []CustomFieldOption // populated for select / multi_select types
 	IsRequired  bool
+	// Rows is the number of visible lines of a long_text field's editor.
+	Rows int
+	// UseInSearch makes task search also match this field's stored value.
+	UseInSearch bool
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }
@@ -205,4 +232,9 @@ type Task struct {
 	// with a view_position sort (i.e. view_id provided + manual sort). It is not
 	// persisted in the tasks table.
 	ViewPosition *float64
+	// SubtaskCount and SubtaskDoneCount are transient aggregates populated only
+	// by ListTasks: the number of live direct children, and how many of them
+	// sit in a status of category "done". Not persisted.
+	SubtaskCount     int
+	SubtaskDoneCount int
 }

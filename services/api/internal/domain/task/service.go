@@ -19,8 +19,9 @@ type Service interface {
 
 // TaskLinkService defines task-link use cases.
 type TaskLinkService interface {
-	// ListTaskLinks returns all links for taskID, computing inverse display labels.
-	ListTaskLinks(ctx context.Context, projectID, taskID uuid.UUID) ([]*TaskLink, error)
+	// ListTaskLinks returns one page of the links for taskID, computing inverse
+	// display labels; see TaskLinkRepository.ListTaskLinks for the paging contract.
+	ListTaskLinks(ctx context.Context, projectID, taskID uuid.UUID, cursorAfter *string, limit int) ([]*TaskLink, bool, int, error)
 	// CreateTaskLink creates a directed link between two tasks in the same project.
 	CreateTaskLink(ctx context.Context, in CreateTaskLinkInput) (*TaskLink, error)
 	// DeleteTaskLink removes the link identified by linkID, verifying it
@@ -122,6 +123,9 @@ type TaskService interface {
 	// ListDistinctTags returns every distinct tag value used anywhere in the
 	// project, sorted alphabetically — see Repository.ListDistinctTags.
 	ListDistinctTags(ctx context.Context, projectID uuid.UUID) ([]string, error)
+	// ListGroupColumns returns the columns of a group-by dimension — see
+	// Repository.ListGroupColumns.
+	ListGroupColumns(ctx context.Context, projectID uuid.UUID, filter TaskFilter, by string) ([]GroupColumn, error)
 	// GetTask returns the task identified by id, verifying it belongs to projectID.
 	GetTask(ctx context.Context, projectID, id uuid.UUID) (*Task, error)
 	GetTaskByNumber(ctx context.Context, projectID uuid.UUID, taskNumber int64) (*Task, error)
@@ -186,7 +190,10 @@ type CreateTaskInput struct {
 // For slice/map fields (Tags, CustomFields, AssigneeIDs), a nil pointer means
 // the field was absent and should not be overwritten; a non-nil pointer (even
 // to an empty slice/map) means the field was explicitly set and replaces the
-// stored value in full.
+// stored value in full. The exception is CustomFields, which is merged key by
+// key into the stored map (keys not mentioned are left alone; a null value
+// is stored as null), so concurrent edits of different custom fields can't
+// overwrite each other.
 type UpdateTaskInput struct {
 	TaskTypeID   **uuid.UUID
 	StatusID     **uuid.UUID
@@ -233,6 +240,8 @@ type CreateCustomFieldDefinitionInput struct {
 	FieldType   FieldType
 	Options     []CustomFieldOption
 	IsRequired  bool
+	UseInSearch bool
+	Rows        int
 }
 
 // UpdateCustomFieldDefinitionInput carries mutable custom field definition
@@ -242,4 +251,6 @@ type UpdateCustomFieldDefinitionInput struct {
 	FieldType   *FieldType
 	Options     []CustomFieldOption
 	IsRequired  *bool
+	UseInSearch *bool
+	Rows        *int
 }

@@ -10,7 +10,11 @@ export interface PacaConfig {
 	 * URL (e.g. `http://gateway`).
 	 */
 	gatewayURL?: string;
-	/** Agent UUID forwarded as X-Agent-ID on every API request. */
+	/**
+	 * The agent this MCP server runs for (selects agent mode). It is not sent
+	 * to the API: the agent is identified by the API key (apiKey), which is
+	 * the agent's own.
+	 */
 	agentId?: string;
 	/**
 	 * Project UUID — required when agentId is provided AND the agent is
@@ -22,19 +26,10 @@ export interface PacaConfig {
 	 */
 	projectId?: string;
 	/**
-	 * Human user UUID this agent is acting on behalf of, forwarded as
-	 * X-Actor-User-ID on every API request. Only ever set for a global agent
-	 * dispatched from a trigger that names a human actor (e.g. a global-chat
-	 * message) — lets server-side attribution (e.g. who created a project)
-	 * point at that human instead of the shared agent-bot identity. Unset
-	 * for a personal API key or a project-scoped agent's automation runs.
-	 */
-	actorUserId?: string;
-	/**
 	 * UUID of the conversation this MCP server instance is running as part
 	 * of, forwarded as X-Conversation-ID on every API request — set
 	 * unconditionally by agent-runner's buildMCPServers (PACA_CONVERSATION_ID),
-	 * unlike projectId/actorUserId. Lets services/api's
+	 * unlike projectId. Lets services/api's
 	 * GetConversationForAgent (the read_conversation tool's backing
 	 * endpoint) authorize a cross-conversation read against *this*
 	 * conversation's own project/actor/owning member, instead of trusting
@@ -44,10 +39,11 @@ export interface PacaConfig {
 	 */
 	conversationId?: string;
 	/**
-	 * Names (e.g. "com.paca.github") of the repository plugins installed on
-	 * this conversation's project, forwarded from the agent-runner trigger's
-	 * repo_plugin_ids field as PACA_REPO_PLUGIN_IDS (comma-separated). Empty
-	 * or unset means no repository plugin is configured, in which case the
+	 * Names (e.g. "com.paca.github") of the Git provider plugins installed,
+	 * forwarded from the agent-runner trigger's repo_plugin_ids field as
+	 * PACA_REPO_PLUGIN_IDS (comma-separated). Only used to decide whether the
+	 * Git tools are offered; the tools themselves talk to core. Empty or unset
+	 * means no Git provider is installed, in which case the
 	 * repo tools (list_repositories/clone_repository/push_branch) are hidden
 	 * entirely — see server.ts's tool-listing handler.
 	 */
@@ -345,49 +341,70 @@ export interface DocumentActivityListResult {
 
 // ==================== Project Members ====================
 
+export interface MemberRoleSummary {
+	id: string;
+	name: string;
+}
+
 export interface ProjectMember {
 	id: string;
 	project_id: string;
 	user_id: string;
-	project_role_id: string;
+	roles: MemberRoleSummary[];
 	username: string;
 	full_name: string;
-	role_name: string;
 	joined_at?: string;
 }
 
 export interface AddMemberInput {
 	user_id: string;
-	project_role_id: string;
+	role_ids: string[];
 }
 
-export interface UpdateMemberRoleInput {
-	project_role_id: string;
+export interface ReplaceMemberRolesInput {
+	role_ids: string[];
 }
 
 // ==================== Project Roles ====================
 
+/** One statement of an IAM policy document. */
+export interface PolicyStatement {
+	sid?: string;
+	effect: "Allow" | "Deny";
+	actions: string[];
+	resources: string[];
+	conditions?: Record<string, Record<string, unknown>>;
+}
+
+/** An IAM policy document: the only shape the roles API accepts. */
+export interface RolePolicy {
+	version?: string;
+	statements: PolicyStatement[];
+}
+
 export interface ProjectRole {
 	id: string;
-	project_id?: string;
-	role_name: string;
+	project_id?: string | null;
+	name: string;
 	description?: string | null;
-	permissions: Record<string, unknown>;
+	policy: RolePolicy;
 	is_system?: boolean;
+	is_default?: boolean;
+	attachment_count?: number;
 	created_at: string;
 	updated_at: string;
 }
 
 export interface CreateRoleInput {
-	role_name: string;
+	name: string;
 	description?: string;
-	permissions: Record<string, unknown>;
+	policy: RolePolicy;
 }
 
 export interface UpdateRoleInput {
-	role_name?: string;
-	description?: string;
-	permissions?: Record<string, unknown>;
+	name: string;
+	description: string;
+	policy: RolePolicy;
 }
 
 // ==================== Task Types ====================
@@ -541,17 +558,17 @@ export interface ReorderViewsInput {
 	view_ids: string[];
 }
 
-export interface BulkMoveTasksInput {
-	task_id: string;
-	target_view_id: string;
-	target_status_id: string | null;
-	target_position?: number;
+export interface MoveTaskPositionInput {
+	position: number;
+	group_key?: string | null;
 }
 
-export interface MoveTaskInput {
-	target_view_id: string;
-	target_status_id: string | null;
-	target_position?: number;
+export interface BulkMoveTasksInput {
+	items: Array<{
+		task_id: string;
+		position: number;
+		group_key?: string | null;
+	}>;
 }
 
 // ==================== Custom Fields ====================
@@ -563,7 +580,8 @@ export type FieldType =
 	| "select"
 	| "multi_select"
 	| "boolean"
-	| "url";
+	| "url"
+	| "long_text";
 
 export interface CustomFieldOption {
 	value: string;
@@ -578,6 +596,8 @@ export interface CustomFieldDefinition {
 	field_type: FieldType;
 	options: CustomFieldOption[];
 	is_required: boolean;
+	use_in_search: boolean;
+	rows: number;
 	created_at: string;
 	updated_at: string;
 }
@@ -588,6 +608,8 @@ export interface CreateCustomFieldInput {
 	field_type: FieldType;
 	options?: CustomFieldOption[];
 	is_required?: boolean;
+	use_in_search?: boolean;
+	rows?: number;
 }
 
 export interface UpdateCustomFieldInput {
@@ -595,6 +617,8 @@ export interface UpdateCustomFieldInput {
 	field_type?: FieldType;
 	options?: CustomFieldOption[];
 	is_required?: boolean;
+	use_in_search?: boolean;
+	rows?: number;
 }
 
 // ==================== Attachments ====================
@@ -881,7 +905,7 @@ export interface AddAutomationEdgeInput {
 // another conversation's transcript (e.g. one attached as chat context).
 // Field-for-field mirror of services/api's dto.AgentConversationResponse /
 // dto.AgentConversationEventResponse. ProjectID/TriggeredByMemberID are unset
-// for a global-chat conversation, which carries ActorUserID instead — see
+// for a global-chat conversation, which carries ActorAccountID instead — see
 // that DTO's doc comment.
 
 export type ConversationStatus =
@@ -907,7 +931,7 @@ export interface AgentConversation {
 	task_id?: string | null;
 	chat_session_id?: string | null;
 	triggered_by_member_id?: string | null;
-	actor_user_id?: string | null;
+	actor_account_id?: string | null;
 	status: ConversationStatus;
 	iteration_count: number;
 	input_tokens: number;
@@ -958,31 +982,30 @@ export interface ConversationEventPage {
 // ==================== Repository (repo-tools) ====================
 
 /**
- * One repository as returned by a repository plugin's
- * `GET /api/v1/plugins/{pluginId}/projects/{projectId}/repositories` route
- * (a plugin-owned endpoint proxied through PluginHandler.ProxyRequest —
- * there is no core-API implementation of repository listing to mirror
- * beyond this shape). Ported from the equivalent per-item dict shape in the
- * now-removed services/ai-agent's repo_tools.py ListRepositoriesExecutor.
+ * A repository linked to a project, from core's
+ * `GET /api/v1/projects/{projectId}/git/repositories`. `clone_url` never
+ * carries credentials.
  */
-export interface RepositoryListItem {
+export interface GitRepository {
 	id: string;
-	full_name: string;
-	owner: string;
-	repo_name: string;
+	provider_id: string;
+	host: string;
+	full_path: string;
+	default_branch: string;
 	clone_url: string;
+	/** What the repository is for, written by project members; may be empty. */
+	description?: string;
 }
 
 /**
- * Clone credentials for one repository, from the same plugin's
- * `.../repositories/{repoId}/clone-info` route. `token` is short-lived and
- * must never be logged — see repo-tools.ts's scrubToken.
+ * A short-lived credential for ONE git operation, from core's
+ * `POST .../git/repositories/{repoId}/credential/{read|write}`. `secret` must
+ * never be logged or shown to a model.
  */
-export interface RepositoryCloneInfo {
-	id: string;
-	full_name: string;
-	clone_url: string;
-	token: string;
+export interface GitCredential {
+	username: string;
+	secret: string;
+	expires_at: string | null;
 }
 
 /**

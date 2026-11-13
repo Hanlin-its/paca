@@ -5,6 +5,8 @@ import type {
 } from "@/lib/agent-api";
 import {
 	canReplyToConversation,
+	chatSessionAccessDeniedKey,
+	chatSessionApiErrorMessage,
 	eventsToThreadMessages,
 	hasEnvironmentReadyEvent,
 	isEnvironmentReady,
@@ -269,6 +271,7 @@ function agentThoughtChunk(text: string): AgentConversationEvent {
 function acpToolCall(opts: {
 	toolCallId: string;
 	title: string;
+	rawInput?: unknown;
 }): AgentConversationEvent {
 	return {
 		id: `evt-${nextIndex}`,
@@ -279,6 +282,7 @@ function acpToolCall(opts: {
 		payload: {
 			toolCallId: opts.toolCallId,
 			title: opts.title,
+			...(opts.rawInput !== undefined ? { rawInput: opts.rawInput } : {}),
 			sessionUpdate: "tool_call",
 		},
 		created_at: "2026-01-01T00:00:08.000Z",
@@ -984,6 +988,25 @@ describe("eventsToThreadMessages", () => {
 			expect(parts[0]).not.toHaveProperty("isError");
 		});
 
+		it("exposes the tool call's rawInput as argsText", () => {
+			const messages = eventsToThreadMessages(
+				[
+					acpToolCall({
+						toolCallId: "tc-raw",
+						title: "Terminal",
+						rawInput: { command: "ls -la" },
+					}),
+				],
+				false,
+			);
+			const parts = messages[0].content as unknown as Array<
+				Record<string, unknown>
+			>;
+			expect(JSON.parse(parts[0].argsText as string)).toEqual({
+				command: "ls -la",
+			});
+		});
+
 		it("marks a tool_call_update with status=failed as an error", () => {
 			const events = [
 				acpToolCall({ toolCallId: "tc-2", title: "Running rm" }),
@@ -1228,6 +1251,37 @@ describe("eventsToThreadMessages", () => {
 			]);
 		});
 
+		it("keeps a user_message with blank text when it carries context_items", () => {
+			const events: AgentConversationEvent[] = [
+				{
+					id: "evt-ctx-2",
+					conversation_id: "conv-1",
+					event_index: 0,
+					event_type: "user_message",
+					event_source: "user",
+					payload: {
+						content: { type: "text", text: "" },
+						context_items: [{ type: "doc", id: "doc-1", title: "Runbook" }],
+					},
+					created_at: "2026-01-01T00:00:00.000Z",
+				},
+			];
+
+			const messages = eventsToThreadMessages(events, false);
+
+			expect(messages).toHaveLength(1);
+			expect(messages[0]?.metadata?.custom?.contextItems).toEqual([
+				{ type: "doc", id: "doc-1", title: "Runbook" },
+			]);
+			expect(messages[0]?.content).toEqual([]);
+		});
+
+		it("drops a user_message with blank text and no context_items", () => {
+			const events = [acpUserMessage("")];
+
+			expect(eventsToThreadMessages(events, false)).toHaveLength(0);
+		});
+
 		it("adds no metadata.custom when a user_message event carries no context_items", () => {
 			const events = [acpUserMessage("hi")];
 
@@ -1382,5 +1436,42 @@ describe("canReplyToConversation", () => {
 		});
 
 		expect(canReplyToConversation(c, false)).toBe(true);
+	});
+});
+
+describe("chatSessionAccessDeniedKey", () => {
+	const apiError = (status: number, error_code: string) => ({
+		response: { status, data: { error_code } },
+	});
+	it("maps a CLI-provider agent without a default environment", () => {
+		expect(
+			chatSessionAccessDeniedKey(
+				apiError(400, "AGENT_DEFAULT_ENVIRONMENT_REQUIRED_FOR_CLI_PROVIDER"),
+			),
+		).toBe("agents.conversationView.cliProviderNeedsEnvironment");
+	});
+	it("maps a plain 403 and leaves other errors unclassified", () => {
+		expect(chatSessionAccessDeniedKey(apiError(403, "FORBIDDEN"))).toBe(
+			"agents.conversationView.chatNoPermission",
+		);
+		expect(chatSessionAccessDeniedKey(apiError(500, "INTERNAL_ERROR"))).toBe(
+			null,
+		);
+	});
+});
+
+describe("chatSessionApiErrorMessage", () => {
+	const withStatus = (status: number, error?: string) => ({
+		response: { status, data: { error } },
+	});
+	it("returns the API's message for a client error", () => {
+		expect(chatSessionApiErrorMessage(withStatus(400, "bad agent"))).toBe(
+			"bad agent",
+		);
+	});
+	it("ignores server errors, network failures and missing messages", () => {
+		expect(chatSessionApiErrorMessage(withStatus(500, "db down"))).toBeNull();
+		expect(chatSessionApiErrorMessage(new Error("Network Error"))).toBeNull();
+		expect(chatSessionApiErrorMessage(withStatus(400))).toBeNull();
 	});
 });

@@ -1,9 +1,11 @@
 import type { TFunction } from "i18next";
 import {
 	Check,
+	ChevronRight,
 	GripVertical,
 	Layers,
 	Link,
+	ListChecks,
 	Loader2,
 	Search,
 	User,
@@ -11,7 +13,7 @@ import {
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import { EntityAvatarContent } from "@/components/shared/entity-avatar";
+import { EntityAvatar } from "@/components/shared/entity-avatar";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -24,20 +26,21 @@ import {
 	PopoverTrigger,
 } from "@/components/ui/popover";
 import { useJevEnabled } from "@/hooks/use-jev-enabled";
+import { useIsMobile } from "@/hooks/use-mobile";
 import {
 	customFieldBadgeStyle,
 	getCustomFieldOptionColor,
 } from "@/lib/custom-field-colors";
 import { formatDate } from "@/lib/format-date";
 import type { Task } from "@/lib/interaction-api";
+import { useMemberDirectory } from "@/lib/member-directory";
 import {
 	type CustomFieldDefinition,
 	findEpicType,
-	type ProjectMember,
 	type TaskStatus,
 	type TaskType,
 } from "@/lib/project-api";
-import { resolveMemberAvatarUrl } from "@/lib/provider-logos";
+import { memberAvatar } from "@/lib/provider-logos";
 import { useHoveredTaskStore } from "@/lib/shortcuts/hovered-task-store";
 import { cn } from "@/lib/utils";
 import { AssigneePicker } from "./assignee-picker";
@@ -159,7 +162,6 @@ interface TaskRowProps {
 	taskIdPrefix?: string;
 	statuses: TaskStatus[];
 	taskTypes: TaskType[];
-	members?: ProjectMember[];
 	epics?: Task[];
 	/** Load-more state for the epic picker Popover — omitted when the caller
 	 * doesn't paginate epics (e.g. fewer than one page's worth). */
@@ -177,14 +179,27 @@ interface TaskRowProps {
 	onDelete?: (taskId: string) => void;
 	onMoveLeft?: () => void;
 	onMoveRight?: () => void;
+	/** Nesting level of a subtask row under its parent (0 = top level). */
+	depth?: number;
+	/** Present when the view nests subtasks: reserves the chevron slot so ids
+	 *  stay aligned, and drives the expand toggle + progress chip. */
+	subtasks?: {
+		expanded: boolean;
+		onToggle: () => void;
+	};
 }
+
+/** Indentation stops growing past this depth so deep chains stay readable. */
+const MAX_INDENT_DEPTH = 3;
+/** Child rows have no drag handle; this keeps their ids indented past the
+ *  parent's id (handle 14px + gap 12px). */
+const DRAG_HANDLE_WIDTH = 26;
 
 export function TaskRow({
 	task,
 	taskIdPrefix = "",
 	statuses,
 	taskTypes,
-	members = [],
 	epics = [],
 	epicsPagination,
 	customFields = [],
@@ -197,10 +212,19 @@ export function TaskRow({
 	onDelete,
 	onMoveLeft,
 	onMoveRight,
+	depth = 0,
+	subtasks,
 }: TaskRowProps) {
 	const { t } = useTranslation("projects");
+	const isMobile = useIsMobile();
+	// Touch screens have no drag handle and little width, so nest tighter.
+	const indentStep = isMobile ? 12 : 20;
+	const handleOffset = isMobile ? 0 : DRAG_HANDLE_WIDTH;
+	const subtaskCount = task.subtask_count ?? 0;
+	const subtaskDone = task.subtask_done_count ?? 0;
 	const status = statuses.find((s) => s.id === task.status_id);
 	const jevEnabled = useJevEnabled(task.project_id);
+	const getMember = useMemberDirectory(task.project_id);
 	const isAutoAssign = isAutoAssignPending(task);
 	const [isHovered, setIsHovered] = useState(false);
 	const [epicOpen, setEpicOpen] = useState(false);
@@ -431,7 +455,7 @@ export function TaskRow({
 						onKeyDown={(e) => e.stopPropagation()}
 					>
 						<AssigneePicker
-							members={members}
+							projectId={task.project_id}
 							assigneeIds={task.assignee_ids ?? []}
 							isAutoAssign={isAutoAssign}
 							autoEnabled={jevEnabled}
@@ -444,7 +468,7 @@ export function TaskRow({
 
 			case "reporter": {
 				const reporter = task.reporter_id
-					? members.find((m) => m.id === task.reporter_id)
+					? getMember(task.reporter_id)
 					: undefined;
 				return (
 					<div
@@ -455,21 +479,11 @@ export function TaskRow({
 							"items-center justify-center",
 						)}
 					>
-						<div className="flex size-6 items-center justify-center rounded-full bg-linear-to-br from-muted/80 to-muted/40 text-muted-foreground text-xs font-bold ring-1 ring-border/25">
-							<EntityAvatarContent
-								avatarUrl={
-									reporter ? resolveMemberAvatarUrl(reporter) : undefined
-								}
-							>
-								{reporter ? (
-									(reporter.full_name || reporter.username)
-										.slice(0, 1)
-										.toUpperCase()
-								) : (
-									<User className="size-3" />
-								)}
-							</EntityAvatarContent>
-						</div>
+						<EntityAvatar
+							{...(reporter ? memberAvatar(reporter) : { name: "" })}
+							fallback={<User className="size-3" />}
+							size="sm"
+						/>
 					</div>
 				);
 			}
@@ -790,17 +804,62 @@ export function TaskRow({
 			onMouseEnter={() => setIsHovered(true)}
 			onMouseLeave={() => setIsHovered(false)}
 			className={cn(
-				"group flex items-center gap-3 px-4 py-2.5 cursor-pointer",
+				"group relative flex items-center gap-2 px-4 py-2.5 cursor-pointer sm:gap-3",
 				"hover:bg-muted/30 transition-colors duration-150 border-b border-border/20 last:border-0",
 				isDragging && "opacity-40 bg-muted/20",
+				depth > 0 && "bg-muted/10",
 			)}
+			style={
+				depth > 0
+					? {
+							paddingLeft: `${16 + handleOffset + Math.min(depth, MAX_INDENT_DEPTH) * indentStep}px`,
+						}
+					: undefined
+			}
 		>
+			{depth > 0 && (
+				<span
+					aria-hidden
+					className="absolute inset-y-0 w-px bg-border/50"
+					style={{
+						left: `${16 + handleOffset + (Math.min(depth, MAX_INDENT_DEPTH) - 1) * indentStep + 8}px`,
+					}}
+				/>
+			)}
+			{subtasks &&
+				(subtaskCount > 0 ? (
+					<button
+						type="button"
+						aria-expanded={subtasks.expanded}
+						aria-label={t(
+							subtasks.expanded
+								? "board.subtasks.collapse"
+								: "board.subtasks.expand",
+							{ n: subtaskCount },
+						)}
+						onClick={(e) => {
+							e.stopPropagation();
+							subtasks.onToggle();
+						}}
+						onKeyDown={(e) => e.stopPropagation()}
+						className="-ml-1.5 -mr-1.5 flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground/70 hover:bg-muted/60 hover:text-foreground focus-visible:outline-2 focus-visible:outline-primary"
+					>
+						<ChevronRight
+							className={cn(
+								"size-3.5 transition-transform duration-150 motion-reduce:transition-none",
+								subtasks.expanded && "rotate-90",
+							)}
+						/>
+					</button>
+				) : (
+					<span aria-hidden className="-ml-1.5 -mr-1.5 size-6 shrink-0" />
+				))}
 			{showDragHandle && (
 				<GripVertical className="size-3.5 shrink-0 -ml-1.5 text-muted-foreground/30 group-hover:text-muted-foreground/70 cursor-grab opacity-0 group-hover:opacity-100 transition-opacity duration-200" />
 			)}
 
 			{/* Task ID — separate fixed-width column left of title */}
-			<span className="w-20 shrink-0 font-[JetBrains_Mono,monospace] text-xs font-semibold text-muted-foreground/55 tracking-wide">
+			<span className="w-14 shrink-0 font-[JetBrains_Mono,monospace] text-xs font-semibold text-muted-foreground/55 tracking-wide sm:w-20">
 				{taskIdPrefix
 					? `${taskIdPrefix}-${task.task_number}`
 					: task.task_number > 0
@@ -809,8 +868,25 @@ export function TaskRow({
 			</span>
 
 			{/* Title */}
-			<span className="flex-1 text-sm font-medium text-foreground truncate">
-				{task.title}
+			<span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
+				<span className="min-w-12 truncate text-sm font-medium text-foreground">
+					{task.title}
+				</span>
+				{subtasks && subtaskCount > 0 && (
+					<span
+						title={t("board.subtasks.progress", {
+							done: subtaskDone,
+							n: subtaskCount,
+						})}
+						className={cn(
+							"inline-flex shrink-0 items-center gap-1 rounded-md bg-muted/50 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-muted-foreground",
+							subtaskDone === subtaskCount && "text-emerald-600",
+						)}
+					>
+						<ListChecks className="hidden size-3 sm:block" aria-hidden />
+						{subtaskDone}/{subtaskCount}
+					</span>
+				)}
 			</span>
 
 			{/* Dynamic field columns */}

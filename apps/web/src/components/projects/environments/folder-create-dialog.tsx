@@ -19,9 +19,7 @@ import {
 	type EnvironmentFolder,
 	type EnvironmentStatus,
 	environmentBrowseQueryOptions,
-	environmentFoldersQueryOptions,
 	environmentQueryOptions,
-	environmentsQueryOptions,
 } from "@/lib/environment-api";
 import { cn } from "@/lib/utils";
 
@@ -90,13 +88,8 @@ export function FolderCreateDialog({
 		mutationFn: () =>
 			addFolder(projectId, environmentId, { path: path.trim() }),
 		onSuccess: (folder) => {
-			qc.invalidateQueries({
-				queryKey: environmentsQueryOptions(projectId).queryKey,
-			});
-			qc.invalidateQueries({
-				queryKey: environmentFoldersQueryOptions(projectId, environmentId)
-					.queryKey,
-			});
+			// Prefix of the environment and all its sub-resources, so every
+			// folder list (any search) refetches.
 			qc.invalidateQueries({
 				queryKey: environmentQueryOptions(projectId, environmentId).queryKey,
 			});
@@ -106,10 +99,11 @@ export function FolderCreateDialog({
 	});
 
 	const trimmedPath = path.trim();
-	const isValidPath = trimmedPath.startsWith("/");
+	const isValidPath = trimmedPath.startsWith(ENVIRONMENT_HOME_ROOT);
 
-	// isValidPath already blocks a relative path, so
-	// EnvironmentFolderPathInvalid mainly guards a stale check;
+	// isValidPath is the same root check the server now enforces (folders
+	// outside the mounted workspace vanish on the next Pod recreation and
+	// break every later attach), so EnvironmentFolderPathInvalid is rare;
 	// EnvironmentFolderPathTaken is the genuinely common case — the same
 	// path added twice.
 	const addErrorMessage = addMutation.isError

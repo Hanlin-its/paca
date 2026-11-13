@@ -390,11 +390,21 @@ type TaskResponse struct {
 	Tags         []string        `json:"tags"`
 	ViewPosition *float64        `json:"view_position,omitempty"`
 	ViewGroupKey *string         `json:"view_group_key,omitempty"`
-	CreatedAt    time.Time       `json:"created_at"`
-	UpdatedAt    time.Time       `json:"updated_at"`
+	// SubtaskCount / SubtaskDoneCount are direct-child aggregates, present on
+	// list responses only (absent means "not computed or none").
+	SubtaskCount     int       `json:"subtask_count,omitempty"`
+	SubtaskDoneCount int       `json:"subtask_done_count,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 	// AssignmentMode is "manual" or "auto" — see taskdom.Task.AssignmentMode's
 	// doc comment.
 	AssignmentMode string `json:"assignment_mode"`
+	// Assignees and Reporter are the people behind AssigneeIDs / ReporterID,
+	// present only when the list request asked for them with
+	// include=assignees,reporter. They carry identity (names, avatar, kind)
+	// but not roles or the member's description.
+	Assignees []ProjectMemberResponse `json:"assignees,omitempty"`
+	Reporter  *ProjectMemberResponse  `json:"reporter,omitempty"`
 }
 
 // TaskFromEntity maps a domain Task to a TaskResponse DTO.
@@ -412,26 +422,28 @@ func TaskFromEntity(t *taskdom.Task) TaskResponse {
 		assigneeIDs = []uuid.UUID{}
 	}
 	return TaskResponse{
-		ID:             t.ID,
-		ProjectID:      t.ProjectID,
-		TaskNumber:     t.TaskNumber,
-		Title:          t.Title,
-		TaskTypeID:     t.TaskTypeID,
-		StatusID:       t.StatusID,
-		SprintID:       t.SprintID,
-		ParentTaskID:   t.ParentTaskID,
-		Description:    t.Description,
-		Importance:     t.Importance,
-		StoryPoints:    t.StoryPoints,
-		AssigneeIDs:    assigneeIDs,
-		ReporterID:     t.ReporterID,
-		CustomFields:   cf,
-		StartDate:      t.StartDate,
-		DueDate:        t.DueDate,
-		Tags:           tags,
-		CreatedAt:      t.CreatedAt,
-		UpdatedAt:      t.UpdatedAt,
-		AssignmentMode: t.AssignmentMode,
+		ID:               t.ID,
+		ProjectID:        t.ProjectID,
+		TaskNumber:       t.TaskNumber,
+		Title:            t.Title,
+		TaskTypeID:       t.TaskTypeID,
+		StatusID:         t.StatusID,
+		SprintID:         t.SprintID,
+		ParentTaskID:     t.ParentTaskID,
+		Description:      t.Description,
+		Importance:       t.Importance,
+		StoryPoints:      t.StoryPoints,
+		AssigneeIDs:      assigneeIDs,
+		ReporterID:       t.ReporterID,
+		CustomFields:     cf,
+		StartDate:        t.StartDate,
+		DueDate:          t.DueDate,
+		Tags:             tags,
+		CreatedAt:        t.CreatedAt,
+		UpdatedAt:        t.UpdatedAt,
+		AssignmentMode:   t.AssignmentMode,
+		SubtaskCount:     t.SubtaskCount,
+		SubtaskDoneCount: t.SubtaskDoneCount,
 	}
 }
 
@@ -476,6 +488,8 @@ type CreateCustomFieldDefinitionRequest struct {
 	FieldType   taskdom.FieldType      `json:"field_type" binding:"required"`
 	Options     []CustomFieldOptionDTO `json:"options"`
 	IsRequired  bool                   `json:"is_required"`
+	UseInSearch bool                   `json:"use_in_search"`
+	Rows        int                    `json:"rows"`
 }
 
 // UpdateCustomFieldDefinitionRequest is the body for
@@ -485,6 +499,8 @@ type UpdateCustomFieldDefinitionRequest struct {
 	FieldType   *taskdom.FieldType     `json:"field_type"`
 	Options     []CustomFieldOptionDTO `json:"options"`
 	IsRequired  *bool                  `json:"is_required"`
+	UseInSearch *bool                  `json:"use_in_search"`
+	Rows        *int                   `json:"rows"`
 }
 
 // CustomFieldDefinitionResponse is the public representation of a custom
@@ -497,6 +513,8 @@ type CustomFieldDefinitionResponse struct {
 	FieldType   taskdom.FieldType      `json:"field_type"`
 	Options     []CustomFieldOptionDTO `json:"options"`
 	IsRequired  bool                   `json:"is_required"`
+	UseInSearch bool                   `json:"use_in_search"`
+	Rows        int                    `json:"rows"`
 	CreatedAt   time.Time              `json:"created_at"`
 	UpdatedAt   time.Time              `json:"updated_at"`
 }
@@ -539,6 +557,8 @@ func CustomFieldDefinitionFromEntity(f *taskdom.CustomFieldDefinition) CustomFie
 		FieldType:   f.FieldType,
 		Options:     opts,
 		IsRequired:  f.IsRequired,
+		UseInSearch: f.UseInSearch,
+		Rows:        f.Rows,
 		CreatedAt:   f.CreatedAt,
 		UpdatedAt:   f.UpdatedAt,
 	}

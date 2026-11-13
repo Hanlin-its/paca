@@ -1,7 +1,6 @@
 import type { Activity, Task } from "@/lib/interaction-api";
 import type {
 	CustomFieldOption,
-	ProjectMember,
 	TaskStatus,
 	TaskType,
 } from "@/lib/project-api";
@@ -19,9 +18,12 @@ export interface CustomFieldDef {
 		| "Checkbox"
 		| "Select"
 		| "MultiSelect"
-		| "Url";
+		| "Url"
+		| "LongText";
 	required?: boolean;
 	options?: CustomFieldOption[];
+	/** Visible lines for LongText fields. */
+	rows?: number;
 }
 
 export interface Attachment {
@@ -43,7 +45,6 @@ export interface TaskDetailModalProps {
 	onOpenChange: (open: boolean) => void;
 	statuses: TaskStatus[];
 	taskTypes: TaskType[];
-	members?: ProjectMember[];
 	customFields?: CustomFieldDef[];
 	projectName?: string;
 	interactionName?: string;

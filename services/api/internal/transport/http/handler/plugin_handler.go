@@ -7,12 +7,13 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/Paca-AI/api/internal/apierr"
 	plugindom "github.com/Paca-AI/api/internal/domain/plugin"
 	projectdom "github.com/Paca-AI/api/internal/domain/project"
-	"github.com/Paca-AI/api/internal/platform/authz"
+	"github.com/Paca-AI/api/internal/platform/authz/iam"
 	pluginrt "github.com/Paca-AI/api/internal/platform/plugin"
 	jwttoken "github.com/Paca-AI/api/internal/platform/token"
 	"github.com/Paca-AI/api/internal/transport/http/dto"
@@ -30,7 +31,7 @@ type PluginHandler struct {
 	memberRepo      projectdom.MemberRepository
 	tokenManager    *jwttoken.Manager
 	apiKeyAuth      middleware.APIKeyAuthenticator
-	authorizer      *authz.Authorizer
+	authorizer      *iam.Authorizer
 	marketplace     *pluginrt.MarketplaceClient
 	installer       *pluginrt.Installer
 	migrationRunner *pluginrt.MigrationRunner
@@ -46,7 +47,7 @@ func NewPluginHandler(svc plugindom.Service, runtime *pluginrt.Runtime, memberRe
 func (h *PluginHandler) WithRouteAuth(
 	tm *jwttoken.Manager,
 	apiKeyAuth middleware.APIKeyAuthenticator,
-	authorizer *authz.Authorizer,
+	authorizer *iam.Authorizer,
 ) *PluginHandler {
 	h.tokenManager = tm
 	h.apiKeyAuth = apiKeyAuth
@@ -90,7 +91,9 @@ func (h *PluginHandler) ListPlugins(w http.ResponseWriter, r *http.Request) {
 
 	items := make([]dto.PluginResponse, 0, len(plugins))
 	for _, p := range plugins {
-		items = append(items, dto.PluginResponseFromEntityWithSettings(p, settingsByPlugin[p.ID]))
+		item := dto.PluginResponseFromEntityWithSettings(p, settingsByPlugin[p.ID])
+		item.LegacyPermissions = p.Manifest.Backend != nil && h.runtime.UsesLegacyPermissions(r.Context(), p.Name)
+		items = append(items, item)
 	}
 	presenter.OK(w, r, dto.PluginListResponse{Plugins: items})
 }
@@ -596,9 +599,19 @@ func (h *PluginHandler) ProxyRequest(w http.ResponseWriter, r *http.Request) {
 		subPath = "/"
 	}
 
+	// A plugin's internal routes (a Git provider's /_git/* operations) are for
+	// core code only, which reaches them through Runtime.CallInternal. A route
+	// with no manifest declaration carries no auth policy, so without this the
+	// proxy would run them for anyone, signed in or not. Answered exactly like a
+	// route that does not exist.
+	if isInternalPluginPath(subPath) {
+		presenter.Error(w, r, apierr.New(apierr.CodePluginNotFound, "plugin route not found"))
+		return
+	}
+
 	route, pathParams := matchPluginRoute(found.Manifest.Backend.Routes, r.Method, subPath)
 	var mwOK bool
-	r, mwOK = h.applyPluginRouteMiddlewares(w, r, route, pathParams)
+	r, mwOK = h.applyPluginRouteMiddlewares(w, r, found.ID.String(), route, pathParams)
 	if !mwOK {
 		return
 	}
@@ -613,20 +626,22 @@ func (h *PluginHandler) ProxyRequest(w http.ResponseWriter, r *http.Request) {
 	callerID := ""
 	userIDStr := ""
 	callerRole := ""
-	// An agent-API-key request names its agent; the runtime's permission_check
-	// judges it by that agent's own role rather than by userIDStr, which for an
-	// agent key is the shared bot user (see pluginrt.HTTPRequest.AgentID).
-	agentIDStr := ""
-	if agentID, ok := middleware.AgentIDFromRequest(r); ok {
-		agentIDStr = agentID.String()
+	// The kind of the authenticated account, so the runtime's permission_check
+	// judges the caller as the same principal the router's gates do.
+	accountKind := ""
+	principal, authenticated := middleware.PrincipalFrom(r)
+	if authenticated {
+		accountKind = string(principal.Kind)
 	}
-	if claims != nil {
+	if claims != nil && authenticated {
 		callerRole = claims.Role
-		userIDStr = claims.Subject
+		// Plugins receive the account id as "user_id" (the wire name predates
+		// service accounts and agents); keep that field for compatibility.
+		userIDStr = principal.AccountID.String()
 
 		// Resolve project member only when the route's manifest explicitly declares
 		// project-scoped permission enforcement.  Plugin routes that don't carry a
-		// requirePermissions(scope=project) middleware won't incur a DB lookup, and
+		// requireActions(scope=project) middleware won't incur a DB lookup, and
 		// plugins that choose a non-standard path structure are not forced to embed
 		// :projectId at any particular position.
 		if resolveProjectMember {
@@ -640,16 +655,11 @@ func (h *PluginHandler) ProxyRequest(w http.ResponseWriter, r *http.Request) {
 					presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "invalid projectId in path"))
 					return
 				}
-				userID, err := uuid.Parse(claims.Subject)
+				member, err := h.memberRepo.FindMember(r.Context(), projectID, principal.AccountID)
 				if err != nil {
-					presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "invalid subject claim"))
-					return
-				}
-				member, err := h.memberRepo.FindMemberByUserProject(r.Context(), userID, projectID)
-				if err != nil {
-					// API-key-authenticated callers (e.g. the agent bot user) may hold
-					// SUPER_ADMIN global permissions without being a project member.
-					// The requirePermissions check above already passed, so proceed with
+					// API-key-authenticated callers (a service account or an agent)
+					// may hold workspace-wide permissions without being a project member.
+					// The requireActions check above already passed, so proceed with
 					// an empty callerID rather than returning PROJECT_MEMBER_NOT_FOUND.
 					if !middleware.IsAPIKeyAuth(r) {
 						presenter.Error(w, r, err)
@@ -685,15 +695,15 @@ func (h *PluginHandler) ProxyRequest(w http.ResponseWriter, r *http.Request) {
 	// real headers/query/path instead of a guessed constant — those vary a
 	// lot in practice (large cookies, forwarded headers, long query strings).
 	envelopeProbe := &pluginrt.HTTPRequest{
-		Method:     r.Method,
-		Path:       subPath,
-		Query:      query,
-		ProjectID:  pathParams[projectParamName],
-		CallerID:   callerID,
-		UserID:     userIDStr,
-		CallerRole: callerRole,
-		AgentID:    agentIDStr,
-		Headers:    headers,
+		Method:      r.Method,
+		Path:        subPath,
+		Query:       query,
+		ProjectID:   pathParams[projectParamName],
+		CallerID:    callerID,
+		UserID:      userIDStr,
+		CallerRole:  callerRole,
+		AccountKind: accountKind,
+		Headers:     headers,
 	}
 	probeBytes, err := json.Marshal(envelopeProbe)
 	if err != nil {
@@ -729,16 +739,16 @@ func (h *PluginHandler) ProxyRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req := &pluginrt.HTTPRequest{
-		Method:     r.Method,
-		Path:       subPath,
-		Query:      query,
-		ProjectID:  pathParams[projectParamName],
-		CallerID:   callerID,
-		UserID:     userIDStr,
-		CallerRole: callerRole,
-		AgentID:    agentIDStr,
-		Headers:    headers,
-		Body:       bodyBytes,
+		Method:      r.Method,
+		Path:        subPath,
+		Query:       query,
+		ProjectID:   pathParams[projectParamName],
+		CallerID:    callerID,
+		UserID:      userIDStr,
+		CallerRole:  callerRole,
+		AccountKind: accountKind,
+		Headers:     headers,
+		Body:        bodyBytes,
 	}
 
 	// Attach request to context for HTTP host functions.
@@ -802,7 +812,7 @@ func (h *PluginHandler) ProxyRequest(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(pluginResp.Body)
 }
 
-func (h *PluginHandler) applyPluginRouteMiddlewares(w http.ResponseWriter, r *http.Request, route *plugindom.PluginRoute, pathParams map[string]string) (*http.Request, bool) {
+func (h *PluginHandler) applyPluginRouteMiddlewares(w http.ResponseWriter, r *http.Request, pluginID string, route *plugindom.PluginRoute, pathParams map[string]string) (*http.Request, bool) {
 	for _, mw := range h.routeMiddlewares(route) {
 		name := strings.ToLower(strings.TrimSpace(mw.Name))
 		switch name {
@@ -837,46 +847,68 @@ func (h *PluginHandler) applyPluginRouteMiddlewares(w http.ResponseWriter, r *ht
 				return r, false
 			}
 		case "requirepermissions":
+			// Fail closed on a manifest stored before requireActions
+			// (Validate rejects it at install; migration 000065 converts
+			// stored manifests).
+			presenter.Error(w, r, apierr.New(apierr.CodeInternalError, plugindom.ErrRequirePermissionsUnsupported.Error()))
+			return r, false
+		case "requireactions":
 			if h.authorizer == nil {
 				presenter.Error(w, r, apierr.New(apierr.CodeInternalError, "plugin route authorization middleware is not configured"))
 				return r, false
 			}
-			if len(mw.Permissions) == 0 {
-				presenter.Error(w, r, apierr.New(apierr.CodeInternalError, "plugin route requirePermissions requires at least one permission"))
+			if len(mw.Actions) == 0 {
+				presenter.Error(w, r, apierr.New(apierr.CodeInternalError, "plugin route requireActions requires at least one action"))
 				return r, false
 			}
-			scopeResolver := middleware.GlobalScope()
+			// Every action must be allowed (AND). A built-in action is
+			// checked on project/<id> for a project-scoped route (when the
+			// path carries the project), otherwise on its platform root. A
+			// plugin's own action is checked on this plugin inside the
+			// project, project/<id>/plugin/<pluginID>, so a role can grant
+			// it in one project only (or, with no project, on the platform
+			// resource plugin/<pluginID>, which platform-wide grants
+			// (plugin/*) cover).
 			scope := strings.ToLower(strings.TrimSpace(mw.Scope))
+			projectParam := ""
 			switch scope {
 			case "", "global":
 				// keep global scope
 			case "project":
-				projectParam := strings.TrimSpace(mw.ProjectParam)
+				projectParam = strings.TrimSpace(mw.ProjectParam)
 				if projectParam == "" {
 					projectParam = "projectId"
 				}
-				pParam := projectParam
-				scopeResolver = func(_ *http.Request) (*uuid.UUID, error) {
-					v := pathParams[pParam]
-					if v == "" {
-						return nil, nil
-					}
-					id, err := uuid.Parse(v)
-					if err != nil {
-						return nil, err
-					}
-					return &id, nil
-				}
 			default:
-				presenter.Error(w, r, apierr.New(apierr.CodeInternalError, "plugin route requirePermissions has invalid scope"))
+				presenter.Error(w, r, apierr.New(apierr.CodeInternalError, "plugin route requireActions has invalid scope"))
 				return r, false
 			}
-
-			perms := make([]authz.Permission, 0, len(mw.Permissions))
-			for _, p := range mw.Permissions {
-				perms = append(perms, authz.Permission(p))
+			resource := func(action string) (string, error) {
+				if projectParam != "" {
+					if v := pathParams[projectParam]; v != "" {
+						id, err := uuid.Parse(v)
+						if err != nil {
+							return "", apierr.New(apierr.CodeBadRequest, "invalid project id")
+						}
+						if !iam.IsBuiltinAction(action) {
+							return iam.PluginProjectResource(id.String(), pluginID), nil
+						}
+						return "project/" + id.String(), nil
+					}
+				}
+				if root := iam.PlatformRootFor(action); root != "" {
+					return root, nil
+				}
+				return "plugin/" + pluginID, nil
 			}
-			if !middleware.EnforcePermissions(w, r, h.authorizer, scopeResolver, perms...) {
+			checks := make([]middleware.ActionCheck, 0, len(mw.Actions))
+			for _, a := range mw.Actions {
+				action := a
+				checks = append(checks, middleware.ActionCheck{Action: iam.Action(action), Resource: func(*http.Request) (string, error) {
+					return resource(action)
+				}})
+			}
+			if !middleware.EnforceActions(w, r, h.authorizer, checks...) {
 				return r, false
 			}
 		default:
@@ -892,7 +924,7 @@ func (h *PluginHandler) routeMiddlewares(route *plugindom.PluginRoute) []plugind
 	if route == nil {
 		// No declared route matched this request's method+path at all — this
 		// isn't "a route that forgot to declare middlewares" (the case the
-		// fail-closed default below exists for), it's not a route. Apply no
+		// authenticated-only default below exists for), it's not a route. Apply no
 		// host middleware and let it reach the plugin's own WASM router
 		// unauthenticated, same as before this request's method+path was
 		// known to be unmatched — that router is what turns it into a 404
@@ -913,17 +945,16 @@ func (h *PluginHandler) routeMiddlewares(route *plugindom.PluginRoute) []plugind
 	}
 
 	// Default policy for a route that exists in the manifest but didn't
-	// declare its own middlewares: require authentication + a fresh
-	// password. Every route in every audited first-party plugin declares
-	// its own middlewares explicitly, so this default is never actually
-	// exercised today — it exists purely to fail closed for the next
-	// plugin/route that forgets to declare one, rather than silently
-	// allowing anonymous access (the previous default's optionalAuthn made
-	// that mistake invisible: a route with no middlewares at all was
-	// reachable by anyone, logged in or not). Permission checks still must
-	// be declared explicitly in the plugin route's middlewares list — there
-	// is no sensible universal default for which permission an arbitrary
-	// future route should require.
+	// declare its own middlewares: authenticated callers only (authn + a
+	// fresh password). Every route in every audited first-party plugin
+	// declares its own middlewares explicitly, so this default is never
+	// actually exercised today — it exists so the next plugin/route that
+	// forgets to declare one is not reachable anonymously (the previous
+	// default's optionalAuthn made that mistake invisible). It applies no
+	// action check: authorization (requireActions) must be declared
+	// explicitly in the route's middlewares list — there is no sensible
+	// universal default for which action an arbitrary future route should
+	// require.
 	return []plugindom.PluginRouteMiddleware{
 		{Name: "authn"},
 		{Name: "requireFreshPassword"},
@@ -1047,14 +1078,14 @@ func matchPathPattern(pattern, path string) (map[string]string, bool) {
 
 // projectMemberParam returns whether the route manifest requires project-member
 // resolution and, if so, which path-param name holds the project UUID.
-// The param name is taken from the first requirePermissions(scope=project)
+// The param name is taken from the first requireActions(scope=project)
 // middleware's ProjectParam field, defaulting to "projectId" when not set.
 func projectMemberParam(route *plugindom.PluginRoute) (bool, string) {
 	if route == nil {
 		return false, ""
 	}
 	for _, mw := range route.Middlewares {
-		if strings.ToLower(strings.TrimSpace(mw.Name)) == "requirepermissions" &&
+		if strings.ToLower(strings.TrimSpace(mw.Name)) == "requireactions" &&
 			strings.ToLower(strings.TrimSpace(mw.Scope)) == "project" {
 			param := strings.TrimSpace(mw.ProjectParam)
 			if param == "" {
@@ -1098,4 +1129,30 @@ func installArtifactsError(err error) error {
 		return apiErr
 	}
 	return apierr.New(apierr.CodeBadRequest, "failed to install plugin artifacts: "+err.Error())
+}
+
+// isInternalPluginPath reports whether a proxied path addresses a route reserved
+// for core (see plugindom.GitProviderRoutePrefix). It is deliberately broader
+// than a prefix match on the raw string: it decodes percent-escapes, collapses
+// dot segments and repeated slashes, ignores case, and refuses the reserved name
+// as ANY path segment, so no spelling of the path reaches the plugin's router
+// as "/_git/...".
+func isInternalPluginPath(sub string) bool {
+	for range 3 { // escapes can be nested (%255F); decode until stable
+		un, err := url.PathUnescape(sub)
+		if err != nil {
+			return true // undecodable paths are not legitimate plugin routes
+		}
+		if un == sub {
+			break
+		}
+		sub = un
+	}
+	reserved := strings.TrimPrefix(plugindom.GitProviderRoutePrefix, "/")
+	for _, seg := range strings.Split(sub, "/") {
+		if strings.EqualFold(strings.TrimSpace(seg), reserved) {
+			return true
+		}
+	}
+	return false
 }

@@ -34,6 +34,13 @@ type Config struct {
 	// "not configured."
 	SSHBastionHost  string
 	PortForwardHost string
+	// DockerInSandbox mirrors agent-runner's own SANDBOX_DOCKER_IN_SANDBOX:
+	// whether a docker_enabled sandbox can run at all on this deployment.
+	// Its only reader is GET /environments/config, which the frontend uses
+	// to decide whether to offer the docker toggle at all — the enforcement
+	// itself lives in agent-runner, which refuses the sandbox before
+	// submitting it.
+	DockerInSandbox bool
 	Env             string // development | production
 }
 
@@ -64,6 +71,14 @@ type ServerConfig struct {
 	Port         string
 	CookieSecure bool   // set Secure flag on auth cookies; enable when behind an SSL-terminating proxy
 	PublicURL    string // externally reachable base URL (for example, https://paca.example.com)
+	// WebhookPublicURL is the origin Git providers are told to deliver to.
+	// Empty: PublicURL. Set it when the public edge reaches only the browser
+	// and setup paths, so webhooks need their own host.
+	WebhookPublicURL string
+	// PasskeyRPID overrides the WebAuthn relying-party ID, which defaults to
+	// the host of PublicURL. Set it to a parent domain to share passkeys
+	// across subdomains. Changing it invalidates every registered passkey.
+	PasskeyRPID string
 	// CORSAllowedOrigins is the allow-list of frontend origins permitted to
 	// make cross-origin requests. A single "*" (the default, for backward
 	// compatibility with existing deployments that don't set CORS_ORIGINS)
@@ -76,6 +91,13 @@ type ServerConfig struct {
 	// SSO login/callback); token refresh gets 3x that. 0 disables the
 	// limits. Configure via AUTH_RATE_LIMIT_PER_MINUTE (default 20).
 	AuthRateLimit int
+	// TrustedProxyHops is how many reverse proxies sit in front of the API
+	// and append to X-Forwarded-For; the client address is read that many
+	// entries from the right. 0 ignores the header and uses the socket peer
+	// (API exposed directly). It feeds the IP allow-lists and rate limits, so
+	// an exposed API with a non-zero value lets callers spoof their address.
+	// Configure via TRUSTED_PROXY_HOPS (default 1).
+	TrustedProxyHops int
 }
 
 // AdminConfig holds the default administrator credentials seeded on first startup.
@@ -183,6 +205,11 @@ type PluginsConfig struct {
 	// metadata and artifacts.
 	MarketplaceTimeout time.Duration
 
+	// FetchPrivateHosts lists exact hostnames that paca.fetch may reach on a
+	// private network address, for plugins whose manifest names them
+	// (PLUGIN_FETCH_PRIVATE_HOSTS). Empty by default.
+	FetchPrivateHosts []string
+
 	// Limits holds resource limits enforced on plugin WASM execution.
 	Limits PluginLimitsConfig
 }
@@ -208,11 +235,4 @@ type SecurityConfig struct {
 	// EncryptionKey is a 32-byte AES-256 key (hex-encoded) used to encrypt
 	// sensitive data at rest.
 	EncryptionKey string
-
-	// AgentAPIKey is a pre-shared secret that the AI agent service uses to
-	// authenticate against the Paca API.  When set, the API accepts this key
-	// via the X-API-Key header and authenticates the request as the built-in
-	// agent bot user — no database lookup is required.
-	// Configure via the AGENT_API_KEY environment variable.
-	AgentAPIKey string
 }

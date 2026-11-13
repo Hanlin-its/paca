@@ -30,7 +30,8 @@
 		"team": "Équipe",
 		"settings": "Paramètres",
 		"changelog": "Nouveautés",
-		"activity": "Activité"
+		"activity": "Activité",
+		"serviceAccounts": "Comptes de service"
 	},
 	"projectSwitcher": {
 		"projects": "Projets",
@@ -73,12 +74,18 @@
 		"unmuteSound": "Activer le son des notifications",
 		"text": {
 			"assigned": "{{actor}} vous a assigné à la tâche #{{taskNumber}} — {{taskTitle}}",
-			"mentioned": "{{actor}} vous a mentionné dans #{{taskNumber}} — {{taskTitle}}"
-		}
+			"mentioned": "{{actor}} vous a mentionné dans #{{taskNumber}} — {{taskTitle}}",
+			"question": "{{actor}} vous a posé une question dans {{title}}",
+			"mentionedInDoc": "{{actor}} vous a mentionné dans le document {{title}}",
+			"automation": "Automatisation : {{message}} (#{{taskNumber}} — {{taskTitle}})"
+		},
+		"untitledConversation": "Conversation sans titre",
+		"globalChat": "Chat global",
+		"untitledDocument": "Document sans titre"
 	},
 	"userMenu": {
 		"signIn": "Se connecter",
-		"myProfile": "Mon profil",
+		"myProfile": "Compte",
 		"apiKeys": "Clés API",
 		"logOut": "Se déconnecter",
 		"loggingOut": "Déconnexion en cours…"

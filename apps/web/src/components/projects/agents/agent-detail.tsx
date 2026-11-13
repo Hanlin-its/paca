@@ -7,9 +7,9 @@ import {
 	CircleCheck,
 	Code2,
 	ExternalLink,
+	GitBranch,
 	KeyRound,
 	Loader2,
-	Lock,
 	Plus,
 	Save,
 	Server,
@@ -24,8 +24,6 @@ import {
 	DefaultFolderSelect,
 } from "@/components/projects/environments/environment-folder-select";
 import { AvatarUpload } from "@/components/shared/avatar-upload";
-import { EntityAvatarContent } from "@/components/shared/entity-avatar";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import {
@@ -55,18 +53,15 @@ import { useProjectPermissions } from "@/hooks/use-project-permissions";
 import {
 	type ACPProvider,
 	type Agent,
-	type AgentAccessMode,
 	type AgentMCPServer,
 	type AgentSkill,
 	type AgentType,
-	addAgentAccessGrant,
 	addEnvVar,
 	addGlobalEnvVar,
 	addGlobalMCPServer,
 	addGlobalSkill,
 	addMCPServer,
 	addSkill,
-	agentAccessGrantsQueryOptions,
 	agentEnvVarsQueryOptions,
 	agentMCPServersQueryOptions,
 	agentQueryOptions,
@@ -83,7 +78,6 @@ import {
 	globalAgentQueryOptions,
 	globalAgentSkillsQueryOptions,
 	llmModelsQueryOptions,
-	removeAgentAccessGrant,
 	systemSkillsQueryOptions,
 	updateAgent,
 	updateGlobalAgent,
@@ -93,16 +87,17 @@ import {
 	updateSkill,
 	verifyCLILogin,
 } from "@/lib/agent-api";
+import { invalidateAgentDirectory } from "@/lib/agent-directory";
 import { ApiErrorCode, getApiErrorCode } from "@/lib/api-error";
-import { environmentsQueryOptions } from "@/lib/environment-api";
-import { projectMembersQueryOptions } from "@/lib/project-api";
 import {
-	resolveAgentAvatarUrl,
-	resolveMemberAvatarUrl,
-} from "@/lib/provider-logos";
+	environmentConfigQueryOptions,
+	environmentQueryOptions,
+} from "@/lib/environment-api";
+import { agentAvatar } from "@/lib/provider-logos";
 import { splitShellCommand } from "@/lib/shell-command";
-import { getInitials } from "@/lib/utils";
+import { AgentGitTab } from "./AgentGitTab";
 import { AcpBridgeSetup } from "./acp-bridge-setup";
+import { AcpModelEffortFields } from "./acp-model-effort-fields";
 import { AgentActivityTab } from "./agent-activity-tab";
 import { AgentGlobalRoleTab } from "./agent-global-role-tab";
 
@@ -125,7 +120,7 @@ type Tab =
 	| "skills"
 	| "env-vars"
 	| "global-role"
-	| "access"
+	| "git"
 	| "activity";
 
 const CUSTOM = "__custom__";
@@ -148,10 +143,6 @@ function OverviewTab({
 	// Only fetched at project scope — a global agent has no project to
 	// default an environment from, and the Select below is hidden entirely
 	// in that case (see the !isAcp block below).
-	const { data: environments = [] } = useQuery({
-		...environmentsQueryOptions(projectId ?? ""),
-		enabled: !!projectId,
-	});
 
 	const providers = Object.keys(llmModels);
 
@@ -189,6 +180,10 @@ function OverviewTab({
 		agent.git_committer_email,
 	);
 	const [dockerEnabled, setDockerEnabled] = useState(agent.docker_enabled);
+	// Older APIs predate docker_in_sandbox and always allowed it, so only an
+	// explicit false hides the toggle.
+	const { data: deploymentConfig } = useQuery(environmentConfigQueryOptions());
+	const dockerInSandbox = deploymentConfig?.docker_in_sandbox !== false;
 	const [parallelismLimit, setParallelismLimit] = useState(
 		agent.parallelism_limit,
 	);
@@ -223,15 +218,18 @@ function OverviewTab({
 		}
 		setDefaultEnvironmentIdState(id);
 	};
-	const selectedEnvironment = environments.find(
-		(env) => env.id === defaultEnvironmentId,
-	);
+	const { data: selectedEnvironment } = useQuery({
+		...environmentQueryOptions(projectId ?? "", defaultEnvironmentId),
+		enabled: !!projectId && !!defaultEnvironmentId,
+	});
 	const [acpProviderSelect, setAcpProviderSelect] = useState<ACPProvider>(
 		agent.acp_provider ?? "claude-code",
 	);
 	const [acpCommand, setAcpCommand] = useState(
 		(agent.acp_command ?? []).join(" "),
 	);
+	const [acpModel, setAcpModel] = useState(agent.acp_model ?? "");
+	const [acpEffort, setAcpEffort] = useState(agent.acp_effort ?? "");
 	const [cliProviderSelect, setCliProviderSelect] = useState<CLIProvider>(
 		agent.cli_provider ?? "claude-code",
 	);
@@ -284,7 +282,9 @@ function OverviewTab({
 		effectiveParallelismLimit !== agent.parallelism_limit ||
 		(isAcp
 			? acpProviderSelect !== (agent.acp_provider ?? "claude-code") ||
-				acpCommandParts.join(" ") !== (agent.acp_command ?? []).join(" ")
+				acpCommandParts.join(" ") !== (agent.acp_command ?? []).join(" ") ||
+				acpModel.trim() !== (agent.acp_model ?? "") ||
+				acpEffort !== (agent.acp_effort ?? "")
 			: isProviderCli
 				? cliProviderSelect !== (agent.cli_provider ?? "claude-code") ||
 					cliModel !== (agent.cli_model ?? "") ||
@@ -310,6 +310,8 @@ function OverviewTab({
 				...(isAcp
 					? {
 							acp_provider: acpProviderSelect,
+							acp_model: acpModel.trim(),
+							acp_effort: acpEffort,
 							...(acpProviderSelect === "custom"
 								? { acp_command: acpCommandParts }
 								: {}),
@@ -347,6 +349,7 @@ function OverviewTab({
 				: updateGlobalAgent(agent.id, payload);
 		},
 		onSuccess: (updated) => {
+			invalidateAgentDirectory(projectId ?? null);
 			qc.setQueryData(
 				(projectId
 					? agentQueryOptions(projectId, agent.id)
@@ -568,6 +571,9 @@ function OverviewTab({
 								<SelectItem value="goose">
 									{t("agents.detail.overview.acpProviderGoose")}
 								</SelectItem>
+								<SelectItem value="opencode">
+									{t("agents.detail.overview.acpProviderOpenCode")}
+								</SelectItem>
 								<SelectSeparator />
 								<SelectItem value="custom">
 									{t("agents.detail.overview.acpProviderCustom")}
@@ -589,6 +595,16 @@ function OverviewTab({
 							</p>
 						</div>
 					)}
+					<div className="space-y-3 mt-3">
+						<AcpModelEffortFields
+							idPrefix="agent-detail"
+							model={acpModel}
+							effort={acpEffort}
+							onModelChange={setAcpModel}
+							onEffortChange={setAcpEffort}
+							disabled={!canWrite}
+						/>
+					</div>
 					<p className="text-xs text-muted-foreground rounded-md bg-muted/40 px-3 py-2 mt-3">
 						{t("agents.detail.overview.acpGuidanceBanner")}
 					</p>
@@ -789,7 +805,6 @@ function OverviewTab({
 									</div>
 									<DefaultEnvironmentSelect
 										projectId={projectId}
-										environments={environments}
 										value={defaultEnvironmentId}
 										onChange={setDefaultEnvironmentId}
 										disabled={!canWrite}
@@ -823,7 +838,10 @@ function OverviewTab({
 							    sandbox — once a static default environment is picked, that
 							    environment's own Docker setting (set at creation) governs
 							    instead, so this toggle no longer means anything. */}
-							{!defaultEnvironmentId && (
+							{/* Shown when the deployment allows docker, or when this
+							    agent already has it on — an existing docker-enabled agent
+							    must keep a way to switch it off. */}
+							{!defaultEnvironmentId && (dockerInSandbox || dockerEnabled) && (
 								<div className="flex items-center justify-between gap-3">
 									<div>
 										<p className="text-sm font-medium">
@@ -1346,226 +1364,6 @@ function MCPServersTab({
 				open={addOpen}
 				onOpenChange={setAddOpen}
 			/>
-		</div>
-	);
-}
-
-// ── Access Tab ────────────────────────────────────────────────────────────────
-// Project-scoped only (a global agent viewed with no projectId has no single
-// project's members to grant against — see AgentDetailView's visibleTabs
-// filtering, same reasoning as the Activity tab). Restricting/granting here
-// only ever governs *usage* (starting/replying to a chat) — MCP servers,
-// skills, and env vars above stay governed purely by agents.write regardless
-// of access_mode, same as the backend.
-
-function AccessTab({
-	projectId,
-	agentId,
-	accessMode,
-	canWrite,
-}: {
-	projectId: string;
-	agentId: string;
-	accessMode: AgentAccessMode;
-	canWrite: boolean;
-}) {
-	const { t } = useTranslation("projects");
-	const qc = useQueryClient();
-	const [selectedMemberId, setSelectedMemberId] = useState("");
-
-	const agentKey = agentQueryOptions(projectId, agentId).queryKey;
-	const grantsQuery = agentAccessGrantsQueryOptions(projectId, agentId);
-	const { data: grants = [] } = useQuery(grantsQuery);
-	const { data: members = [] } = useQuery(
-		projectMembersQueryOptions(projectId),
-	);
-
-	const toggleModeMutation = useMutation({
-		mutationFn: (restricted: boolean) =>
-			updateAgent(projectId, agentId, {
-				access_mode: restricted ? "restricted" : "open",
-			}),
-		onSuccess: () => qc.invalidateQueries({ queryKey: agentKey }),
-	});
-
-	const addMutation = useMutation({
-		mutationFn: (memberId: string) =>
-			addAgentAccessGrant(projectId, agentId, memberId),
-		onSuccess: () => {
-			setSelectedMemberId("");
-			qc.invalidateQueries({ queryKey: grantsQuery.queryKey });
-			qc.invalidateQueries({ queryKey: agentKey });
-		},
-	});
-
-	// availableMembers already excludes anyone with a grant, so this is
-	// mainly a race (stale member list, or granted concurrently elsewhere).
-	const addErrorMessage = addMutation.isError
-		? getApiErrorCode(addMutation.error) === ApiErrorCode.AgentAccessGrantExists
-			? t("agents.detail.access.alreadyGranted")
-			: t("agents.detail.access.grantFailed")
-		: null;
-
-	const removeMutation = useMutation({
-		mutationFn: (memberId: string) =>
-			removeAgentAccessGrant(projectId, agentId, memberId),
-		onSuccess: () => {
-			qc.invalidateQueries({ queryKey: grantsQuery.queryKey });
-			qc.invalidateQueries({ queryKey: agentKey });
-		},
-	});
-
-	const memberName = (m: {
-		member_type?: string;
-		agent_name?: string;
-		full_name: string;
-		username: string;
-	}) =>
-		m.member_type === "agent"
-			? (m.agent_name ?? m.username)
-			: m.full_name || m.username;
-
-	const grantedMemberIds = new Set(grants.map((g) => g.member_id));
-	const availableMembers = members.filter((m) => !grantedMemberIds.has(m.id));
-	const memberById = new Map(members.map((m) => [m.id, m]));
-
-	return (
-		<div className="space-y-6">
-			<div className="flex items-center justify-between rounded-lg border border-border/60 bg-card px-4 py-3">
-				<div className="space-y-0.5 pr-4">
-					<p className="text-sm font-medium">
-						{t("agents.detail.access.restrictLabel")}
-					</p>
-					<p className="text-xs text-muted-foreground">
-						{t("agents.detail.access.restrictDescription")}
-					</p>
-				</div>
-				<Switch
-					checked={accessMode === "restricted"}
-					onCheckedChange={(checked) =>
-						canWrite && toggleModeMutation.mutate(checked)
-					}
-					disabled={!canWrite || toggleModeMutation.isPending}
-				/>
-			</div>
-
-			{accessMode === "restricted" && (
-				<div className="space-y-3">
-					{canWrite && (
-						<div className="flex items-center gap-2">
-							<Select
-								value={selectedMemberId}
-								onValueChange={(v) => v && setSelectedMemberId(v)}
-								items={availableMembers.map((m) => ({
-									value: m.id,
-									label: memberName(m),
-								}))}
-							>
-								<SelectTrigger className="flex-1">
-									<SelectValue
-										placeholder={t("agents.detail.access.pickMember")}
-									/>
-								</SelectTrigger>
-								<SelectContent>
-									{availableMembers.map((m) => {
-										const isBot = m.member_type === "agent";
-										return (
-											<SelectItem key={m.id} value={m.id}>
-												<div className="flex size-5 shrink-0 items-center justify-center rounded-full bg-linear-to-br from-primary/20 to-primary/10 text-[10px] font-bold text-primary ring-1 ring-primary/20">
-													<EntityAvatarContent
-														avatarUrl={resolveMemberAvatarUrl(m)}
-													>
-														{isBot ? (
-															<Bot className="size-3" />
-														) : (
-															getInitials(memberName(m))
-														)}
-													</EntityAvatarContent>
-												</div>
-												<span className="flex-1 truncate text-left">
-													{memberName(m)}
-												</span>
-											</SelectItem>
-										);
-									})}
-								</SelectContent>
-							</Select>
-							<Button
-								size="sm"
-								disabled={!selectedMemberId || addMutation.isPending}
-								onClick={() =>
-									selectedMemberId && addMutation.mutate(selectedMemberId)
-								}
-							>
-								<Plus className="size-4 mr-1.5" />
-								{t("agents.detail.access.grantAccess")}
-							</Button>
-						</div>
-					)}
-
-					{addErrorMessage && (
-						<p className="text-sm text-destructive rounded-md bg-destructive/10 px-3 py-2">
-							{addErrorMessage}
-						</p>
-					)}
-
-					{grants.length === 0 ? (
-						<div className="flex flex-col items-center justify-center gap-3 py-14 rounded-xl border border-dashed border-border">
-							<Lock className="size-8 text-muted-foreground/40" />
-							<p className="text-sm text-muted-foreground">
-								{t("agents.detail.access.empty")}
-							</p>
-						</div>
-					) : (
-						<div className="space-y-2">
-							{grants.map((g) => {
-								const member = memberById.get(g.member_id);
-								const display = member ? memberName(member) : g.member_id;
-								const isBot = member?.member_type === "agent";
-								const avatarUrl = member
-									? resolveMemberAvatarUrl(member)
-									: undefined;
-								return (
-									<div
-										key={g.id}
-										className="flex items-center gap-3 rounded-xl border border-border/50 bg-card px-4 py-3 transition-colors hover:bg-muted/30"
-									>
-										<Avatar className="size-9 shrink-0">
-											{avatarUrl ? <AvatarImage src={avatarUrl} /> : null}
-											<AvatarFallback className="text-xs font-semibold bg-primary/10 text-primary">
-												{isBot ? (
-													<Bot className="size-4" />
-												) : (
-													getInitials(display)
-												)}
-											</AvatarFallback>
-										</Avatar>
-										<div className="min-w-0 flex-1">
-											<p className="text-sm font-medium truncate">{display}</p>
-											{member && (
-												<p className="text-xs text-muted-foreground truncate">
-													@{member.username}
-												</p>
-											)}
-										</div>
-										{canWrite && (
-											<Button
-												variant="ghost"
-												size="icon"
-												className="size-7 shrink-0 text-muted-foreground hover:text-destructive"
-												onClick={() => removeMutation.mutate(g.member_id)}
-												disabled={removeMutation.isPending}
-											>
-												<Trash2 className="size-3.5" />
-											</Button>
-										)}
-									</div>
-								);
-							})}
-						</div>
-					)}
-				</div>
-			)}
 		</div>
 	);
 }
@@ -2125,11 +1923,7 @@ const TABS = [
 		labelKey: "agents.detail.tabs.globalRole",
 		icon: ShieldCheck,
 	},
-	{
-		id: "access",
-		labelKey: "agents.detail.tabs.access",
-		icon: Lock,
-	},
+	{ id: "git", labelKey: "agents.detail.tabs.git", icon: GitBranch },
 	{
 		id: "activity",
 		labelKey: "agents.detail.tabs.activity",
@@ -2159,8 +1953,8 @@ export function AgentDetailView({
 	const { hasProjectPermission } = useProjectPermissions(projectId ?? "");
 	const { hasPermission: hasGlobalPermission } = usePermissions();
 	const canWrite = projectId
-		? hasProjectPermission("agents.write")
-		: hasGlobalPermission("agents.write");
+		? hasProjectPermission("agents:write")
+		: hasGlobalPermission("agents:write");
 
 	const { data: projectAgent } = useQuery({
 		...agentQueryOptions(projectId ?? "", agentId),
@@ -2220,10 +2014,12 @@ export function AgentDetailView({
 		agent?.agent_type === "provider_cli" &&
 		agent.cli_provider !== "claude-code";
 	const visibleTabs = TABS.filter((tab) => {
-		if ((tab.id === "activity" || tab.id === "access") && !projectId) {
+		if (tab.id === "activity" && !projectId) {
 			return false;
 		}
 		if (tab.id === "global-role" && projectId) return false;
+		// An agent's Git identity is managed through its project's endpoints.
+		if (tab.id === "git" && !projectId) return false;
 		if (agent?.agent_type === "acp" && acpHiddenTabs.includes(tab.id)) {
 			return false;
 		}
@@ -2253,13 +2049,6 @@ export function AgentDetailView({
 		);
 	}
 
-	const initials = agent.name
-		.split(" ")
-		.map((w) => w[0])
-		.join("")
-		.toUpperCase()
-		.slice(0, 2);
-
 	return (
 		<div className="flex flex-col flex-1 min-h-0">
 			{/* Agent header */}
@@ -2271,12 +2060,9 @@ export function AgentDetailView({
 								? `/projects/${projectId}/agents/${agent.id}`
 								: `/admin/agents/${agent.id}`
 						}
-						avatarUrl={resolveAgentAvatarUrl(agent, "full")}
-						canRemove={!!agent.avatar_url}
-						fallback={initials}
+						avatar={{ ...agentAvatar(agent, "full"), size: "lg" }}
 						disabled={!canWrite}
-						className="size-12 rounded-xl bg-primary/10"
-						fallbackClassName="bg-primary/10 text-primary font-bold text-base"
+						className="size-12 rounded-xl"
 						labels={{
 							change: t("agents.detail.avatar.change"),
 							remove: t("agents.detail.avatar.remove"),
@@ -2401,11 +2187,10 @@ export function AgentDetailView({
 				{activeTab === "global-role" && !projectId && (
 					<AgentGlobalRoleTab agent={agent} canWrite={canWrite} />
 				)}
-				{activeTab === "access" && projectId && (
-					<AccessTab
+				{activeTab === "git" && projectId && (
+					<AgentGitTab
 						projectId={projectId}
 						agentId={agentId}
-						accessMode={agent.access_mode}
 						canWrite={canWrite}
 					/>
 				)}

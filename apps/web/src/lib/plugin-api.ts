@@ -24,13 +24,20 @@ export interface ExtensionPointRegistration {
 }
 
 export interface PluginNavItem {
-	scope: "project" | "admin";
+	/**
+	 * Where the page lives. "project" and "admin" pages are listed in the
+	 * matching sidebar. An "app" page is a top-level page at
+	 * `/plugin-pages/:pluginId/:slug` that is not listed in any sidebar: it is
+	 * reached by URL, e.g. as the return address of an external service
+	 * (an OAuth/App-installation callback) or from a link inside the plugin.
+	 */
+	scope: "project" | "admin" | "app";
 	slug: string;
 	label: string;
 	component: string;
 	icon?: string;
 	/**
-	 * Permission key (built-in, or one of this plugin's own
+	 * IAM action (built-in, e.g. "tasks:read", or one of this plugin's own
 	 * `customPermissions`) required to see and access this nav item's page.
 	 * Checked against the caller's global permissions for `scope: "admin"`
 	 * or their project permissions for `scope: "project"`. If omitted, the
@@ -69,8 +76,9 @@ export interface PluginCustomPermission {
 	key: string;
 	label: string;
 	description?: string;
-	/** Which role editor this permission appears in. Defaults to "project". */
-	scope?: "project" | "global";
+	/** Which role editor this permission appears in; "both" lists it in the
+	 *  project and the global one. Defaults to "project". */
+	scope?: "project" | "global" | "both";
 }
 
 export interface Plugin {
@@ -80,6 +88,10 @@ export interface Plugin {
 	manifest: PluginManifest;
 	extension_settings?: PluginExtensionSetting[];
 	enabled: boolean;
+	/** The installed package still uses the retired requirePermissions
+	 *  middleware; reinstalling or upgrading that build is rejected until the
+	 *  author publishes one that uses requireActions. */
+	legacy_permissions?: boolean;
 	installed_at: string;
 	updated_at: string;
 }
@@ -189,6 +201,7 @@ export type ExtensionPointId =
 	| "view"
 	| "project.page"
 	| "admin.page"
+	| "app.page"
 	| "user.settings.tab";
 
 export interface PluginRegistration {
@@ -254,31 +267,39 @@ export function buildRegistryMap(
 
 // ── Nav item helpers ──────────────────────────────────────────────────────────
 
+export type PluginNavScope = "project" | "admin" | "app";
+
+const NAV_SCOPE_POINT: Record<PluginNavScope, ExtensionPointId> = {
+	project: "project.page",
+	admin: "admin.page",
+	app: "app.page",
+};
+
 export interface PluginNavRegistration {
 	pluginId: string; // reverse-DNS identifier, e.g. "com.paca.time-logging"
 	pluginName: string;
-	scope: "project" | "admin";
+	scope: PluginNavScope;
 	slug: string;
 	label: string;
 	icon?: string;
 	/** See `PluginNavItem.requiredPermission`. */
 	requiredPermission?: string;
-	/** The `project.page` / `admin.page` extension point registration this nav item routes to. */
+	/** The `project.page` / `admin.page` / `app.page` extension point registration this nav item routes to. */
 	registration: PluginRegistration;
 }
 
 /**
- * Build the list of sidebar nav items contributed by enabled plugins for the
- * given scope ("project" or "admin"). Each nav item must reference a
- * component also registered at the matching `project.page`/`admin.page`
- * extension point — nav items without a matching registration are skipped.
+ * Build the list of nav items contributed by enabled plugins for the given
+ * scope. Each nav item must reference a component also registered at the
+ * matching `project.page`/`admin.page`/`app.page` extension point — nav items
+ * without a matching registration are skipped. ("app" items are routable but
+ * no sidebar lists them.)
  */
 export function buildNavItems(
 	plugins: Plugin[],
-	scope: "project" | "admin",
+	scope: PluginNavScope,
 ): PluginNavRegistration[] {
-	const point: ExtensionPointId =
-		scope === "project" ? "project.page" : "admin.page";
+	const point = NAV_SCOPE_POINT[scope];
 	const registryMap = buildRegistryMap(plugins);
 	const pageRegs = registryMap.get(point) ?? [];
 
@@ -326,7 +347,8 @@ export function collectPluginCustomPermissions(
 	for (const plugin of plugins) {
 		if (!plugin.enabled) continue;
 		for (const perm of plugin.manifest.customPermissions ?? []) {
-			if ((perm.scope ?? "project") !== scope) continue;
+			const declared = perm.scope ?? "project";
+			if (declared !== scope && declared !== "both") continue;
 			result.push({
 				...perm,
 				pluginId: plugin.manifest.id,

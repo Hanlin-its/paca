@@ -3,11 +3,13 @@ package tasksvc
 
 import (
 	"context"
+	"maps"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/Paca-AI/api/internal/apierr"
 	taskdom "github.com/Paca-AI/api/internal/domain/task"
 	"github.com/Paca-AI/api/internal/events"
 	activitysvc "github.com/Paca-AI/api/internal/service/activity"
@@ -390,6 +392,37 @@ func (s *Service) ListDistinctTags(ctx context.Context, projectID uuid.UUID) ([]
 	return s.repo.ListDistinctTags(ctx, projectID)
 }
 
+// ListGroupColumns returns the columns of a group-by dimension — see
+// taskdom.Repository.ListGroupColumns. by is one of the taskdom.GroupBy*
+// dimensions with data-derived columns (tags, assignee, reporter) or the key of
+// a custom field; a custom field's type is resolved here, not taken from the
+// caller.
+func (s *Service) ListGroupColumns(ctx context.Context, projectID uuid.UUID, filter taskdom.TaskFilter, by string) ([]taskdom.GroupColumn, error) {
+	fieldType := ""
+	switch by {
+	case taskdom.GroupByTags, taskdom.GroupByAssignee, taskdom.GroupByReporter:
+	case taskdom.GroupByStatus, taskdom.GroupBySprint, taskdom.GroupByType, taskdom.GroupByImportance:
+		return nil, apierr.New(apierr.CodeBadRequest, "column_by has a fixed set of columns")
+	default:
+		cfs, err := s.repo.ListCustomFieldDefinitions(ctx, projectID)
+		if err != nil {
+			return nil, err
+		}
+		found := false
+		for _, cf := range cfs {
+			if cf.FieldKey == by {
+				fieldType = string(cf.FieldType)
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, taskdom.ErrCustomFieldNotFound
+		}
+	}
+	return s.repo.ListGroupColumns(ctx, projectID, filter, by, fieldType)
+}
+
 // ListAssignedTasks returns open tasks assigned to any of memberIDs, across
 // their respective projects — see taskdom.Repository.ListAssignedTasks.
 func (s *Service) ListAssignedTasks(ctx context.Context, memberIDs []uuid.UUID, limit int, cursorAfter *string) ([]*taskdom.Task, bool, error) {
@@ -502,6 +535,15 @@ func (s *Service) CreateTask(ctx context.Context, in taskdom.CreateTaskInput) (*
 
 // UpdateTask updates the mutable fields of an existing task.
 func (s *Service) UpdateTask(ctx context.Context, projectID, id uuid.UUID, in taskdom.UpdateTaskInput) (*taskdom.Task, error) {
+	// The parent/type rules (own parent, cycles, Epic-can't-have-parent) depend
+	// on both fields together, so a save touching either must read and check
+	// them under the row lock — otherwise two concurrent saves each validate
+	// against the old value of the other's field and both write.
+	if in.ParentTaskID != nil || in.TaskTypeID != nil {
+		return s.UpdateTaskAtomic(ctx, projectID, id, func(*taskdom.Task) (taskdom.UpdateTaskInput, bool) {
+			return in, true
+		})
+	}
 	t, err := s.repo.FindTaskByID(ctx, id)
 	if err != nil {
 		return nil, err
@@ -509,13 +551,21 @@ func (s *Service) UpdateTask(ctx context.Context, projectID, id uuid.UUID, in ta
 	if t.ProjectID != projectID {
 		return nil, taskdom.ErrTaskNotFound
 	}
-	if err := s.applyTaskUpdate(ctx, t, in); err != nil {
+	fields, err := s.applyTaskUpdate(ctx, t, in)
+	if err != nil {
 		return nil, err
 	}
-	if err := s.repo.UpdateTask(ctx, t); err != nil {
+	// Write only the submitted fields: t was read without a lock, so writing
+	// every column back would revert any field a concurrent save changed.
+	var customFieldsPatch map[string]any
+	if in.CustomFields != nil {
+		customFieldsPatch = *in.CustomFields
+	}
+	if err := s.repo.UpdateTaskFields(ctx, t, fields, customFieldsPatch); err != nil {
 		return nil, err
 	}
-	return t, nil
+	// t's untouched fields may be stale; return what is actually stored.
+	return s.repo.FindTaskByID(ctx, id)
 }
 
 // UpdateTaskAtomic is UpdateTask, but the read decide bases its decision on
@@ -533,7 +583,7 @@ func (s *Service) UpdateTaskAtomic(ctx context.Context, projectID, id uuid.UUID,
 		if !ok {
 			return nil, nil
 		}
-		if err := s.applyTaskUpdate(ctx, current, in); err != nil {
+		if _, err := s.applyTaskUpdate(ctx, current, in); err != nil {
 			return nil, err
 		}
 		return current, nil
@@ -544,9 +594,11 @@ func (s *Service) UpdateTaskAtomic(ctx context.Context, projectID, id uuid.UUID,
 // project (parent-cycle/epic-parent constraints) and mutates t in place —
 // shared by UpdateTask and UpdateTaskAtomic so both apply identical
 // validation no matter how the read that produced t was obtained.
-func (s *Service) applyTaskUpdate(ctx context.Context, t *taskdom.Task, in taskdom.UpdateTaskInput) error {
+func (s *Service) applyTaskUpdate(ctx context.Context, t *taskdom.Task, in taskdom.UpdateTaskInput) ([]taskdom.TaskField, error) {
+	var fields []taskdom.TaskField
 	if title := strings.TrimSpace(in.Title); title != "" {
 		t.Title = title
+		fields = append(fields, taskdom.TaskFieldTitle)
 	}
 
 	// Compute the effective parent and type IDs after the update to validate constraints.
@@ -561,40 +613,47 @@ func (s *Service) applyTaskUpdate(ctx context.Context, t *taskdom.Task, in taskd
 	// Validate parent constraints using the post-update effective values.
 	if effectiveParentID != nil {
 		if *effectiveParentID == t.ID {
-			return taskdom.ErrTaskCannotBeOwnParent
+			return nil, taskdom.ErrTaskCannotBeOwnParent
 		}
 		if s.wouldCreateCycle(ctx, t.ID, *effectiveParentID) {
-			return taskdom.ErrTaskParentCycleDetected
+			return nil, taskdom.ErrTaskParentCycleDetected
 		}
 		isEpic, err := s.isEpicTaskType(ctx, effectiveTypeID)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if isEpic {
-			return taskdom.ErrEpicCannotHaveParent
+			return nil, taskdom.ErrEpicCannotHaveParent
 		}
 	}
 
 	if in.TaskTypeID != nil {
 		t.TaskTypeID = *in.TaskTypeID
+		fields = append(fields, taskdom.TaskFieldTaskType)
 	}
 	if in.StatusID != nil {
 		t.StatusID = *in.StatusID
+		fields = append(fields, taskdom.TaskFieldStatus)
 	}
 	if in.SprintID != nil {
 		t.SprintID = *in.SprintID
+		fields = append(fields, taskdom.TaskFieldSprint)
 	}
 	if in.ParentTaskID != nil {
 		t.ParentTaskID = *in.ParentTaskID
+		fields = append(fields, taskdom.TaskFieldParentTask)
 	}
 	if in.Description != nil {
 		t.Description = *in.Description
+		fields = append(fields, taskdom.TaskFieldDescription)
 	}
 	if in.Importance != nil {
 		t.Importance = *in.Importance
+		fields = append(fields, taskdom.TaskFieldImportance)
 	}
 	if in.StoryPoints != nil {
 		t.StoryPoints = *in.StoryPoints
+		fields = append(fields, taskdom.TaskFieldStoryPoints)
 	}
 	// A human explicitly changing AssigneeIDs without also (re)stating
 	// AssignmentMode in the same request means "I'm picking this myself" —
@@ -605,33 +664,45 @@ func (s *Service) applyTaskUpdate(ctx context.Context, t *taskdom.Task, in taskd
 	// to avoid tripping this (see worker.TaskAutofillConsumer).
 	if in.AssigneeIDs != nil {
 		t.AssigneeIDs = *in.AssigneeIDs
+		fields = append(fields, taskdom.TaskFieldAssignees)
 		if in.AssignmentMode == nil && t.AssignmentMode == taskdom.AssignmentModeAuto {
 			t.AssignmentMode = taskdom.AssignmentModeManual
+			fields = append(fields, taskdom.TaskFieldAssignmentMode)
 		}
 	}
 	if in.AssignmentMode != nil {
 		if !taskdom.ValidAssignmentModes[*in.AssignmentMode] {
-			return taskdom.ErrTaskAssignmentModeInvalid
+			return nil, taskdom.ErrTaskAssignmentModeInvalid
 		}
 		t.AssignmentMode = *in.AssignmentMode
+		fields = append(fields, taskdom.TaskFieldAssignmentMode)
 	}
 	if in.ReporterID != nil {
 		t.ReporterID = *in.ReporterID
+		fields = append(fields, taskdom.TaskFieldReporter)
 	}
 	if in.CustomFields != nil {
-		t.CustomFields = *in.CustomFields
+		// Merge, don't replace: see UpdateTaskInput's doc comment.
+		merged := make(map[string]any, len(t.CustomFields)+len(*in.CustomFields))
+		maps.Copy(merged, t.CustomFields)
+		maps.Copy(merged, *in.CustomFields)
+		t.CustomFields = merged
+		fields = append(fields, taskdom.TaskFieldCustomFields)
 	}
 	if in.StartDate != nil {
 		t.StartDate = *in.StartDate
+		fields = append(fields, taskdom.TaskFieldStartDate)
 	}
 	if in.DueDate != nil {
 		t.DueDate = *in.DueDate
+		fields = append(fields, taskdom.TaskFieldDueDate)
 	}
 	if in.Tags != nil {
 		t.Tags = *in.Tags
+		fields = append(fields, taskdom.TaskFieldTags)
 	}
 	t.UpdatedAt = time.Now()
-	return nil
+	return fields, nil
 }
 
 // DeleteTask soft-deletes a task by ID, verifying it belongs to projectID.
@@ -685,6 +756,12 @@ func (s *Service) CreateCustomFieldDefinition(ctx context.Context, in taskdom.Cr
 		opts = []taskdom.CustomFieldOption{}
 	}
 
+	// rows only applies to long_text; every other type keeps the default.
+	rows := taskdom.DefaultLongTextRows
+	if in.FieldType == taskdom.FieldTypeLongText {
+		rows = taskdom.ClampLongTextRows(in.Rows)
+	}
+
 	now := time.Now()
 	f := &taskdom.CustomFieldDefinition{
 		ID:          uuid.New(),
@@ -694,6 +771,8 @@ func (s *Service) CreateCustomFieldDefinition(ctx context.Context, in taskdom.Cr
 		FieldType:   in.FieldType,
 		Options:     opts,
 		IsRequired:  in.IsRequired,
+		UseInSearch: in.UseInSearch,
+		Rows:        rows,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
@@ -730,6 +809,14 @@ func (s *Service) UpdateCustomFieldDefinition(ctx context.Context, projectID, id
 	}
 	if in.IsRequired != nil {
 		f.IsRequired = *in.IsRequired
+	}
+	if in.UseInSearch != nil {
+		f.UseInSearch = *in.UseInSearch
+	}
+	if f.FieldType != taskdom.FieldTypeLongText {
+		f.Rows = taskdom.DefaultLongTextRows
+	} else if in.Rows != nil {
+		f.Rows = taskdom.ClampLongTextRows(*in.Rows)
 	}
 	f.UpdatedAt = time.Now()
 

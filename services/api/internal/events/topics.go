@@ -74,8 +74,21 @@ const StreamSprintActivities = "paca.sprint_activities"
 // should have to stay open for.
 const StreamEnvironmentCommands = "paca.environment_commands"
 
+// StreamProjectExports is the Valkey Stream key exportsvc.Service appends to
+// when a project export is requested — worker.ProjectExportConsumer reads it,
+// builds the file and uploads it to object storage. The request path only
+// records the export and queues it, so a large project never holds an HTTP
+// request open while its tasks are read and serialized.
+const StreamProjectExports = "paca.project_exports"
+
 // Event type constants used in both Pub/Sub messages and Stream entries.
 const (
+	// --- IAM events ---------------------------------------------------------
+	// TopicIAMChanged is published to ChannelRealtime when a role or one of its
+	// attachments changed (see NotifyIAMChanges). services/realtime handles it
+	// itself; it is never delivered to a client.
+	TopicIAMChanged = "iam.changed"
+
 	// --- Auth events --------------------------------------------------------
 	TopicUserCreated = "user.created"
 	TopicUserDeleted = "user.deleted"
@@ -152,7 +165,7 @@ const (
 
 	// --- Notification events ------------------------------------------------
 	// TopicNotificationCreated is published to ChannelRealtime when a new
-	// notification is created.  The payload includes recipient_user_id so the
+	// notification is created.  The payload includes recipient_account_id so the
 	// realtime service can route the event to the correct user room.
 	TopicNotificationCreated = "notification.created"
 
@@ -209,6 +222,11 @@ const (
 	// StreamAutomationExternalTriggers by the webhook receiver handler once
 	// a POST's token has been verified.
 	TopicAutomationAPITriggerFired = "automation.api_trigger.fired"
+
+	// --- Project export events ----------------------------------------------
+	// TopicProjectExportRequested is StreamProjectExports' event type for a
+	// queued project export, consumed by worker.ProjectExportConsumer.
+	TopicProjectExportRequested = "project.export.requested"
 
 	// --- Environment lifecycle events ---------------------------------------
 	// TopicEnvironmentCreate is StreamEnvironmentCommands' event type for a

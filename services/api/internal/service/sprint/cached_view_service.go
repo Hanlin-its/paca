@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	sprintdom "github.com/Paca-AI/api/internal/domain/sprint"
+	"github.com/Paca-AI/api/internal/platform/authz/iam"
 	"github.com/Paca-AI/api/internal/platform/cache"
 )
 
@@ -69,7 +70,9 @@ func (c *CachedViewService) ListViews(ctx context.Context, projectID, sprintID u
 // ListProjectViews returns all views for a project filtered by viewCtx,
 // reading from cache when available and populating it on a miss.
 func (c *CachedViewService) ListProjectViews(ctx context.Context, projectID uuid.UUID, viewCtx sprintdom.ViewContext) ([]*sprintdom.SprintView, error) {
-	if c.ttl == 0 {
+	// A scoped list is specific to its caller: never read or fill the shared
+	// per-project entry with it.
+	if c.ttl == 0 || iam.Restricted(ctx, "view") {
 		return c.svc.ListProjectViews(ctx, projectID, viewCtx)
 	}
 	key := projectViewsKey(projectID, viewCtx)
@@ -201,19 +204,19 @@ func (c *CachedViewService) ReorderProjectViews(ctx context.Context, projectID u
 // configs are never stored in the shared cache, so no invalidation is needed:
 // the cached ListProjectViews/GetView entries hold the shared view definition
 // and are overlaid with the caller's personal config after the cache is read.
-func (c *CachedViewService) SetUserViewConfig(ctx context.Context, projectID, viewID, userID uuid.UUID, cfg sprintdom.ViewConfig) (*sprintdom.SprintView, error) {
-	return c.svc.SetUserViewConfig(ctx, projectID, viewID, userID, cfg)
+func (c *CachedViewService) SetUserViewConfig(ctx context.Context, projectID, viewID, accountID uuid.UUID, cfg sprintdom.ViewConfig) (*sprintdom.SprintView, error) {
+	return c.svc.SetUserViewConfig(ctx, projectID, viewID, accountID, cfg)
 }
 
 // ClearUserViewConfig delegates directly to the underlying service. Personal
 // configs are never cached, so no invalidation is needed.
-func (c *CachedViewService) ClearUserViewConfig(ctx context.Context, projectID, viewID, userID uuid.UUID) (*sprintdom.SprintView, error) {
-	return c.svc.ClearUserViewConfig(ctx, projectID, viewID, userID)
+func (c *CachedViewService) ClearUserViewConfig(ctx context.Context, projectID, viewID, accountID uuid.UUID) (*sprintdom.SprintView, error) {
+	return c.svc.ClearUserViewConfig(ctx, projectID, viewID, accountID)
 }
 
 // OverlayUserConfigs delegates directly to the underlying service. It must run
 // after the cache is read so the shared cached entries are never polluted with
 // one user's personal config.
-func (c *CachedViewService) OverlayUserConfigs(ctx context.Context, userID uuid.UUID, views []*sprintdom.SprintView) error {
-	return c.svc.OverlayUserConfigs(ctx, userID, views)
+func (c *CachedViewService) OverlayUserConfigs(ctx context.Context, accountID uuid.UUID, views []*sprintdom.SprintView) error {
+	return c.svc.OverlayUserConfigs(ctx, accountID, views)
 }

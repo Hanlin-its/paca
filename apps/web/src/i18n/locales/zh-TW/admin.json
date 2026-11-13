@@ -13,7 +13,8 @@
 		"noPermission": {
 			"title": "你沒有權限檢視 AI Agent",
 			"description": "你仍可以使用上方的按鈕建立新的 AI Agent。"
-		}
+		},
+		"searchPlaceholder": "依名稱或 Handle 搜尋 AI Agent…"
 	},
 	"users": {
 		"header": {
@@ -41,8 +42,6 @@
 			"description": "你仍可以使用上方的按鈕建立新使用者。"
 		},
 		"table": {
-			"columnUsername": "使用者名稱",
-			"columnFullName": "姓名",
 			"columnRole": "角色",
 			"columnCreated": "建立時間",
 			"pwdResetBadge": "密碼已重設",
@@ -51,7 +50,11 @@
 			"resetPasswordAction": "重設密碼",
 			"editAction": "編輯使用者",
 			"changeRoleAction": "變更角色",
-			"deleteAction": "刪除使用者"
+			"deleteAction": "刪除使用者",
+			"columnUser": "使用者",
+			"pwdResetHint": "此使用者必須在下次登入時設定新密碼",
+			"columnActions": "操作",
+			"securityAction": "安全性"
 		},
 		"formDialog": {
 			"createdTitle": "使用者已建立",
@@ -157,6 +160,24 @@
 			"title": "找不到符合的使用者",
 			"description": "嘗試其他搜尋條件或角色篩選。",
 			"clear": "清除篩選條件"
+		},
+		"security": {
+			"title": "{{name}} 的登入保護",
+			"description": "控制此人可從哪些位置登入，並清除其兩步驟驗證。",
+			"ip": {
+				"label": "允許的 IP 位址",
+				"hint": "每行輸入一個 IP 位址或 CIDR 範圍。留空則允許所有位址。適用於密碼登入。"
+			},
+			"mfa": {
+				"title": "兩步驟驗證",
+				"description": "若此人同時遺失裝置及復原碼，可清除設定，讓其重新設定。",
+				"reset": "重設兩步驟驗證",
+				"confirmReset": "是，重設",
+				"resetDone": "兩步驟驗證已重設。此人可在下次登入時重新設定。",
+				"resetFailed": "無法重設兩步驟驗證。"
+			},
+			"cancel": "取消",
+			"save": "儲存"
 		}
 	},
 	"globalRoles": {
@@ -186,14 +207,16 @@
 		},
 		"table": {
 			"columnName": "名稱",
-			"columnPermissions": "權限",
 			"columnDefault": "預設",
 			"noPermissionsAssigned": "未指派權限",
 			"default": "預設",
 			"setDefaultAction": "設為預設角色",
 			"editAction": "編輯角色",
 			"deleteAction": "刪除角色",
-			"deleteDefaultDisabled": "無法刪除預設角色。請先將其他角色設為預設角色。"
+			"deleteDefaultDisabled": "無法刪除預設角色。請先將其他角色設為預設角色。",
+			"columnDescription": "描述",
+			"builtIn": "內建角色",
+			"noDescription": "沒有描述"
 		},
 		"formDialog": {
 			"editTitle": "編輯角色",
@@ -208,16 +231,7 @@
 			"cancel": "取消",
 			"saving": "正在儲存…",
 			"saveChanges": "儲存變更",
-			"createRole": "建立角色",
-			"errors": {
-				"roleNameRequired": "角色名稱不可為空。",
-				"nameTaken": "已存在同名角色。",
-				"nameInvalid": "角色名稱只能包含大寫字母、數字和下劃線。",
-				"roleNotFound": "該角色已不存在，可能已被刪除。",
-				"forbidden": "你沒有權限執行此操作。",
-				"internalError": "伺服器出現錯誤，請重試。",
-				"generic": "出現錯誤。"
-			}
+			"createRole": "建立角色"
 		},
 		"deleteDialog": {
 			"title": "刪除角色",
@@ -229,7 +243,6 @@
 			"confirmButton": "刪除角色",
 			"errors": {
 				"roleNotFound": "該角色已不存在。",
-				"hasUsersWarning": "該角色仍被指派給一個或多個使用者，無法刪除。",
 				"isDefault": "無法刪除預設角色。請先將其他角色設為預設角色。",
 				"forbidden": "你沒有權限刪除該角色。",
 				"internalError": "出現錯誤，請重試。",
@@ -300,6 +313,38 @@
 			"settingsSsoWrite": {
 				"label": "管理 SSO 提供者",
 				"description": "設定使用者可用來登入的身分提供者。此權限可讓人以其他使用者身分登入，應視為完整管理員存取權。"
+			},
+			"agentsRead": {
+				"label": "檢視 AI Agent",
+				"description": "檢視工作區層級的 AI Agent"
+			},
+			"agentsWrite": {
+				"label": "管理 AI Agent",
+				"description": "建立、編輯及刪除工作區層級的 AI Agent"
+			},
+			"pluginsRead": {
+				"label": "檢視外掛",
+				"description": "檢視已安裝的外掛"
+			},
+			"pluginsWrite": {
+				"label": "管理外掛",
+				"description": "安裝、更新、啟用及移除外掛"
+			},
+			"serviceAccountsRead": {
+				"label": "檢視服務帳號",
+				"description": "檢視服務帳號及其 API 金鑰"
+			},
+			"serviceAccountsWrite": {
+				"label": "管理服務帳號",
+				"description": "建立、編輯及刪除服務帳號，並建立或撤銷其 API 金鑰"
+			},
+			"gitIdentitiesManage": {
+				"label": "管理工作區 Git 連線",
+				"description": "新增及移除工作區所有專案可使用的 GitHub App 與存取權Token"
+			},
+			"settingsSecurityWrite": {
+				"label": "管理登入安全",
+				"description": "設定哪些人必須使用兩步驟驗證、哪些 IP 位址可用於登入，並重設其他人的兩步驟驗證。移除帳號的這項保護等同於接管帳號，因此應視為完整管理員權限。"
 			}
 		},
 		"permissionGroups": {
@@ -307,7 +352,10 @@
 			"users": "使用者",
 			"projects": "專案",
 			"plugins": "外掛",
-			"settings": "設定"
+			"settings": "設定",
+			"agents": "AI Agent",
+			"serviceAccounts": "服務帳號",
+			"git": "Git"
 		},
 		"defaultDialog": {
 			"title": "設定預設角色",
@@ -454,6 +502,266 @@
 				"loadFailed": "載入 SSO 提供者失敗。",
 				"deleteFailed": "刪除提供者失敗，請再試一次。"
 			}
+		},
+		"nav": {
+			"workspace": "工作區",
+			"signIn": "登入",
+			"branding": "品牌設定",
+			"sso": "單一登入",
+			"security": "登入安全"
+		},
+		"security": {
+			"roles": {
+				"title": "受保護的角色",
+				"description": "以下規則適用於擁有任一所選角色的人。啟用「所有角色」可涵蓋所有人，包括日後建立的角色。",
+				"all": "所有角色"
+			},
+			"mfa": {
+				"title": "要求兩步驟驗證",
+				"description": "擁有受保護角色的人必須先設定驗證器應用程式，才能使用密碼登入。SSO 登入則依賴身分提供者的多因素驗證設定。",
+				"rolloutNote": "尚未設定的人下次登入時會獲得設定引導。"
+			},
+			"ip": {
+				"title": "允許的 IP 位址",
+				"description": "將受保護角色的密碼登入限制在這些位址。留空則允許所有位址。",
+				"hint": "每行輸入一個 IP 位址或 CIDR 範圍，例如 203.0.113.0/24。支援 IPv4 和 IPv6。",
+				"lockoutWarning": "請確認包含你自己的位址，否則你可能無法使用密碼登入。SSO 登入不受影響。"
+			},
+			"noRoles": "尚未保護任何角色，因此這些規則目前不適用於任何人。",
+			"errors": {
+				"invalidCidr": "其中一個項目不是有效的 IP 位址或 CIDR 範圍。",
+				"selfLockout": "清單中必須包含你自己的 IP 位址，否則你將無法使用密碼登入。請新增後再次儲存。",
+				"saveFailed": "儲存失敗，請重試。",
+				"loadFailed": "無法載入登入安全設定。"
+			}
 		}
+	},
+	"serviceAccounts": {
+		"searchPlaceholder": "依名稱或描述搜尋…",
+		"header": {
+			"title": "服務帳號",
+			"description": "具備獨立 API 金鑰和角色的非人員帳號，供整合、CI 及自動化使用。",
+			"newAccount": "新增服務帳號"
+		},
+		"empty": {
+			"title": "尚無服務帳號",
+			"description": "建立服務帳號，讓整合功能有自己的身分和 API 金鑰。",
+			"create": "建立服務帳號"
+		},
+		"errors": {
+			"loadFailed": "載入服務帳號失敗",
+			"tryAgain": "請重新整理頁面後重試。"
+		},
+		"noPermission": {
+			"title": "你沒有權限檢視服務帳號",
+			"description": "請向工作區管理員申請存取權限。"
+		},
+		"table": {
+			"columnAccount": "帳號",
+			"columnActions": "操作",
+			"noDescription": "沒有描述",
+			"changeRoleAction": "變更角色",
+			"editAction": "編輯服務帳號",
+			"deleteAction": "刪除服務帳號",
+			"columnRole": "角色"
+		},
+		"formDialog": {
+			"createTitle": "新增服務帳號",
+			"editTitle": "編輯服務帳號",
+			"createDescription": "新帳號沒有任何權限。請為其建立 API 金鑰，再指派角色。",
+			"editDescription": "變更名稱、描述或頭像。API 金鑰和角色需分別管理。",
+			"nameLabel": "名稱",
+			"namePlaceholder": "例如：CI deploy bot",
+			"descriptionLabel": "描述",
+			"descriptionPlaceholder": "此帳號的用途為何？",
+			"cancel": "取消",
+			"create": "建立",
+			"creating": "正在建立…",
+			"save": "儲存",
+			"saving": "正在儲存…",
+			"avatar": {
+				"change": "變更頭像",
+				"remove": "移除頭像",
+				"uploading": "正在上傳…",
+				"errors": {
+					"invalidType": "請使用 PNG、JPEG、WebP 或 GIF 圖片。",
+					"tooLarge": "圖片大小不得超過 5 MB。",
+					"uploadFailed": "無法上傳頭像，請重試。",
+					"removeFailed": "無法移除頭像，請重試。"
+				}
+			},
+			"errors": {
+				"nameInvalid": "名稱長度須為 1–100 個字元。",
+				"descriptionTooLong": "描述過長（最多 1000 個字元）。",
+				"notFound": "此服務帳號已不存在。",
+				"generic": "發生錯誤，請重試。"
+			}
+		},
+		"deleteDialog": {
+			"title": "刪除服務帳號",
+			"description": "要刪除「{{name}}」嗎？其 API 金鑰將立即失效，角色和專案成員身分也會被移除。此操作無法復原。",
+			"cancel": "取消",
+			"confirm": "刪除",
+			"deleting": "正在刪除…",
+			"error": "無法刪除服務帳號，請重試。"
+		},
+		"keys": {
+			"nameLabel": "金鑰名稱",
+			"namePlaceholder": "例如：GitHub Actions",
+			"expiryLabel": "到期時間",
+			"expiryOptional": "（選填）",
+			"create": "建立金鑰",
+			"creating": "正在建立…",
+			"empty": "尚無 API 金鑰。",
+			"revokeAria": "撤銷金鑰 {{name}}",
+			"reveal": {
+				"title": "複製新的 API 金鑰",
+				"description": "完整金鑰僅顯示這一次。請妥善保管；若遺失，請建立新金鑰。",
+				"copyAria": "複製金鑰",
+				"copied": "已複製到剪貼簿",
+				"done": "完成"
+			},
+			"errors": {
+				"nameRequired": "請為金鑰命名。",
+				"nameTooLong": "金鑰名稱過長，最多 100 個字元。",
+				"createFailed": "無法建立金鑰。請使用帳號登入，而非使用 API 金鑰，然後重試。",
+				"revokeFailed": "無法撤銷金鑰，請重試。",
+				"copyFailed": "無法複製到剪貼簿。請選取金鑰並手動複製。"
+			},
+			"revoke": {
+				"title": "撤銷 API 金鑰",
+				"description": "要撤銷「{{name}}」嗎？所有使用此金鑰的項目將立即停止運作。此操作無法復原。",
+				"cancel": "取消",
+				"confirm": "撤銷金鑰",
+				"revoking": "正在撤銷…"
+			},
+			"count": "API 金鑰：{{count}}",
+			"newKey": "新增金鑰",
+			"createFirst": "建立第一個金鑰",
+			"createDialog": {
+				"title": "建立 API 金鑰",
+				"description": "此金鑰以此帳號身分進行驗證，僅在建立後立即顯示一次。",
+				"cancel": "取消"
+			},
+			"row": {
+				"created": "建立於 {{date}}",
+				"expires": "於 {{date}} 到期",
+				"noExpiry": "無到期日",
+				"lastUsed": "最後使用於 {{date}}",
+				"neverUsed": "從未使用"
+			}
+		},
+		"roleDialog": {
+			"title": "變更角色",
+			"description": "選擇 {{name}} 擁有的工作區角色。此帳號可執行的操作以這些角色允許的範圍為準。",
+			"assign": "儲存角色",
+			"assigning": "正在儲存…",
+			"fullAccessWarning": "此角色授予所有權限。任何持有此帳號 API 金鑰的對象都將擁有完整存取權限。"
+		},
+		"detail": {
+			"notFound": {
+				"title": "找不到服務帳號",
+				"description": "可能已被刪除。"
+			},
+			"roles": {
+				"description": "此帳號在工作區中可執行的操作。新帳號沒有任何角色。",
+				"none": "沒有角色：此帳號目前無法執行任何操作。",
+				"change": "變更角色",
+				"noneHint": "請指派角色，讓此帳號能執行操作。",
+				"readOnly": "你可以檢視此帳號的角色，但無法變更。"
+			},
+			"badge": "服務帳號",
+			"tabs": {
+				"overview": "總覽",
+				"apiKeys": "API 金鑰",
+				"roles": "角色"
+			},
+			"overview": {
+				"descriptionHint": "顯示於帳號清單及邀請其加入專案時。",
+				"saveChanges": "儲存變更",
+				"saved": "已儲存",
+				"saveFailed": "無法儲存變更，請重試。",
+				"idLabel": "ID",
+				"createdLabel": "建立時間",
+				"updatedLabel": "更新時間",
+				"deleteTitle": "刪除此服務帳號",
+				"deleteHint": "其 API 金鑰將失效，角色和專案成員身分也會被移除。"
+			}
+		}
+	},
+	"git": {
+		"cancel": "取消",
+		"setup": {
+			"dialogTitle": "在 {{host}} 上設定 {{provider}}",
+			"dialogDescription": "Paca 將在 {{host}} 上建立機器人身分，供 AI Agent 複製、推送及處理 {{changeRequests}}。系統會帶你前往 {{host}} 核准，再返回此處。",
+			"name": "應用程式名稱（選填）",
+			"nameHelp": "機器人在平台上顯示的名稱。留空則使用預設名稱。",
+			"org": "組織（選填）",
+			"orgHelp": "留空則在你自己的帳號下建立。",
+			"start": "繼續前往 {{host}}",
+			"submitToken": "儲存",
+			"public": "允許在其他帳號安裝（公開應用程式）",
+			"publicHelp": "當專案使用不同使用者或組織的儲存庫時需要啟用。私有應用程式只能安裝在其擁有者的帳號上。",
+			"next": "下一步",
+			"tokenDescription": "Paca 使用你在 {{host}} 建立的存取權Token 連線。請在下一步貼上 Token。",
+			"host": "主機",
+			"hostHelp": "執行個體的位址，例如 gitlab.example.com。",
+			"kind": {
+				"label": "連線方式",
+				"app": {
+					"title": "應用程式",
+					"help": "Paca 會在 {{provider}} 上為你建立應用程式。存取範圍僅限安裝該應用程式的儲存庫。"
+				},
+				"bot_user": {
+					"title": "存取權Token",
+					"help": "貼上專案或群組存取權Token。Paca 會以其機器人使用者身分運作。"
+				},
+				"token": {
+					"title": "存取權Token",
+					"help": "貼上個人存取權Token。Paca 會以 Token 持有者身分運作，因此請使用專用的機器使用者。"
+				}
+			},
+			"scope": {
+				"label": "可使用範圍",
+				"project": {
+					"title": "僅限此專案",
+					"help": "只有此專案可以透過此連線連結儲存庫。"
+				},
+				"workspace": {
+					"title": "所有專案",
+					"help": "工作區中的所有專案都可以透過此連線連結儲存庫。",
+					"noPermission": "需要管理工作區 Git 連線的權限。"
+				},
+				"none": "你沒有權限在此新增連線。"
+			}
+		},
+		"delete": {
+			"button": "移除",
+			"title": "要移除此連線嗎？",
+			"description": "透過 {{host}} 上的 {{name}} 連結的儲存庫將無法運作，直到你透過其他連線重新連結。平台上的應用程式或 Token 本身不會被刪除；如果不再需要，請至平台移除。",
+			"confirm": "移除連線",
+			"usage": {
+				"title": "使用此連線的儲存庫（{{count}}）：",
+				"others": "其他專案中另有 {{count}} 個。",
+				"consequence": "這些儲存庫仍會保持連結，但沒有認證資訊，因此 AI Agent 無法使用。請在之後將每個儲存庫重新連結至其他連線。"
+			}
+		},
+		"callback": {
+			"working": "正在完成設定…",
+			"workingHint": "請保持此頁面開啟。",
+			"failedTitle": "無法完成設定",
+			"back": "返回 Git 設定"
+		},
+		"errors": {
+			"generic": "發生錯誤，請重試。",
+			"setupInvalid": "此設定連結無效、已過期或已使用。請重新開始設定。",
+			"identityExists": "這裡已有身分。請先移除，再設定新身分。",
+			"publicUrlRequired": "此執行個體的公開 URL 尚未設定（PUBLIC_URL），平台無法連線。",
+			"providerUnavailable": "Git 提供者外掛無法使用。請確認已安裝並啟用。",
+			"providerRejected": "平台拒絕了請求。請檢查所用帳號的權限。",
+			"notFound": "找不到。"
+		},
+		"copy": "複製",
+		"copied": "已複製"
 	}
 }

@@ -11,11 +11,11 @@ import { useTranslation } from "react-i18next";
 import {
 	createTask,
 	epicTasksInfiniteQueryOptions,
-	sprintsQueryOptions,
 	subtasksInfiniteQueryOptions,
 	taskQueryOptions,
 	updateTask,
 } from "@/lib/interaction-api";
+import { useMemberDirectory } from "@/lib/member-directory";
 import { ExtensionPoint } from "@/lib/plugins/extension-point";
 import {
 	customFieldsQueryOptions,
@@ -35,6 +35,7 @@ import { DescriptionSection } from "./description-section";
 import { mapApiFieldToUi } from "./helpers";
 import { PropertiesPanel } from "./properties-panel";
 import { SubtasksSection } from "./subtasks-section";
+import { TaskGitSection } from "./task-git-section";
 import { TaskHeader } from "./task-header";
 import { TaskLinksSection } from "./task-links-section";
 import type { TaskDetailModalProps } from "./types";
@@ -56,7 +57,6 @@ export function TaskDetailModal({
 	onOpenChange,
 	statuses,
 	taskTypes,
-	members = [],
 	projectName,
 	interactionName,
 	projectId,
@@ -99,12 +99,6 @@ export function TaskDetailModal({
 		[subtasksData],
 	);
 
-	// Fetch sprints for sprint name display + assignment
-	const { data: sprints = [] } = useQuery({
-		...sprintsQueryOptions(projectId ?? ""),
-		enabled: !!projectId && (open || mode === "page"),
-	});
-
 	// Fetch custom field definitions from API
 	const { data: apiCustomFields = [] } = useQuery({
 		...customFieldsQueryOptions(projectId ?? ""),
@@ -118,7 +112,8 @@ export function TaskDetailModal({
 	const status = statuses.find((s) => s.id === task?.status_id);
 	const taskType = taskTypes.find((t) => t.id === task?.task_type_id);
 	const priority = getPriority(task?.importance ?? 0);
-	const reporter = members.find((m) => m.id === task?.reporter_id);
+	const getMember = useMemberDirectory(projectId ?? "");
+	const reporter = getMember(task?.reporter_id);
 
 	// ── Task role detection ────────────────────────────────────────────────────
 	const isEpic = isEpicType(taskType);
@@ -166,6 +161,15 @@ export function TaskDetailModal({
 	const [titleDraft, setTitleDraft] = useState("");
 	const titleInputRef = useRef<HTMLTextAreaElement>(null);
 
+	// Click enters edit mode immediately, except when the click ends a drag
+	// selection, so the title text can still be selected and copied.
+	function handleTitleClick() {
+		if (!canEdit || !window.getSelection()?.isCollapsed) return;
+		setTitleDraft(task?.title ?? "");
+		setEditingTitle(true);
+		setTimeout(() => titleInputRef.current?.focus(), 0);
+	}
+
 	// ── Navigation ────────────────────────────────────────────────────────────
 	function navigateToTask(taskId: string) {
 		if (!projectId) return;
@@ -203,10 +207,18 @@ export function TaskDetailModal({
 						filtered.assignee_ids = a;
 					}
 				} else if (key === "custom_fields") {
-					const a = newValue as Record<string, unknown> | undefined;
-					const b = oldValue as Record<string, unknown> | undefined;
-					if (JSON.stringify(a) !== JSON.stringify(b)) {
-						filtered.custom_fields = a;
+					// The API merges custom_fields by key, so send only the keys
+					// whose value actually changed.
+					const a = (newValue ?? {}) as Record<string, unknown>;
+					const b = (oldValue ?? {}) as Record<string, unknown>;
+					const changedKeys = Object.keys(a).filter(
+						(k) =>
+							JSON.stringify(a[k] ?? null) !== JSON.stringify(b[k] ?? null),
+					);
+					if (changedKeys.length > 0) {
+						filtered.custom_fields = Object.fromEntries(
+							changedKeys.map((k) => [k, a[k]]),
+						);
 					}
 				} else if (key === "description") {
 					const normalizedNewValue = newValue ?? null;
@@ -394,12 +406,7 @@ export function TaskDetailModal({
 											"cursor-text hover:bg-muted/15 rounded-md px-2 -ml-2 py-1 transition-all duration-150",
 									)}
 									data-testid="task-title"
-									onClick={() => {
-										if (!canEdit) return;
-										setTitleDraft(task.title);
-										setEditingTitle(true);
-										setTimeout(() => titleInputRef.current?.focus(), 0);
-									}}
+									onClick={handleTitleClick}
 								>
 									{task.title}
 								</h1>
@@ -420,8 +427,6 @@ export function TaskDetailModal({
 								reporter={reporter}
 								statuses={statuses}
 								taskTypes={taskTypes}
-								members={members}
-								sprints={sprints}
 								projectId={projectId}
 								initialCustomFields={customFieldDefs}
 								canEdit={canEdit}
@@ -449,7 +454,6 @@ export function TaskDetailModal({
 							subtasks={subtasks}
 							statuses={statuses}
 							taskTypes={taskTypes}
-							members={members}
 							canEdit={canEdit}
 							task={task}
 							taskIdPrefix={taskIdPrefix}
@@ -461,9 +465,10 @@ export function TaskDetailModal({
 							onSubtaskUpdate={(subtaskId, payload) => {
 								if (!projectId) return;
 								updateTask(projectId, subtaskId, payload).then(() => {
+									// Prefix: also refreshes the nested list rows and the
+									// parent's progress chip, not just the detail section.
 									qc.invalidateQueries({
-										queryKey: subtasksInfiniteQueryOptions(projectId, task.id)
-											.queryKey,
+										queryKey: ["projects", projectId, "tasks"],
 									});
 								});
 							}}
@@ -476,9 +481,10 @@ export function TaskDetailModal({
 									status_id: todoStatus?.id ?? payload.status_id ?? null,
 									parent_task_id: task.id,
 								}).then(() => {
+									// Prefix: also refreshes the nested list rows and the
+									// parent's progress chip, not just the detail section.
 									qc.invalidateQueries({
-										queryKey: subtasksInfiniteQueryOptions(projectId, task.id)
-											.queryKey,
+										queryKey: ["projects", projectId, "tasks"],
 									});
 								});
 							}}
@@ -492,6 +498,18 @@ export function TaskDetailModal({
 								taskIdPrefix={taskIdPrefix}
 								canEdit={canEdit}
 								onNavigateToTask={navigateToTask}
+							/>
+						)}
+
+						{/* Pull/merge requests and branches Git tied to this task */}
+						{projectId && (
+							<TaskGitSection
+								projectId={projectId}
+								taskId={task.id}
+								taskIdPrefix={taskIdPrefix}
+								taskNumber={task.task_number}
+								taskTitle={task.title}
+								canEdit={canEdit}
 							/>
 						)}
 
@@ -570,7 +588,7 @@ export function TaskDetailModal({
 					"fixed z-50",
 					"inset-0 lg:left-1/2 lg:top-1/2 lg:-translate-x-1/2 lg:-translate-y-1/2",
 					"flex flex-col overflow-hidden",
-					"lg:h-[90vh] lg:w-[92vw] lg:max-w-6xl",
+					"lg:h-[90vh] lg:w-[94vw] lg:max-w-6xl xl:max-w-7xl 2xl:max-w-[1600px]",
 					"lg:rounded-xl lg:border lg:border-border/50 bg-background",
 					"lg:shadow-[0_25px_60px_-12px_rgba(0,0,0,0.25),0_0_0_1px_rgba(255,255,255,0.05)_inset]",
 					"transition-all duration-200 origin-center",

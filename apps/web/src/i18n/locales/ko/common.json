@@ -3,7 +3,9 @@
 		"notFound": "Not found",
 		"somethingWentWrong": "Something went wrong",
 		"retry": "Retry",
-		"noPermissionToView": "You don't have permission to view this"
+		"noPermissionToView": "You don't have permission to view this",
+		"loadMore": "더 보기",
+		"loadingMore": "불러오는 중…"
 	},
 	"dialog": {
 		"closeLabel": "닫기",
@@ -39,6 +41,8 @@
 		"previous": "이전 페이지",
 		"next": "다음 페이지",
 		"page": "{{page}} 페이지",
-		"pageOfTotal": "{{totalPages}}페이지 중 {{page}}페이지"
+		"pageOfTotal": "{{totalPages}}페이지 중 {{page}}페이지",
+		"rowsPerPage": "페이지당 행 수",
+		"range": "{{total}}개 중 {{from}}–{{to}}"
 	}
 }

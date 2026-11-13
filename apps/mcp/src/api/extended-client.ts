@@ -8,16 +8,17 @@ import type {
 	PacaConfig,
 	ProjectMember,
 	ProjectRole,
+	ReplaceMemberRolesInput,
 	SuccessEnvelope,
 	TaskStatus,
 	TaskType,
 	UpdateCustomFieldInput,
-	UpdateMemberRoleInput,
 	UpdateRoleInput,
 	UpdateTaskStatusInput,
 	UpdateTaskTypeInput,
 } from "../types/index.js";
 import { formatApiRequestError } from "../utils/index.js";
+import { type Page, type PageOptions, toPage, withPaging } from "./paginate.js";
 
 /**
  * Extended API client methods for additional Paca endpoints.
@@ -44,9 +45,6 @@ export class PacaAPIExtendedClient {
 			"Content-Type": "application/json",
 			"X-API-Key": this.config.apiKey,
 		};
-		if (this.config.agentId) {
-			headers["X-Agent-ID"] = this.config.agentId;
-		}
 
 		const options: RequestInit = {
 			method,
@@ -110,12 +108,21 @@ export class PacaAPIExtendedClient {
 
 	// ==================== Project Members ====================
 
-	async listProjectMembers(projectId: string): Promise<ProjectMember[]> {
-		const response = await this.get(`/api/v1/projects/${projectId}/members`);
-		if (Array.isArray(response)) {
-			return response;
-		}
-		return response.items || response.members || response.data || [];
+	async listProjectMembers(
+		projectId: string,
+		opts: PageOptions & { search?: string } = {},
+	): Promise<Page<ProjectMember>> {
+		const path = `/api/v1/projects/${projectId}/members`;
+		return toPage<ProjectMember>(
+			await this.get(
+				withPaging(
+					opts.search
+						? `${path}?search=${encodeURIComponent(opts.search)}`
+						: path,
+					opts,
+				),
+			),
+		);
 	}
 
 	async addProjectMember(
@@ -125,21 +132,24 @@ export class PacaAPIExtendedClient {
 		return this.post(`/api/v1/projects/${projectId}/members`, input);
 	}
 
-	async getMyProjectPermissions(
-		projectId: string,
-	): Promise<Record<string, boolean>> {
+	/** Returns the caller's effective IAM actions in the project. */
+	async getMyProjectPermissions(projectId: string): Promise<string[]> {
 		const response = await this.get(
 			`/api/v1/projects/${projectId}/members/me/permissions`,
 		);
-		return response.permissions || {};
+		return response.actions || [];
 	}
 
+	/** Replaces the set of roles the member holds in the project. */
 	async updateProjectMemberRole(
 		projectId: string,
-		userId: string,
-		input: UpdateMemberRoleInput,
-	): Promise<ProjectMember> {
-		return this.patch(`/api/v1/projects/${projectId}/members/${userId}`, input);
+		memberId: string,
+		input: ReplaceMemberRolesInput,
+	): Promise<ProjectRole[]> {
+		return this.put(
+			`/api/v1/projects/${projectId}/members/${memberId}/roles`,
+			input,
+		);
 	}
 
 	async removeProjectMember(projectId: string, userId: string): Promise<void> {
@@ -148,12 +158,21 @@ export class PacaAPIExtendedClient {
 
 	// ==================== Project Roles ====================
 
-	async listProjectRoles(projectId: string): Promise<ProjectRole[]> {
-		const response = await this.get(`/api/v1/projects/${projectId}/roles`);
-		if (Array.isArray(response)) {
-			return response;
-		}
-		return response.items || response.roles || response.data || [];
+	async listProjectRoles(
+		projectId: string,
+		opts: PageOptions & { search?: string } = {},
+	): Promise<Page<ProjectRole>> {
+		const path = `/api/v1/projects/${projectId}/roles`;
+		return toPage<ProjectRole>(
+			await this.get(
+				withPaging(
+					opts.search
+						? `${path}?search=${encodeURIComponent(opts.search)}`
+						: path,
+					opts,
+				),
+			),
+		);
 	}
 
 	async createProjectRole(
@@ -163,12 +182,19 @@ export class PacaAPIExtendedClient {
 		return this.post(`/api/v1/projects/${projectId}/roles`, input);
 	}
 
+	async getProjectRole(
+		projectId: string,
+		roleId: string,
+	): Promise<ProjectRole> {
+		return this.get(`/api/v1/projects/${projectId}/roles/${roleId}`);
+	}
+
 	async updateProjectRole(
 		projectId: string,
 		roleId: string,
 		input: UpdateRoleInput,
 	): Promise<ProjectRole> {
-		return this.patch(`/api/v1/projects/${projectId}/roles/${roleId}`, input);
+		return this.put(`/api/v1/projects/${projectId}/roles/${roleId}`, input);
 	}
 
 	async deleteProjectRole(projectId: string, roleId: string): Promise<void> {

@@ -161,9 +161,9 @@ The host validates the requested permissions at install time against the allowli
           { "name": "authn" },
           { "name": "requireFreshPassword" },
           {
-            "name": "requirePermissions",
+            "name": "requireActions",
             "scope": "project",
-            "permissions": ["tasks.write"]
+            "actions": ["tasks:write"]
           }
         ]
       },
@@ -208,17 +208,65 @@ Supported middleware names:
 - `optionalAuthn`
 - `requireFreshPassword`
 - `requireJWTAuth`
-- `requirePermissions`
+- `requireActions`
 
-`requirePermissions` options:
+`requireActions` options:
 - `scope`: `global` or `project` (default: `global`)
 - `projectParam`: route param name for project scope (default: `projectId`)
-- `permissions`: required permission keys (for example `projects.read`, `tasks.write`)
+- `actions`: IAM actions the caller must ALL be allowed, each of the form
+  `<domain>:<verb>` — built-in (for example `projects:read`, `tasks:write`)
+  or plugin-declared (for example `time_logging:manage_all`). The same migration converted every
+`customPermissions[].key` and `requiredPermission` to an action.
 
-If `middlewares` is omitted, the host applies the backward-compatible default policy:
-- `optionalAuthn`
+Each action is decided by the host's IAM engine on a resource:
+- `project` scope, with the project id present in the path: `project/<projectId>`
+  for a built-in action, and `project/<projectId>/plugin/<plugin row id>` for
+  one of the plugin's own actions, so a role can grant a plugin's permission in
+  one project only. Grants on `project/<projectId>/*` cover both.
+- otherwise: the action's platform root (`users:*` → `user/*`, `roles:*` →
+  `role/*`, `plugins:*` → `plugin/*`, `settings:*` → `settings`,
+  `settings.sso:*` → `sso`, `agents:*` → `agent/*`, `projects:*` → `project`),
+  or — for a plugin's own or any other non-platform action — the plugin's own
+  resource `plugin/<plugin row id>` (covered by grants on `plugin/*` or `*`).
+
+### Declaring permissions
+
+A plugin declares the permissions it adds in `customPermissions`. Each `key` is
+an IAM action of the form `<namespace>:<verb>`, where the namespace is the last
+segment of the plugin id with `-` replaced by `_` (`com.paca.time-logging` →
+`time_logging:manage_all`). Declared actions are known to the host while the
+plugin is installed: role policies may name them, the role editor lists them,
+and `requireActions`/`paca.permission_check` can check them. `scope` decides which role editor lists the permission: `project` (default), `global`, or `both` for an action checked inside a project and across projects (plugins that used `both` must be reinstalled to pick up the manifest). Two plugins cannot
+declare the same action. A nav item's or extension point's `requiredPermission` is
+an action too, built-in or the plugin's own, and must have the form
+`<domain>:<verb>`: a malformed value (such as `settings.write`) would lock the
+page for every user, so install/update rejects it. The web app hides nav items,
+settings tabs, extension points, slots and view types the caller lacks
+`requiredPermission` for (inside a project, the project's effective actions
+decide); the backend still enforces every route.
+
+The legacy `requirePermissions` middleware (dotted permission keys) is no
+longer supported: installing or updating a manifest that declares it fails
+with "requirePermissions is no longer supported; use requireActions with IAM
+actions", and a stored manifest still declaring it fails closed (500) at
+request time. Migration `000065_plugin_manifest_actions.sql` rewrote every
+installed manifest (`requirePermissions` → `requireActions`, each key's last
+`.` replaced by `:`, e.g. `time_logging.manage_all` →
+`time_logging:manage_all`).
+
+**Legacy permissions warning.** The migration rewrites the *stored* manifest, but a plugin package on disk may still ship a `plugin.json` that declares `requirePermissions`. `GET /api/v1/plugins` flags such an installed plugin with `"legacy_permissions": true` (only for plugins with a backend). Administrators who can write plugins (`plugins:write`) then see a dismissible banner on the home page listing the affected plugins, and a "legacy permissions" badge on the plugin's card in the marketplace panel. The plugin keeps working with its converted manifest, but reinstalling or updating that build is rejected until its author ships a version that uses `requireActions`.
+
+The backend's `paca.permission_check` host function (SDK:
+`ctx.Permissions().Check(action)`) takes an IAM action too and is decided
+on the same resource rule, with the request's project (if any) as the project.
+
+If `middlewares` is omitted, the host applies the authenticated-only default
+policy:
+- `authn`
 - `requireFreshPassword`
-- `requirePermissions` with project scope and `projects.read`
+
+(no action check — declare `requireActions` explicitly; an anonymous caller is
+refused, any authenticated caller is admitted).
 
 For legacy manifests, `backend.routes[].public: true` is still supported and means "no host auth middleware" for that route.
 
@@ -298,6 +346,31 @@ plugins:
     - https://plugins.paca.app
     - https://cdn.example.com
 ```
+
+## Outbound Requests
+
+`paca.fetch` checks the request URL against `backend.allowedOutboundDomains`. Matching is exact and case-insensitive; the literal entry `"*"` allows any host. Whatever the manifest says, the URL must be `https` and the host must not resolve to a private or internal address. The address check runs before the request, and again at dial time on the address actually connected to, so a DNS answer that changes in between (rebinding) is still refused.
+
+Redirects are followed. Only the dial-time address check applies to them: a redirect target does not have to be in the manifest and may use `http`, as long as it does not resolve to a private or internal address.
+
+### Hosts on a private network
+
+A self-hosted service on the same LAN or VPN as Paca, such as a GitLab at `gitlab.internal` → `10.0.0.5`, is blocked by that rule. An operator can open it with `PLUGIN_FETCH_PRIVATE_HOSTS` on the API service, a comma-separated list of hostnames. It is empty by default.
+
+```bash
+PLUGIN_FETCH_PRIVATE_HOSTS=gitlab.internal,git.corp.example
+```
+
+A request to a private address then needs all of the following:
+
+- The hostname is in `PLUGIN_FETCH_PRIVATE_HOSTS`. Entries are exact ASCII names: IP literals, wildcards, URLs, `host:port` values, names with a leading or trailing dot and non-ASCII names are ignored, with a warning in the API log at startup. Write an internationalized name in its punycode form (`xn--...`).
+- The plugin's manifest names the host in `allowedOutboundDomains`. `"*"` does not count, because plugins that use it call user-supplied URLs. A plugin whose manifest does not name a listed host cannot call it at all, whatever it resolves to, and the dialer checks the manifest again on new connections. So neither a DNS answer that changes after the first check nor a pooled connection opened for another plugin opens a listed host to a `"*"` plugin.
+- The URL is `https`, and the certificate is trusted by the API container. For an internal CA, mount a bundle holding the system roots and your CA into the `api` service and set `SSL_CERT_FILE` to its path, in a Compose override or the Helm chart's pod spec.
+- The address is in `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` or `fc00::/7`.
+
+A redirect to a listed host must meet the same conditions; redirects to other hosts follow the rule above. Hostnames are compared in the IDNA (punycode) form that is actually dialed, so a Unicode spelling of a listed name counts as that name. The connection stays pinned to the checked address. Everything else stays blocked even for a listed host: loopback, link-local (including `169.254.169.254` and other cloud metadata endpoints), the CGNAT range `100.64.0.0/10`, and IPv6 transition addresses, whatever IPv4 address they carry.
+
+> **Security:** listing a host lets the plugins that name it reach that internal service, and the API sends them its responses. List only hosts those plugins are meant to talk to, keep the list short, and treat a change to it like a firewall change. The list also trusts whoever controls the DNS records of those names: they can point a listed name at any other private address, so use names from DNS you control. Tailscale addresses sit in the CGNAT range and are not reachable this way.
 
 ## Security Considerations
 

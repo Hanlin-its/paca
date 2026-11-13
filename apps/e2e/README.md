@@ -123,12 +123,17 @@ apps/e2e/
 │   └── login.page.ts       # Page Object Model for the login page
 └── tests/
     ├── helpers/            # shared API seeding/cleanup and limited-user helpers
+    │                       # (realtime.ts: socket.io probe and token minting)
     ├── admin/              # users, global roles, agents, settings, plugins, changelog
     ├── auth/               # login flows, forced password change
     ├── docs/               # project documentation (folders, editor, history, comments)
+    ├── iam/                # IAM authorization: evaluation, scoped access, roles:assign,
+    │                       # role scope rules, role editor, badges, plugin legacy warning
     ├── profile/            # profile editing, personal API keys
     ├── projects/           # project management, tasks, sprints, views, roles,
     │                       # agents, automation, conversations, environments
+    ├── realtime/           # live events: per-event authorization, access changes on
+    │                       # open sockets, token lifetime, the web app following them
     ├── security/           # injection / XSS payloads rejected at login
     ├── session/            # logout, back-button, session persistence
     ├── ui/                 # sidebar navigation, collapse, theme, user menu
@@ -148,8 +153,10 @@ Playwright-BDD adapter is wired in.
 | `admin/` | `agents`, `changelog`, `global-roles`, `plugins`, `settings`, `users` |
 | `auth/` | `login`, `change-password` |
 | `docs/` | `docs` |
+| `iam/` | `evaluation`, `scoped-access`, `list-scoping`, `roles-assign`, `role-scope-rules`, `role-editor`, `role-badges-selector`, `plugin-legacy-warning`, `docs-guide-examples` |
 | `profile/` | `profile`, `api-keys` |
 | `projects/` | `agents`, `automation`, `conversations`, `custom-fields`, `environments`, `interaction-sidebar`, `interaction-views`, `management`, `roles`, `sprint-lifecycle`, `task-detail`, `task-statuses`, `task-types`, `timeline`, `view-settings`, `view-settings-fields` |
+| `realtime/` | `event-authorization`, `iam-changes`, `token-lifecycle`, `live-updates-ui` |
 | `security/` | `login` |
 | `session/` | `management` |
 | `ui/` | `sidebar` |

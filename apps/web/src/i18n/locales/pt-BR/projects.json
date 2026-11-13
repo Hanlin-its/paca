@@ -10,15 +10,206 @@
 				"taskStatuses": "Status de tarefas",
 				"taskTypes": "Tipos de tarefa",
 				"customFields": "Campos personalizados",
+				"git": "Git",
 				"jev": "Jev IA",
 				"dangerZone": "Zona de perigo",
-				"plugins": "Plugins"
+				"plugins": "Plugins",
+				"export": "Exportar"
 			},
 			"pluginTab": {
 				"noPermission": {
 					"title": "Você não tem permissão para ver esta aba",
 					"description": "Peça a um proprietário ou administrador do projeto para conceder acesso a {{pluginName}}."
 				}
+			}
+		},
+		"git": {
+			"title": "Repositórios Git",
+			"description": "Repositórios em que os agentes deste projeto podem trabalhar, por meio das conexões abaixo.",
+			"empty": {
+				"title": "Nenhum repositório vinculado",
+				"description": "Vincule um repositório para que os agentes deste projeto leiam o código, abram pull requests e respondam a menções.",
+				"readOnly": "Você precisa de acesso de escrita do Git neste projeto para vincular repositórios.",
+				"noConnection": "Adicione primeiro uma conexão e depois vincule repositórios por meio dela."
+			},
+			"noProviders": "Nenhum provedor Git instalado. Peça a um administrador que instale um.",
+			"link": {
+				"platform": "Plataforma",
+				"repository": "Repositório",
+				"placeholder": "proprietário/nome ou URL do repositório",
+				"button": "Vincular",
+				"open": "Vincular um repositório",
+				"cancel": "Cancelar",
+				"help": "Cole a URL do repositório ou digite proprietário/nome.",
+				"noConnection": "Adicione uma conexão do {{provider}} acima antes de vincular um repositório.",
+				"connection": "Conexão",
+				"anyConnection": "Qualquer conexão que consiga vê-lo",
+				"connectionHelp": "Escolha uma quando várias conexões enxergarem o repositório, por exemplo duas organizações.",
+				"description": "Descrição (opcional)",
+				"descriptionPlaceholder": "ex.: Cliente web do produto",
+				"descriptionHelp": "Diz aos agentes para que serve este repositório, para que escolham o correto. Até 1000 caracteres.",
+				"title": "Vincular um repositório",
+				"dialogDescription": "Escolha a plataforma e o repositório com os quais os agentes deste projeto vão trabalhar."
+			},
+			"picker": {
+				"browse": "Explorar repositórios",
+				"unsupported": "Esta conexão não consegue listar repositórios. Feche esta janela e digite o caminho ou a URL.",
+				"error": "Não foi possível carregar a lista. Feche esta janela e digite o caminho ou a URL.",
+				"empty": "Nenhum repositório encontrado.",
+				"linked": "Vinculado",
+				"private": "Privado",
+				"title": "Explorar repositórios",
+				"description": "Role por tudo o que esta conexão enxerga e escolha um para preencher o repositório."
+			},
+			"unlink": {
+				"button": "Desvincular",
+				"confirm": "Confirmar",
+				"cancel": "Cancelar"
+			},
+			"resumed": "Bem-vindo de volta. Vincule {{repository}} agora.",
+			"access": {
+				"title": "Esta conexão não enxerga este repositório",
+				"description": "O aplicativo do {{provider}} só enxerga repositórios das contas em que está instalado. Instale-o em {{owner}} (você irá à plataforma e voltará aqui) e vincule novamente.",
+				"descriptionNoOwner": "O aplicativo do {{provider}} só enxerga repositórios das contas em que está instalado. Escolha onde instalá-lo (você irá à plataforma e voltará aqui) e vincule novamente.",
+				"button": "Instalar em {{owner}}",
+				"buttonNoOwner": "Escolher onde instalar",
+				"connection": "Conexão a instalar",
+				"choose": "Escolha uma conexão"
+			},
+			"errors": {
+				"generic": "Algo deu errado. Tente novamente.",
+				"setupInvalid": "Este link é inválido, expirou ou já foi usado. Comece de novo.",
+				"identityExists": "Já existe uma identidade aqui.",
+				"publicUrlRequired": "A URL pública da instância (PUBLIC_URL) não está configurada.",
+				"providerUnavailable": "O plugin do provedor Git está indisponível.",
+				"providerRejected": "A plataforma recusou a solicitação.",
+				"providerDetail": "Detalhes da plataforma: {{message}}",
+				"notFound": "Não encontrado.",
+				"accessNotGranted": "A conexão não enxerga este repositório.",
+				"noIdentity": "Ainda não há nenhuma conexão disponível para esta plataforma. Adicione uma em Conexões.",
+				"alreadyLinked": "Este repositório já está vinculado ao projeto.",
+				"identityRequired": "Várias conexões enxergam este repositório. Escolha qual usar.",
+				"notVisible": "Nenhuma das conexões do projeto enxerga este repositório. Adicione uma conexão com acesso a ele (no GitLab, um token desse projeto ou do grupo dele) e tente novamente.",
+				"descriptionTooLong": "A descrição é longa demais (no máximo 1000 caracteres)."
+			},
+			"triggerKinds": {
+				"mention": {
+					"label": "Menção",
+					"description": "Alguém menciona o bot em um comentário, revisão ou descrição."
+				},
+				"own_cr_feedback": {
+					"label": "Feedback no seu pull request",
+					"description": "Uma revisão ou comentário chega a um pull request aberto por este agente."
+				},
+				"ci_failure": {
+					"label": "Falha de CI no seu pull request",
+					"description": "Uma verificação falha no último commit de um pull request aberto por este agente (no máximo algumas tentativas)."
+				},
+				"review_request": {
+					"label": "Revisão solicitada",
+					"description": "O bot é solicitado como revisor, quando a plataforma permite."
+				},
+				"assignment": {
+					"label": "Atribuição",
+					"description": "O bot é atribuído a uma issue ou pull request, quando a plataforma permite."
+				},
+				"label": {
+					"label": "Rótulo",
+					"description": "O rótulo \"paca\" (ou \"paca:<identificador do agente>\") é adicionado a uma issue ou pull request."
+				},
+				"auto_review": {
+					"label": "Revisar todos os pull requests",
+					"description": "Revisa automaticamente cada novo pull request. Desativado até você ativar; rascunhos e pull requests do próprio agente são ignorados."
+				}
+			},
+			"repositories": {
+				"title": "Repositórios",
+				"description": "Os agentes deste projeto podem trabalhar nestes repositórios.",
+				"mention": "Mencionar nos comentários:",
+				"noDescription": "Sem descrição",
+				"addDescription": "Adicionar uma descrição",
+				"editDescription": "Editar descrição",
+				"saveDescription": "Salvar",
+				"cancelDescription": "Cancelar",
+				"descriptionLabel": "Descrição do repositório"
+			},
+			"automation": {
+				"title": "Automação",
+				"description": "Defina como a atividade do Git inicia seus agentes.",
+				"locked": "Primeiro vincule um repositório. Estas configurações valem para os repositórios vinculados a este projeto.",
+				"responder": {
+					"label": "Respondedor padrão",
+					"none": "Sem respondedor padrão",
+					"help": "Responde a menções, rótulos e pedidos de revisão que não citam nenhum agente. Adicione \"agent:<handle>\" a uma menção para escolher outro agente.",
+					"warning": "Sem respondedor padrão, menções que não citam nenhum agente são ignoradas."
+				},
+				"minPermission": {
+					"label": "Acesso mínimo para iniciar um agente",
+					"help": "Quem tem menos acesso ao repositório pode comentar, mas o agente não será executado."
+				},
+				"permission": {
+					"read": "Leitura",
+					"triage": "Triagem",
+					"write": "Escrita",
+					"maintain": "Manutenção",
+					"admin": "Administrador"
+				},
+				"paused": {
+					"label": "Pausar a automação",
+					"help": "Enquanto pausada, nenhuma atividade do Git inicia um agente. Execuções em andamento terminam."
+				},
+				"save": "Salvar",
+				"saved": "Salvo.",
+				"advanced": "Avançado"
+			},
+			"usage": {
+				"title": "Como usar",
+				"description": "Três maneiras de iniciar um agente a partir da sua plataforma Git.",
+				"mention": {
+					"title": "Mencione o bot",
+					"description": "Comente em um issue ou pull request. O respondedor padrão responde."
+				},
+				"pick": {
+					"title": "Escolha um agente",
+					"description": "Adicione agent:<handle> à menção para escolher qual agente responde."
+				},
+				"label": {
+					"title": "Adicione um rótulo",
+					"description": "Adicione o rótulo \"paca\" a um issue ou pull request."
+				},
+				"automatic": "Os agentes também podem iniciar sozinhos, por exemplo para acompanhar seus pull requests ou revisar cada novo. Ative isso na aba Git de cada agente."
+			},
+			"connections": {
+				"title": "Conexões",
+				"description": "Os aplicativos do GitHub e tokens de acesso que o Paca usa para alcançar seus repositórios. Um projeto pode ter vários, de organizações diferentes; cada um é compartilhado por todos os projetos ou limitado a este.",
+				"add": "Adicionar {{provider}}",
+				"empty": {
+					"title": "Nenhuma conexão ainda",
+					"description": "Adicione uma conexão para que o Paca alcance seus repositórios. Use um aplicativo ou cole um token de acesso se sua plataforma não tiver aplicativos.",
+					"noPermission": "Peça a alguém que possa gerenciar conexões Git para adicionar uma."
+				},
+				"scope": {
+					"shared": "Todos os projetos",
+					"project": "Este projeto"
+				},
+				"expires": "Expira em {{date}}",
+				"expired": "Expirado",
+				"remove": "Remover"
+			},
+			"webhook": {
+				"title": "Os eventos deste repositório não estão chegando ao Paca",
+				"description": "O Paca não conseguiu registrar um webhook neste repositório por meio desta conexão.",
+				"permissionHint": "A causa mais comum é um token sem permissão para gerenciar webhooks (a função Maintainer no GitLab, a permissão Webhooks no GitHub). Dê essa permissão ao token (no GitLab, crie um novo token com a função Maintainer e adicione-o como conexão) e tente novamente.",
+				"retry": "Tentar novamente",
+				"descriptionNotTried": "O Paca ainda não registrou um webhook neste repositório (por exemplo, ele veio de uma versão anterior do plugin). Registre-o para começar a receber eventos.",
+				"register": "Registrar webhook",
+				"failed": "Ainda não foi possível registrar o webhook."
+			},
+			"reconnect": {
+				"title": "Este repositório não tem conexão",
+				"description": "A conexão dele foi excluída, então nada pode usá-lo. Reconecte-o por uma conexão que consiga vê-lo.",
+				"noConnection": "A conexão dele foi excluída. Adicione primeiro uma conexão que consiga vê-lo e depois reconecte.",
+				"button": "Reconectar"
 			}
 		}
 	},
@@ -60,6 +251,7 @@
 			"acpProviderCodex": "Codex",
 			"acpProviderGeminiCli": "Gemini CLI",
 			"acpProviderGoose": "Goose",
+			"acpProviderOpenCode": "OpenCode",
 			"acpProviderCustom": "Personalizado…",
 			"acpCommandLabel": "Comando",
 			"acpCommandPlaceholder": "npx -y my-acp-server",
@@ -101,7 +293,6 @@
 			"configure": "Configurar",
 			"delete": "Excluir",
 			"restricted": "Restricted",
-			"restrictedTooltip": "This agent is restricted — ask a project admin to grant you access before you can chat with it.",
 			"acpStatusConnected": "Online",
 			"acpStatusDisconnected": "Offline",
 			"deleteDialog": {
@@ -114,6 +305,7 @@
 			}
 		},
 		"page": {
+			"searchPlaceholder": "Pesquisar agentes por nome ou identificador…",
 			"title": "Agentes de IA",
 			"subtitle": "Agentes autônomos que trabalham em tarefas e conversam com sua equipe",
 			"newAgent": "Novo agente",
@@ -153,6 +345,7 @@
 			"stepSkillMcpDescription": "Gere a chave MCP própria deste agente uma vez e execute os dois comandos abaixo — para que as chamadas de ferramentas apareçam como atividade do agente, não sua.",
 			"stepSkillMcpSkillLabel": "Instalar a skill:",
 			"stepSkillMcpConnectLabel": "Conectar o servidor MCP:",
+			"stepSkillMcpConnectLabelConfig": "Adicione isto a {{file}} (mescle com qualquer seção \"{{section}}\" existente):",
 			"step3NotAvailable": "A instalação automática está disponível para Claude Code, Gemini CLI e Codex. O {{provider}} ainda não tem um instalador de prompts personalizados conhecido — as ferramentas MCP do Paca abaixo funcionam mesmo sem ele.",
 			"step3ViewContent": "Ver instruções da skill",
 			"step4NoKeyYet": "Gere uma chave para revelar os comandos de configuração.",
@@ -172,8 +365,8 @@
 				"skills": "Skills",
 				"envVars": "Ambiente",
 				"globalRole": "Função global",
-				"access": "Access",
-				"activity": "Atividade"
+				"activity": "Atividade",
+				"git": "Git"
 			},
 			"globalRole": {
 				"title": "Função global",
@@ -244,6 +437,7 @@
 				"acpProviderCodex": "Codex",
 				"acpProviderGeminiCli": "Gemini CLI",
 				"acpProviderGoose": "Goose",
+				"acpProviderOpenCode": "OpenCode",
 				"acpProviderCustom": "Personalizado…",
 				"acpCommandLabel": "Comando",
 				"acpCommandHint": "Comando separado por espaços usado para iniciar seu servidor ACP.",
@@ -347,15 +541,6 @@
 					"description": "Incluídas no Paca e disponíveis para todos os agentes. Não podem ser editadas."
 				}
 			},
-			"access": {
-				"restrictLabel": "Restrict access",
-				"restrictDescription": "When on, only members granted access below may chat with this agent. Everyone who can manage agents can still see and configure it.",
-				"pickMember": "Select a member…",
-				"grantAccess": "Grant access",
-				"alreadyGranted": "This member already has access.",
-				"grantFailed": "Failed to grant access. Please try again.",
-				"empty": "No members have been granted access yet."
-			},
 			"activity": {
 				"commented": "comentou",
 				"sourceType": {
@@ -382,6 +567,69 @@
 			},
 			"system": {
 				"badge": "Sistema"
+			},
+			"git": {
+				"title": "Identidade Git",
+				"description": "Por padrão este agente atua pela identidade Git compartilhada do workspace. Dê a ele uma identidade própria para que seus commits, pull requests e comentários apareçam sob um bot separado, e instale essa identidade nas contas e organizações cujos repositórios ele usa.",
+				"providersUnavailable": "Não foi possível carregar os provedores Git deste projeto.",
+				"noProviders": {
+					"title": "Nenhuma plataforma Git disponível",
+					"description": "Peça a um administrador que instale um plugin de provedor Git e o conecte. Depois os agentes poderão trabalhar em repositórios."
+				},
+				"ownIdentity": "Identidade própria",
+				"usesShared": "Usa a identidade compartilhada",
+				"singleIdentity": "Esta plataforma tem uma identidade por host, então a compartilhada é usada.",
+				"remove": "Remover",
+				"create": {
+					"title": "Dê a este agente a própria identidade",
+					"description": "Seus commits, pull requests e comentários passam a aparecer com um bot separado e pode-se mencioná-lo pelo nome. Você aprova na plataforma e instala em seguida.",
+					"button": "Criar identidade"
+				},
+				"askAdmin": "Peça a um administrador do workspace que crie uma.",
+				"install": {
+					"label": "Instalar em outra conta ou organização",
+					"placeholder": "conta ou organização (opcional)",
+					"button": "Instalar",
+					"help": "Abre a página de instalação da plataforma. Deixe o nome vazio para escolher a conta lá.",
+					"title": "Instalar em outra conta ou organização"
+				},
+				"triggers": {
+					"title": "Gatilhos do Git",
+					"description": "Quais eventos do Git iniciam este agente. Só aparecem os eventos que os provedores de Git instalados conseguem entregar.",
+					"filters": {
+						"branches": "Somente estas branches de destino",
+						"authors": "Somente estes autores",
+						"help": "Separados por vírgula. Deixe vazio para incluir tudo. Autores que sejam bots precisam estar na lista para serem revisados.",
+						"save": "Salvar filtros"
+					},
+					"unsupported": "Não é compatível com as plataformas Git conectadas.",
+					"groups": {
+						"requests": {
+							"title": "Responder a solicitações",
+							"description": "Inicia quando alguém solicita este agente."
+						},
+						"followUp": {
+							"title": "Acompanhar os próprios pull requests",
+							"description": "Inicia quando algo acontece em um pull request aberto por este agente."
+						},
+						"proactive": {
+							"title": "Agir por conta própria",
+							"description": "Inicia sem que ninguém peça. Desativado por padrão."
+						}
+					}
+				},
+				"identity": {
+					"title": "Identidade",
+					"description": "A conta que este agente usa em cada plataforma Git."
+				},
+				"own": {
+					"description": "Este agente tem o próprio bot, então seus commits, pull requests e comentários aparecem com um nome separado.",
+					"mention": "Mencione com:"
+				},
+				"shared": {
+					"description": "Este agente atua pelo bot compartilhado do workspace, como os demais agentes."
+				},
+				"permissions": "O que este agente pode fazer no Git segue o papel dele no projeto: acesso de leitura e escrita vem das permissões Git do papel. Aprovar e fazer merge de pull requests não é concedido por padrão."
 			}
 		},
 		"conversationView": {
@@ -397,9 +645,8 @@
 			"connect": "Conectar",
 			"conversationEnded": "Esta conversa foi encerrada.",
 			"textOnlyMessage": "Apenas mensagens de texto são suportadas.",
-			"agentAccessRestricted": "Este agente tem acesso restrito. Peça a um administrador do projeto para conceder acesso antes de poder conversar com ele.",
-			"environmentAccessRestricted": "O ambiente desta conversa tem acesso restrito. Peça a um administrador do projeto para conceder acesso antes de poder conversar com este agente.",
 			"chatNoPermission": "Você não tem permissão para enviar mensagens nesta conversa.",
+			"cliProviderNeedsEnvironment": "Este agente usa um provedor CLI e precisa de um ambiente padrão, mas não tem um utilizável. Peça a um administrador do projeto que defina um ambiente padrão para o agente.",
 			"failed": "A conversa falhou",
 			"noOutput": "O agente não produziu nenhuma saída.",
 			"loadingOlder": "Carregando…",
@@ -477,6 +724,19 @@
 				"noContextResults": "Nenhum resultado encontrado",
 				"contextSearchMinChars": "Digite pelo menos 2 caracteres para buscar"
 			}
+		},
+		"acpModelEffort": {
+			"modelLabel": "Modelo",
+			"modelPlaceholder": "ex.: claude-sonnet-4-5",
+			"modelHint": "Nome de modelo opcional, enviado ao provedor exatamente como digitado. Deixe em branco para usar o padrão do provedor.",
+			"effortLabel": "Esforço de raciocínio",
+			"effortDefault": "Padrão do provedor",
+			"effort_low": "Baixo",
+			"effort_medium": "Médio",
+			"effort_high": "Alto",
+			"effort_xhigh": "Muito alto",
+			"effort_max": "Máximo",
+			"effortHint": "Opcional. Aplicado apenas se o provedor oferecer o nível escolhido."
 		}
 	},
 	"environments": {
@@ -495,7 +755,6 @@
 			"subtitle": "Sandboxes nomeados e de longa duração aos quais seus agentes podem se conectar entre conversas",
 			"newEnvironment": "Novo ambiente",
 			"restricted": "Restricted",
-			"restrictedTooltip": "This environment is restricted — ask a project admin to grant you access before you can use it.",
 			"empty": {
 				"title": "Ainda não há ambientes",
 				"description": "Crie um ambiente estático para manter arquivos e processos em segundo plano ativos entre conversas, em vez de um sandbox descartável a cada vez.",
@@ -538,8 +797,7 @@
 			"tabs": {
 				"overview": "Visão geral",
 				"folders": "Pastas",
-				"portForwards": "Encaminhamentos de porta",
-				"access": "Access"
+				"portForwards": "Encaminhamentos de porta"
 			},
 			"busy": "Este ambiente já está iniciando, parando ou reiniciando. Tente novamente em instantes.",
 			"actionFailed": "Isso não funcionou. Tente novamente.",
@@ -655,15 +913,6 @@
 					"restartFailed": "Falha ao reiniciar o ambiente. Tente novamente."
 				}
 			},
-			"access": {
-				"restrictLabel": "Restrict access",
-				"restrictDescription": "When on, only members granted access below may browse, SSH into, forward ports on, or open a terminal in this environment. Everyone who can manage environments can still see and configure it.",
-				"pickMember": "Select a member…",
-				"grantAccess": "Grant access",
-				"alreadyGranted": "This member already has access.",
-				"grantFailed": "Failed to grant access. Please try again.",
-				"empty": "No members have been granted access yet."
-			},
 			"sshKeys": {
 				"connectHint": "Substitua <bastion-host> pelo endereço do bastion SSH configurado nesta implantação.",
 				"connectUnavailable": "O acesso SSH ainda não está configurado nesta implantação.",
@@ -762,7 +1011,6 @@
 			"deleteRole": "Excluir papel",
 			"errors": {
 				"notFound": "Este papel não existe mais.",
-				"hasMembers": "Este papel não pode ser excluído porque ainda está atribuído a um ou mais membros.",
 				"forbidden": "Você não tem permissão para excluir este papel.",
 				"internalError": "Algo deu errado. Tente novamente.",
 				"generic": "Algo deu errado."
@@ -776,23 +1024,18 @@
 			"roleNameLabel": "Nome do papel",
 			"roleNamePlaceholder": "ex.: PROJECT_REVIEWER",
 			"permissionsLabel": "Permissões",
-			"fullAccessBadge": "Acesso total",
 			"fullAccessDescription": "Esta função inclui automaticamente todas as permissões, incluindo as adicionadas no futuro. Alterar qualquer opção abaixo irá convertê-la em um conjunto fixo com as permissões atuais.",
 			"enabledCount_one": "{{count}} ativada",
 			"enabledCount_other": "{{count}} ativadas",
 			"cancel": "Cancelar",
 			"saveChanges": "Salvar alterações",
-			"createRole": "Criar papel",
-			"errors": {
-				"nameTaken": "Já existe um papel com este nome.",
-				"nameInvalid": "O nome do papel deve usar letras maiúsculas, números e underscores.",
-				"notFound": "Este papel não existe mais. Ele pode já ter sido excluído.",
-				"forbidden": "Você não tem permissão para realizar esta ação.",
-				"internalError": "Algo deu errado no servidor. Tente novamente.",
-				"generic": "Algo deu errado."
-			}
+			"createRole": "Criar papel"
 		},
 		"permissions": {
+			"projectsRead": {
+				"label": "Ver projeto",
+				"description": "Abrir o projeto e ver seus detalhes básicos"
+			},
 			"projectsWrite": {
 				"label": "Editar projeto",
 				"description": "Atualizar nome, descrição e configurações do projeto"
@@ -807,7 +1050,7 @@
 			},
 			"membersWrite": {
 				"label": "Gerenciar membros",
-				"description": "Adicionar, remover e reatribuir membros do projeto"
+				"description": "Adicionar e remover membros do projeto (alterar as funções deles exige Atribuir funções)"
 			},
 			"rolesRead": {
 				"label": "Ver papéis",
@@ -816,6 +1059,10 @@
 			"rolesWrite": {
 				"label": "Gerenciar papéis",
 				"description": "Criar, editar e excluir papéis do projeto"
+			},
+			"rolesAssign": {
+				"label": "Atribuir funções",
+				"description": "Dar a membros e agentes qualquer função deste projeto, ou retirá-las"
 			},
 			"settingsTaskTypesWrite": {
 				"label": "Manage Task Types",
@@ -912,6 +1159,30 @@
 			"activitiesRead": {
 				"label": "Ver registro de atividades",
 				"description": "Ver todas as atividades registradas neste projeto"
+			},
+			"projectExport": {
+				"label": "Exportar dados do projeto",
+				"description": "Exportar as tarefas (com comentários e atividades) e a documentação deste projeto"
+			},
+			"gitRead": {
+				"label": "Ver Git",
+				"description": "Ver os repositórios vinculados ao projeto"
+			},
+			"gitWrite": {
+				"label": "Gerenciar Git",
+				"description": "Vincular e desvincular repositórios, conceder acesso a repositórios e permitir que os agentes enviem alterações"
+			},
+			"gitApprove": {
+				"label": "Aprovar solicitações de mudança",
+				"description": "Aprovar pull requests e merge requests, o que pode satisfazer uma revisão obrigatória. Comentar e solicitar mudanças exige apenas Gerenciar Git."
+			},
+			"gitMerge": {
+				"label": "Mesclar solicitações de mudança",
+				"description": "Mesclar pull requests e merge requests na branch de destino. A proteção de branch da plataforma continua valendo."
+			},
+			"gitConnectionsManage": {
+				"label": "Gerenciar conexões Git",
+				"description": "Adicionar e remover os aplicativos do GitHub e tokens de acesso usados apenas por este projeto. Vincular repositórios ainda exige acesso de escrita ao Git."
 			}
 		},
 		"permissionGroups": {
@@ -927,7 +1198,8 @@
 			"environments": "Ambientes",
 			"annotations": "Annotations",
 			"workflows": "Automação",
-			"plugins": "Plugins"
+			"plugins": "Plugins",
+			"git": "Git"
 		}
 	},
 	"settings": {
@@ -951,9 +1223,6 @@
 			"taskIdPrefixPlaceholder": "PROJ",
 			"descriptionLabel": "Descrição",
 			"descriptionPlaceholder": "Descreva sobre o que é este projeto…",
-			"publicProjectLabel": "Projeto público",
-			"publicProjectHintPublic": "Qualquer pessoa com o link pode visualizar este projeto. Usuários anônimos têm acesso somente leitura.",
-			"publicProjectHintPrivate": "Apenas membros da equipe podem acessar este projeto.",
 			"saveChanges": "Salvar alterações",
 			"saved": "Salvo ✓",
 			"noPermission": "Você não tem permissão para editar este projeto.",
@@ -968,7 +1237,6 @@
 			"title": "Papéis do projeto",
 			"description": "Gerencie os papéis e permissões dos membros deste projeto.",
 			"newRole": "Novo papel",
-			"noPermissionsAssigned": "Nenhuma permissão atribuída",
 			"editRole": "Editar papel",
 			"deleteRole": "Excluir papel",
 			"rolesDefined_one": "papel definido",
@@ -981,14 +1249,15 @@
 			},
 			"table": {
 				"name": "Nome",
-				"permissions": "Permissões",
+				"description": "Descrição",
 				"created": "Criado em"
 			},
-			"systemRolesNote": "Papéis de sistema são modelos compartilhados e não podem ser editados ou excluídos.",
+			"systemRolesNote": "Funções compartilhadas do espaço de trabalho só podem ser alteradas nas configurações de funções do espaço de trabalho.",
 			"noPermission": {
 				"title": "You don't have permission to view roles",
 				"description": "Ask a project admin to grant you the project.roles.read permission."
-			}
+			},
+			"noDescription": "Sem descrição"
 		},
 		"taskStatuses": {
 			"title": "Status de tarefas",
@@ -1054,7 +1323,8 @@
 				"displayName": "Nome de exibição",
 				"fieldKey": "Chave do campo",
 				"type": "Tipo",
-				"required": "Obrigatório"
+				"required": "Obrigatório",
+				"useInSearch": "Usar na busca"
 			},
 			"yes": "Sim",
 			"no": "Não",
@@ -1076,6 +1346,8 @@
 			"noColor": "Sem cor",
 			"requiredLabel": "Obrigatório",
 			"requiredHint": "Os usuários devem preencher este campo ao criar ou editar uma tarefa.",
+			"useInSearchLabel": "Usar na busca",
+			"useInSearchHint": "A busca de tarefas também considera o valor deste campo.",
 			"fieldTypes": {
 				"text": "Texto",
 				"number": "Número",
@@ -1083,7 +1355,8 @@
 				"checkbox": "Caixa de seleção",
 				"select": "Seleção",
 				"multiSelect": "Seleção múltipla",
-				"url": "URL"
+				"url": "URL",
+				"longText": "Texto longo"
 			},
 			"createDialog": {
 				"title": "Criar campo personalizado",
@@ -1114,7 +1387,9 @@
 			"noPermission": {
 				"title": "You don't have permission to view custom fields",
 				"description": "Ask a project admin to grant you the project.settings.custom_fields.read permission."
-			}
+			},
+			"rowsLabel": "Linhas visíveis",
+			"rowsHint": "Número de linhas exibidas ao editar ({{min}}–{{max}})."
 		},
 		"jev": {
 			"title": "Jev IA",
@@ -1184,6 +1459,41 @@
 				"cancel": "Cancelar",
 				"deletePermanently": "Excluir permanentemente"
 			}
+		},
+		"export": {
+			"title": "Exportar",
+			"description": "Baixe os dados do seu projeto. As exportações são geradas em segundo plano e mantidas por 7 dias.",
+			"recent": {
+				"title": "Exportações recentes",
+				"empty": "Nenhuma exportação ainda."
+			},
+			"status": {
+				"pending": "Na fila",
+				"processing": "Gerando…",
+				"completed": "Pronta",
+				"failed": "Falhou",
+				"expired": "Expirada"
+			},
+			"rows": "Tarefas: {{count}}",
+			"availableUntil": "Disponível até {{date}}",
+			"download": "Baixar",
+			"failedMessage": "Não foi possível gerar a exportação. Tente novamente.",
+			"errors": {
+				"inProgress": "Já há uma exportação em andamento para este projeto.",
+				"requestFailed": "Não foi possível iniciar a exportação. Tente novamente.",
+				"downloadFailed": "Não foi possível baixar a exportação. Tente novamente.",
+				"expired": "Esta exportação expirou. Solicite uma nova."
+			},
+			"noPermission": {
+				"title": "Você não tem permissão para exportar este projeto",
+				"description": "Peça a um proprietário ou administrador do projeto que conceda a você a permissão de exportação."
+			},
+			"archive": {
+				"title": "Dados do projeto (ZIP)",
+				"description": "Todas as tarefas em CSV, com seus comentários e atividades em arquivos CSV separados, além da documentação em arquivos Markdown.",
+				"button": "Exportar projeto",
+				"inProgress": "Exportando…"
+			}
 		}
 	},
 	"taskStatuses": {
@@ -1238,29 +1548,43 @@
 			"noUsersAvailable": "Nenhum usuário disponível para adicionar.",
 			"loadingMore": "Carregando…",
 			"roleLabel": "Papel",
-			"rolePlaceholder": "Selecione um papel…",
 			"cancel": "Cancelar",
 			"addMember": "Adicionar membro",
 			"errors": {
 				"addFailed": "Falha ao adicionar o membro. Tente novamente.",
 				"alreadyAdded": "Este usuário ou agente já é membro do projeto.",
+				"roleForbidden": "Você não tem permissão para atribuir um desses papéis.",
 				"roleNotFound": "Esse papel não existe mais. Escolha outro papel."
 			},
 			"modeUser": "Usuário",
 			"modeAgent": "Agente de IA",
 			"agentLabel": "Agente",
-			"noAgentsAvailable": "Nenhum agente global disponível para convidar."
+			"noAgentsAvailable": "Nenhum agente global disponível para convidar.",
+			"modeServiceAccount": "Conta de serviço",
+			"serviceAccountLabel": "Conta de serviço",
+			"noServiceAccountsAvailable": "Não há contas de serviço para adicionar.",
+			"searchAgentsPlaceholder": "Buscar por nome ou identificador…",
+			"noAgentsMatch": "Nenhum agente corresponde à sua busca.",
+			"searchServiceAccountsPlaceholder": "Buscar por nome ou descrição…",
+			"noServiceAccountsMatch": "Nenhuma conta de serviço corresponde à sua busca."
 		},
 		"roleChip": {
 			"changeRole": "Alterar papel",
+			"dialogDescription": "Escolha os papéis de {{name}}. Um membro mantém pelo menos um papel.",
+			"assign": "Atribuir papel",
+			"assigning": "Atribuindo…",
 			"errors": {
 				"memberNotFound": "Este membro não faz mais parte do projeto.",
+				"roleForbidden": "Você não tem permissão para atribuir ou remover um desses papéis.",
 				"roleNotFound": "Esse papel não existe mais.",
 				"changeFailed": "Falha ao alterar o papel."
 			}
 		},
 		"memberRow": {
-			"removeMember": "Remover membro"
+			"removeMember": "Remover membro",
+			"agentBadge": "Agente",
+			"actions": "Ações do membro",
+			"serviceAccountBadge": "Conta de serviço"
 		},
 		"removeDialog": {
 			"title": "Remover membro",
@@ -1347,7 +1671,8 @@
 		"common": {
 			"empty": "Vazio",
 			"dash": "—",
-			"unassigned": "Sem responsável"
+			"unassigned": "Sem responsável",
+			"none": "Nenhum"
 		},
 		"notFound": {
 			"title": "Tarefa não encontrada",
@@ -1406,6 +1731,7 @@
 			"title": "Descrição",
 			"writeWithAI": "Escrever com IA",
 			"writeWithAIDialog": {
+				"searchAgents": "Pesquisar agentes…",
 				"title": "Escrever com IA",
 				"description": "Selecione um agente para escrever a descrição da tarefa.",
 				"noAgents": "Nenhum agente configurado para este projeto.",
@@ -1474,7 +1800,8 @@
 				"checkbox": "Caixa de seleção",
 				"select": "Seleção",
 				"multiSelect": "Seleção múltipla",
-				"url": "URL"
+				"url": "URL",
+				"longText": "Texto longo"
 			}
 		},
 		"addTaskLinkModal": {
@@ -1483,6 +1810,7 @@
 			"searchPlaceholder": "Buscar tarefas por título ou número...",
 			"loadingTasks": "Carregando tarefas…",
 			"noTasksFound": "Nenhuma tarefa encontrada",
+			"loadError": "Não foi possível carregar as tarefas. Tente novamente.",
 			"linkTypes": {
 				"blocks": {
 					"label": "Bloqueia",
@@ -1585,6 +1913,66 @@
 		"searchableList": {
 			"searchPlaceholder": "Pesquisar…",
 			"noResults": "Nenhum resultado"
+		},
+		"git": {
+			"branches": "Branches",
+			"pullRequests": "Pull requests",
+			"linkBranch": "Vincular branch",
+			"newBranch": "Nova branch",
+			"linkPullRequest": "Vincular pull request",
+			"noBranches": "Nenhuma branch vinculada ainda.",
+			"noPullRequests": "Nenhum pull request vinculado ainda.",
+			"by": "por {{author}}",
+			"unlink": "Desvincular",
+			"unlinkPullRequest": "Desvincular o pull request {{name}}",
+			"unlinkBranch": "Desvincular a branch {{name}}",
+			"copyCheckout": "Copiar comando de checkout",
+			"copy": "Copiar",
+			"copied": "Copiado",
+			"state": {
+				"open": "Aberto",
+				"draft": "Rascunho",
+				"merged": "Mesclado",
+				"closed": "Fechado"
+			},
+			"ci": {
+				"passing": "CI passando",
+				"failing": "CI falhando",
+				"pending": "CI em execução",
+				"failingNames": "Falhando: {{names}}",
+				"counts": "{{passed}} de {{total}} verificações passaram"
+			},
+			"forms": {
+				"selectRepository": "Selecione um repositório…",
+				"cancel": "Cancelar",
+				"pullRequest": "Pull request",
+				"pullRequestHint": "Cole o link do pull request ou informe o número.",
+				"willLink": "Vai vincular {{what}} de {{repository}}",
+				"repository": "Repositório",
+				"linkPullRequest": "Vincular pull request",
+				"existingBranch": "Branch existente",
+				"branchHint": "Informe o nome de uma branch ou cole um link para ela.",
+				"linkBranch": "Vincular branch",
+				"branchType": "Tipo",
+				"branchName": "Nome da branch",
+				"branchFrom": "Criar a partir de",
+				"branchFromHint": "Opcional — por padrão, a branch padrão do repositório.",
+				"createBranch": "Criar branch",
+				"orLocally": "Ou crie localmente"
+			},
+			"errors": {
+				"notFound": "Não foi encontrado nesse repositório.",
+				"rejected": "A plataforma Git recusou a solicitação para este repositório.",
+				"unavailable": "O provedor Git está temporariamente indisponível. Tente novamente.",
+				"noIdentity": "Nenhuma identidade Git pode agir neste repositório.",
+				"forbidden": "Você não tem acesso para fazer isso.",
+				"generic": "Algo deu errado. Tente novamente.",
+				"repoNotLinked": "\"{{repository}}\" não está vinculado a este projeto.",
+				"selectRepository": "Selecione um repositório.",
+				"invalidNumber": "Informe um número ou cole um link.",
+				"branchRequired": "Informe o nome de uma branch ou cole um link.",
+				"createRefused": "A plataforma não conseguiu criar essa branch (o nome pode já existir ou ser inválido)."
+			}
 		}
 	},
 	"portForwardDetail": {
@@ -1756,6 +2144,19 @@
 		"backlog": {
 			"title": "Backlog do produto",
 			"description": "Todos os itens de trabalho não atribuídos a um sprint."
+		},
+		"subtasks": {
+			"expand": "Expandir {{n}} subtarefas",
+			"collapse": "Recolher {{n}} subtarefas",
+			"progress": "{{done}} de {{n}} subtarefas concluídas",
+			"loading": "Carregando subtarefas",
+			"loadError": "Não foi possível carregar as subtarefas.",
+			"retry": "Tentar novamente",
+			"matching": "{{n}} de {{total}} subtarefas correspondem aos filtros atuais",
+			"noMatch": "Nenhuma subtarefa corresponde aos filtros atuais",
+			"loadMore": "Carregar mais subtarefas",
+			"add": "Adicionar subtarefa",
+			"addPlaceholder": "Título da subtarefa"
 		}
 	},
 	"conversationsPage": {
@@ -1786,6 +2187,7 @@
 			"error": "Não foi possível excluir a conversa. Tente novamente."
 		},
 		"filters": {
+			"searchAgents": "Pesquisar agentes…",
 			"title": "Filtros",
 			"agent": "Agente",
 			"status": "Status",
@@ -1824,6 +2226,7 @@
 			"deleteView": "Excluir visão",
 			"searchTasksPlaceholder": "Buscar tarefas…",
 			"pluginNotAvailable": "Plugin não disponível",
+			"columnsTruncated": "Somente as primeiras {{max}} colunas são exibidas; algumas tarefas não estão em nenhuma coluna. Restrinja a visualização com um filtro para ver o restante.",
 			"viewErrors": {
 				"isLastView": "Esta é a última visualização e não pode ser excluída.",
 				"deleteFailed": "Falha ao excluir a visualização. Tente novamente.",
@@ -1897,7 +2300,11 @@
 			"tagsFilter": {
 				"addTag": "Adicionar etiqueta",
 				"addTagPlaceholder": "Adicionar etiqueta..."
-			}
+			},
+			"subtasksLabel": "Subtarefas",
+			"subtasksCollapsed": "Aninhadas, recolhidas",
+			"subtasksExpanded": "Aninhadas, expandidas",
+			"subtasksHidden": "Ocultas (lista plana)"
 		},
 		"roadmap": {
 			"taskColumnLabel": "Tarefa",
@@ -2023,7 +2430,8 @@
 			"assignee": "Responsável",
 			"importance": "Importância",
 			"type": "Tipo",
-			"reporter": "Relator"
+			"reporter": "Relator",
+			"tags": "Tags"
 		},
 		"sortBy": {
 			"manual": "Manual",
@@ -2114,7 +2522,14 @@
 			"triggerGroups": {
 				"taskEvents": "Eventos de tarefas",
 				"sprintEvents": "Eventos de sprints",
-				"scheduleWebhook": "Agendamento e webhook"
+				"scheduleWebhook": "Agendamento e webhook",
+				"taskActivity": "Atividade e subtarefas"
+			},
+			"git": "Git",
+			"actionGroups": {
+				"taskActions": "Tarefa",
+				"flowActions": "Fluxo e integrações",
+				"sprintActions": "Sprint"
 			}
 		},
 		"nodeKind": {
@@ -2139,7 +2554,12 @@
 			"sprint_created": "Sprint criado",
 			"sprint_started": "Sprint iniciado",
 			"sprint_completed": "Sprint concluído",
-			"sprint_deleted": "Sprint excluído"
+			"sprint_deleted": "Sprint excluído",
+			"field_changed": "Campo alterado",
+			"comment_added": "Comentário adicionado",
+			"link_added": "Link adicionado",
+			"attachment_added": "Anexo adicionado",
+			"child_changed": "Subtarefa alterada"
 		},
 		"actionTypes": {
 			"update_task": "Atualizar tarefa",
@@ -2147,7 +2567,11 @@
 			"call_api": "Chamar API",
 			"wait": "Aguardar",
 			"update_sprint": "Atualizar sprint",
-			"complete_sprint": "Concluir sprint"
+			"complete_sprint": "Concluir sprint",
+			"create_task": "Criar subtarefa",
+			"link_task": "Vincular tarefa",
+			"add_comment": "Adicionar comentário",
+			"notify": "Enviar notificação"
 		},
 		"nodeConfig": {
 			"save": "Salvar",
@@ -2188,7 +2612,24 @@
 				"tokenShownOnceWarning": "Copie este token agora — ele não será mostrado novamente.",
 				"copy": "Copiar",
 				"copied": "Copiado",
-				"noTokenYet": "Nenhum token gerado ainda"
+				"noTokenYet": "Nenhum token gerado ainda",
+				"fieldLabel": "Campo a observar",
+				"fieldPlaceholder": "Escolha um campo…",
+				"fieldChangedHint": "Executa quando este campo é editado em uma tarefa.",
+				"childChangedHint": "Executa na tarefa pai quando uma subtarefa é criada ou muda de status. Adicione uma condição sobre as subtarefas para agir só quando, por exemplo, todas estiverem concluídas.",
+				"childStatusLabel": "Quando uma subtarefa entra em",
+				"changedFields": {
+					"sprint": "Sprint",
+					"due_date": "Data de entrega",
+					"start_date": "Data de início",
+					"title": "Título",
+					"story_points": "Pontos de história",
+					"reporter": "Relator",
+					"task_type": "Tipo de tarefa",
+					"parent_task": "Tarefa pai",
+					"description": "Descrição",
+					"custom_fields": "Campos personalizados"
+				}
 			},
 			"condition": {
 				"branchesTitle": "Ramificações",
@@ -2223,8 +2664,14 @@
 					"sprint_status": "Status do sprint",
 					"sprint_goal": "Objetivo do sprint",
 					"sprint_start_date": "Data de início do sprint",
-					"sprint_end_date": "Data de término do sprint"
-				}
+					"sprint_end_date": "Data de término do sprint",
+					"child_count": "Número de subtarefas"
+				},
+				"dateMode": {
+					"fixed": "Data específica",
+					"relative": "Relativa a hoje"
+				},
+				"relativeHint": "Dias a partir de hoje: 0 = agora, 3 = em 3 dias, -1 = ontem. Use \"antes de\" com 0 para indicar atrasado."
 			},
 			"action": {
 				"memberLabel": "Responsável",
@@ -2279,7 +2726,58 @@
 				"pluginConditionLabel": "Condição de plugin",
 				"pluginConditionHint": "Delega a correspondência deste ramo a uma condição fornecida por um plugin em vez de comparar um campo da tarefa.",
 				"selectPluginPlaceholder": "Selecione uma condição de plugin…",
-				"addCustomField": "Adicionar campo personalizado…"
+				"addCustomField": "Adicionar campo personalizado…",
+				"createTaskHint": "Cria uma nova tarefa filha da tarefa selecionada abaixo. Adicione os campos que quiser: cada um pode ser fixo ou copiado da tarefa que disparou a automação ou do pai dela. Se o pai já tiver uma subtarefa com exatamente este título, nada é criado.",
+				"createTitlePlaceholder": "{{task.title}} - Revisão",
+				"descriptionLabel": "Descrição",
+				"ops": {
+					"set": "Definir como",
+					"replace": "Substituir por",
+					"add": "Adicionar",
+					"remove": "Remover",
+					"clear": "Limpar",
+					"task": "Copiar desta tarefa",
+					"parent": "Copiar da tarefa pai",
+					"now": "Hoje"
+				},
+				"clearHint": "Esvazia este campo.",
+				"dynamicFieldLabel": "Copiar este campo",
+				"offsetDaysLabel": "Deslocar em (dias)",
+				"offsetDaysHint": "Positivo = depois, negativo = antes.",
+				"dynamicHint": {
+					"task": "Copiado da tarefa que disparou a automação ao executar. Se ela não tiver valor, o campo não muda.",
+					"parent": "Copiado do pai da tarefa que disparou a automação. Sem pai ou sem valor, o campo não muda.",
+					"now": "A data de hoje ao executar a automação, deslocada pelos dias indicados."
+				},
+				"addMember": "Adicionar um membro…",
+				"removeMember": "Remover membro",
+				"commentHint": "Publica um comentário na tarefa, escrito pela automação.",
+				"commentTextLabel": "Comentário",
+				"commentPlaceholder": "ex.: Todas as subtarefas foram concluídas.",
+				"notifyHint": "Envia uma notificação no aplicativo sobre a tarefa às pessoas abaixo.",
+				"notifyRecipientsLabel": "Notificar",
+				"notifyRecipients": {
+					"assignees": "Responsáveis",
+					"reporter": "Relator",
+					"parent_assignees": "Responsáveis da tarefa pai"
+				},
+				"notifyMembersLabel": "Notificar também",
+				"notifyMessageLabel": "Mensagem",
+				"notifyMessagePlaceholder": "ex.: Pronto para revisão.",
+				"linkHint": "Vincula a tarefa a outra. A direção é lida a partir desta tarefa.",
+				"linkTypeLabel": "Tipo de vínculo",
+				"linkTypes": {
+					"blocks": "Bloqueia",
+					"is_blocked_by": "É bloqueada por",
+					"relates_to": "Relaciona-se com",
+					"duplicates": "Duplica",
+					"is_duplicated_by": "É duplicada por"
+				},
+				"linkToLabel": "Vincular a",
+				"createLinkLabel": "Vincular à tarefa pai",
+				"createLinkNone": "Sem vínculo",
+				"createLinkHint": "Opcionalmente vincula a nova tarefa ao pai, lido a partir da nova tarefa (ex.: \"Bloqueia\" = a subtarefa bloqueia o pai).",
+				"opsLabel": "Como aplicar este campo"
 			},
 			"target": {
 				"label": "Aplica-se a",
@@ -2287,6 +2785,7 @@
 					"self": "Esta tarefa",
 					"parent": "Tarefa pai",
 					"children": "Tarefas filhas",
+					"siblings": "Tarefas irmãs (outras subtarefas do pai)",
 					"blocks": "Bloqueia",
 					"is_blocked_by": "É bloqueada por",
 					"relates_to": "Tarefa relacionada",
@@ -2314,7 +2813,12 @@
 				"cronSchedule": "Executa {{expression}}",
 				"webhookReady": "Webhook configurado",
 				"callApiSummary": "{{method}} {{host}}",
-				"jevNoulTrue": "Sim"
+				"jevNoulTrue": "Sim",
+				"pluginField": "{{field}}: {{value}}",
+				"waitMinutes": "Aguardar {{minutes}} min",
+				"createTaskSummary": "Criar: {{title}}",
+				"commentSummary": "Comentário: {{text}}",
+				"notifySummary": "Notificar: {{message}}"
 			},
 			"jev": {
 				"answerTypeLabel": "Tipo de resposta",
@@ -2340,7 +2844,8 @@
 				"confidenceThresholdLabel": "Limite de confiança",
 				"trueThresholdLabel": "Limite de “verdadeiro”",
 				"thresholdHint": "Abaixo disso, o fluxo de trabalho segue o ramo Else em vez de confiar na resposta."
-			}
+			},
+			"noConfigNeeded": "Este nó não precisa de configuração: ele faz seu trabalho assim que a automação chega a ele."
 		},
 		"runHistory": {
 			"title": "Histórico de execuções",

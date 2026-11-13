@@ -31,7 +31,9 @@ var (
 	ErrCustomFieldNameInvalid = errors.New("custom field: display name is empty or invalid")
 
 	// Task link errors.
-	ErrTaskLinkNotFound     = errors.New("task link: not found")
+	ErrTaskLinkNotFound = errors.New("task link: not found")
+	// ErrInvalidCursor reports a malformed pagination cursor.
+	ErrInvalidCursor        = errors.New("task: invalid cursor")
 	ErrTaskLinkSelf         = errors.New("task link: a task cannot be linked to itself")
 	ErrTaskLinkDuplicate    = errors.New("task link: this relationship already exists")
 	ErrTaskLinkTypeInvalid  = errors.New("task link: invalid link type")
@@ -43,9 +45,8 @@ var (
 	ErrActivityNotAComment   = errors.New("activity: this entry is not a comment and cannot be edited")
 	ErrCommentContentInvalid = errors.New("activity: comment content must not be empty")
 
-	// ErrCommentActorUnidentified is returned when the request authenticated
-	// with the shared agent API key but did not supply an X-Agent-ID header.
-	// That identity is never itself a project member, so there is no member
-	// to attribute the comment to.
-	ErrCommentActorUnidentified = errors.New("activity: request has no identifiable project member; pass X-Agent-ID when using the agent API key")
+	// ErrCommentActorUnidentified is returned when the authenticated caller is
+	// the built-in system actor, which is never itself a project member, so
+	// there is no member to attribute the comment to.
+	ErrCommentActorUnidentified = errors.New("activity: request has no identifiable project member")
 )

@@ -2,7 +2,6 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import {
 	ChevronsUpDown,
-	Key,
 	Keyboard,
 	Languages,
 	LogOut,
@@ -12,7 +11,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { LocaleRadioGroup } from "@/components/LocaleRadioGroup";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { EntityAvatar } from "@/components/shared/entity-avatar";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -32,8 +31,8 @@ import {
 } from "@/components/ui/sidebar";
 import { useLocale } from "@/hooks/use-locale";
 import { currentUserQueryOptions, logout } from "@/lib/auth-api";
+import { userAvatar } from "@/lib/provider-logos";
 import { useShortcutHelpStore } from "@/lib/shortcuts/help-dialog-store";
-import { getInitials } from "@/lib/utils";
 
 export function UserMenu() {
 	const { t } = useTranslation("appShell");
@@ -65,7 +64,6 @@ export function UserMenu() {
 	}
 
 	const displayName = user.full_name || user.username;
-	const initials = getInitials(displayName);
 
 	const handleLogout = async () => {
 		setIsLoggingOut(true);
@@ -95,18 +93,11 @@ export function UserMenu() {
 							/>
 						}
 					>
-						<Avatar size="sm" className="rounded-lg">
-							{user.avatar_thumb_url ? (
-								<AvatarImage src={user.avatar_thumb_url} />
-							) : null}
-							<AvatarFallback className="rounded-lg bg-primary text-primary-foreground text-xs font-semibold">
-								{initials}
-							</AvatarFallback>
-						</Avatar>
+						<EntityAvatar {...userAvatar(user)} size="sm" shape="rounded" />
 						<div className="grid flex-1 text-left text-sm leading-tight group-data-[collapsible=icon]:hidden">
 							<span className="truncate font-semibold">{displayName}</span>
 							<span className="truncate text-xs text-muted-foreground">
-								{user.role}
+								{user.roles.map((r) => r.name).join(", ")}
 							</span>
 						</div>
 						<ChevronsUpDown className="ml-auto size-4 shrink-0 opacity-50 group-data-[collapsible=icon]:hidden" />
@@ -128,15 +119,9 @@ export function UserMenu() {
 							</DropdownMenuLabel>
 						</DropdownMenuGroup>
 						<DropdownMenuSeparator />
-						<DropdownMenuItem onClick={() => void navigate({ to: "/profile" })}>
+						<DropdownMenuItem onClick={() => void navigate({ to: "/account" })}>
 							<User className="size-4" />
 							{t("userMenu.myProfile")}
-						</DropdownMenuItem>
-						<DropdownMenuItem
-							onClick={() => void navigate({ to: "/profile/api-keys" })}
-						>
-							<Key className="size-4" />
-							{t("userMenu.apiKeys")}
 						</DropdownMenuItem>
 						<DropdownMenuItem onClick={() => openShortcutHelp(true)}>
 							<Keyboard className="size-4" />

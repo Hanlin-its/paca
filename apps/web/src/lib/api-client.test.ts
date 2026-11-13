@@ -108,6 +108,26 @@ describe("ApiClient", () => {
 		expect(mockInstance.request).not.toHaveBeenCalled();
 	});
 
+	it.each([
+		"/auth/mfa/verify",
+		"/auth/mfa/setup",
+		"/auth/mfa/setup/confirm",
+	])("passes a wrong-code 401 from %s through without refreshing", async (url) => {
+		const mockInstance = createAxiosInstanceMock();
+		vi.mocked(axios.create).mockReturnValue(mockInstance as never);
+
+		new ApiClient();
+		const onResponseError = getResponseErrorHandler(mockInstance);
+		const error = {
+			config: { url },
+			response: { status: 401, data: { error_code: "AUTH_MFA_INVALID_CODE" } },
+		};
+
+		await expect(onResponseError(error)).rejects.toBe(error);
+		expect(mockInstance.post).not.toHaveBeenCalled();
+		expect(mockInstance.request).not.toHaveBeenCalled();
+	});
+
 	it("refreshes and retries a 401 request once", async () => {
 		const mockInstance = createAxiosInstanceMock();
 		vi.mocked(axios.create).mockReturnValue(mockInstance as never);
@@ -216,5 +236,60 @@ describe("ApiClient", () => {
 		await expect(onResponseError(error)).rejects.toBe(error);
 		expect(mockInstance.post).not.toHaveBeenCalled();
 		expect(mockInstance.request).not.toHaveBeenCalled();
+	});
+});
+
+describe("ApiClient.refreshSession", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+	});
+
+	it("shares one POST /auth/refresh between concurrent callers, so the rotating refresh token is used once", async () => {
+		const mockInstance = createAxiosInstanceMock();
+		vi.mocked(axios.create).mockReturnValue(mockInstance as never);
+		let resolveRefresh: (() => void) | undefined;
+		mockInstance.post.mockReturnValue(
+			new Promise<void>((resolve) => {
+				resolveRefresh = resolve;
+			}),
+		);
+
+		const client = new ApiClient();
+		const first = client.refreshSession();
+		const second = client.refreshSession();
+		resolveRefresh?.();
+		await Promise.all([first, second]);
+
+		expect(mockInstance.post).toHaveBeenCalledTimes(1);
+
+		// A later refresh is a new request.
+		mockInstance.post.mockResolvedValue({});
+		await client.refreshSession();
+		expect(mockInstance.post).toHaveBeenCalledTimes(2);
+	});
+
+	it("does not notify onTokenRefreshed listeners (the caller reconnects itself)", async () => {
+		const mockInstance = createAxiosInstanceMock();
+		vi.mocked(axios.create).mockReturnValue(mockInstance as never);
+		mockInstance.post.mockResolvedValue({});
+		const { onTokenRefreshed } = await import("./api-client");
+		const listener = vi.fn();
+		const off = onTokenRefreshed(listener);
+
+		await new ApiClient().refreshSession();
+
+		expect(listener).not.toHaveBeenCalled();
+		off();
+	});
+
+	it("rejects when the refresh fails and allows a retry afterwards", async () => {
+		const mockInstance = createAxiosInstanceMock();
+		vi.mocked(axios.create).mockReturnValue(mockInstance as never);
+		mockInstance.post.mockRejectedValueOnce(new Error("expired"));
+		mockInstance.post.mockResolvedValueOnce({});
+
+		const client = new ApiClient();
+		await expect(client.refreshSession()).rejects.toThrow("expired");
+		await expect(client.refreshSession()).resolves.toBeUndefined();
 	});
 });

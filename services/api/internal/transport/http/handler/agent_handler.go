@@ -19,7 +19,7 @@ import (
 	projectdom "github.com/Paca-AI/api/internal/domain/project"
 	taskdom "github.com/Paca-AI/api/internal/domain/task"
 	"github.com/Paca-AI/api/internal/events"
-	"github.com/Paca-AI/api/internal/platform/authz"
+	"github.com/Paca-AI/api/internal/platform/authz/iam"
 	"github.com/Paca-AI/api/internal/platform/jev"
 	"github.com/Paca-AI/api/internal/platform/secret"
 	agentsvc "github.com/Paca-AI/api/internal/service/agent"
@@ -38,11 +38,10 @@ type agentActivityRecorder interface {
 	RecordActivity(ctx context.Context, in taskdom.RecordActivityInput) error
 }
 
-// agentGlobalPermissionReader resolves a global agent's own effective
-// global-scope permissions. Satisfied directly by *postgres.AuthzPermissionStore
-// (the same store instance the Authorizer itself uses).
+// agentGlobalPermissionReader resolves an agent's own effective
+// platform-level IAM actions (bootstrap's platformActionsReader).
 type agentGlobalPermissionReader interface {
-	ListAgentGlobalPermissions(ctx context.Context, agentID uuid.UUID) ([]authz.Permission, error)
+	ListAgentGlobalPermissions(ctx context.Context, agentID uuid.UUID) ([]iam.Action, error)
 }
 
 // agentProjectJevReader is the minimal project-service surface
@@ -69,6 +68,7 @@ type AgentHandler struct {
 	taskChecker        attachmentdom.TaskOwnerChecker
 	projectSvc         agentProjectJevReader
 	encryptor          *secret.Encryptor
+	listScoper         ListScoper
 }
 
 // NewAgentHandler returns an AgentHandler wired to the agent service.
@@ -84,6 +84,13 @@ func NewAgentHandler(svc agentdom.Service, aiAgentURL, aiAgentInternalKey, publi
 		publicURL:          publicURL,
 		httpClient:         &http.Client{Timeout: aiAgentHTTPTimeout},
 	}
+}
+
+// WithListScoper limits agent listings to the agents the caller may read,
+// inside the query (see scopedContext).
+func (h *AgentHandler) WithListScoper(s ListScoper) *AgentHandler {
+	h.listScoper = s
+	return h
 }
 
 // WithActivityRecorder attaches an activity recorder so that an
@@ -142,10 +149,6 @@ func (h *AgentHandler) WithJevProjectService(svc agentProjectJevReader, encrypto
 
 // toAgentResponse maps ag to an AgentResponse and, if an AvatarService is
 // configured, resolves its avatar keys into presigned display URLs.
-// AccessGranted defaults to dto.AgentFromEntity's own caller-agnostic
-// approximation (true unless ag is restricted) — correct for every
-// call site except a listing rendered for one specific caller, which
-// should use toAgentResponseForCaller instead.
 func (h *AgentHandler) toAgentResponse(ctx context.Context, ag *agentdom.Agent) dto.AgentResponse {
 	resp := dto.AgentFromEntity(ag)
 	if h.avatarSvc != nil {
@@ -155,95 +158,26 @@ func (h *AgentHandler) toAgentResponse(ctx context.Context, ag *agentdom.Agent) 
 	return resp
 }
 
-// toAgentResponseForCaller is toAgentResponse plus an accurate
-// AccessGranted for one specific caller, driven by grantedIDs (that
-// caller's full set of granted-agent IDs, from
-// AgentAccessGrantService.ListGrantedAgentIDsForMember — resolved once by
-// the caller of this method, not per agent, to avoid an N+1 grant check).
-// Used by ListAgents/GetAgent, the two surfaces the "visible but locked" UI
-// actually reads AccessGranted from.
-func (h *AgentHandler) toAgentResponseForCaller(ctx context.Context, ag *agentdom.Agent, grantedIDs map[uuid.UUID]bool) dto.AgentResponse {
-	resp := h.toAgentResponse(ctx, ag)
-	if resp.AccessMode == agentdom.AccessModeRestricted {
-		resp.AccessGranted = grantedIDs[ag.ID]
-	}
-	return resp
-}
-
-// resolveActorMemberIDForDecoration is resolveMemberID's dual human/agent
-// path sibling, used only to decorate a response with the caller's own
-// AccessGranted state — a route like ListAgents/GetAgent is reachable by
-// both a human (JWT) and an agent (X-Agent-ID) caller, unlike the
-// human-only routes resolveMemberID already covers. Degrades to uuid.Nil
-// (never an error) on any resolution failure: this is only ever used for
-// best-effort response decoration, so a lookup problem here must never fail
-// the whole request the way a real authorization check would.
-func (h *AgentHandler) resolveActorMemberIDForDecoration(r *http.Request, projectID uuid.UUID) uuid.UUID {
-	if h.memberRepo == nil {
-		return uuid.Nil
-	}
-	if agentID, ok := middleware.AgentIDFromRequest(r); ok {
-		m, err := h.memberRepo.FindMemberByActor(r.Context(), projectID, uuid.Nil, &agentID)
-		if err != nil {
-			return uuid.Nil
-		}
-		return m.ID
-	}
-	claims := middleware.ClaimsFrom(r)
-	if claims == nil {
-		return uuid.Nil
-	}
-	userID, err := uuid.Parse(claims.Subject)
-	if err != nil {
-		return uuid.Nil
-	}
-	m, err := h.memberRepo.FindMemberByActor(r.Context(), projectID, userID, nil)
-	if err != nil {
-		return uuid.Nil
-	}
-	return m.ID
-}
-
-// callerUserID extracts the authenticated human user's ID from the
-// request's JWT claims. Used by the global-chat handlers, which have no
-// project context and therefore no project_members.id to resolve (unlike
-// resolveMemberID) — the caller's raw user ID is the actor identity.
-func callerUserID(r *http.Request) (uuid.UUID, error) {
-	claims := middleware.ClaimsFrom(r)
-	if claims == nil {
-		return uuid.Nil, apierr.New(apierr.CodeUnauthenticated, "unauthenticated")
-	}
-	userID, err := uuid.Parse(claims.Subject)
-	if err != nil {
-		return uuid.Nil, apierr.New(apierr.CodeBadRequest, "invalid subject claim")
-	}
-	return userID, nil
-}
-
-// resolveMemberID maps the authenticated caller's user ID to their
-// project_members.id within projectID. agent_chat_sessions.member_id and
-// agent_conversations.triggered_by_member_id both store the acting project
-// member rather than the raw user ID -- the latter has a foreign key to
-// project_members(id) -- so callers must not use claims.Subject directly.
-func (h *AgentHandler) resolveMemberID(r *http.Request, projectID uuid.UUID) (uuid.UUID, error) {
-	if h.memberRepo == nil {
-		return uuid.Nil, apierr.New(apierr.CodeInternalError, "member resolver not available")
-	}
-	claims := middleware.ClaimsFrom(r)
-	userID, err := uuid.Parse(claims.Subject)
-	if err != nil {
-		return uuid.Nil, apierr.New(apierr.CodeBadRequest, "invalid subject claim")
-	}
-	member, err := h.memberRepo.FindMemberByUserProject(r.Context(), userID, projectID)
-	if err != nil {
-		return uuid.Nil, err
-	}
-	return member.ID, nil
-}
-
 // --- Agents -----------------------------------------------------------------
 
-// ListAgents handles GET /projects/:projectId/agents. An optional ?scope=
+// parseAgentListParams reads the query params shared by the agent list
+// endpoints: search (every word must match the name, handle or description),
+// ids (up to 100 agent ids — a batch lookup), page_size (1-100, default 30)
+// and cursor.
+func parseAgentListParams(r *http.Request) (filter agentdom.AgentFilter, cursor *string, pageSize int, err error) {
+	q := r.URL.Query()
+	filter.Search = strings.TrimSpace(q.Get("search"))
+	if filter.IDs, err = parseIDsParam(r); err != nil {
+		return filter, nil, 0, err
+	}
+	cursor = parseCursorParam(r)
+	pageSize, err = parsePageSize(r, 30, 100)
+	return filter, cursor, pageSize, err
+}
+
+// ListAgents handles GET /projects/:projectId/agents — one cursor-paginated
+// page of the agents visible in the project, ordered by name (see
+// parseAgentListParams for search/ids/page_size/cursor). An optional ?scope=
 // query param ("project" or "global") narrows the result to just that
 // AgentScope — e.g. the project Agents management page passes
 // scope=project to hide invited global agents it can't manage from there;
@@ -260,38 +194,32 @@ func (h *AgentHandler) ListAgents(w http.ResponseWriter, r *http.Request) {
 		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "invalid scope"))
 		return
 	}
-	agents, err := h.svc.ListAgents(r.Context(), projectID, scope)
+	ctx, err := scopedContext(r, h.listScoper, iam.ActionAgentsRead, projectID, "agent")
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
 	}
-	grantedIDs := h.callerGrantedAgentIDs(r, projectID)
+	filter, cursor, pageSize, err := parseAgentListParams(r)
+	if err != nil {
+		presenter.Error(w, r, err)
+		return
+	}
+	filter.Scope = scope
+	agents, hasMore, err := h.svc.ListAgents(ctx, projectID, filter, cursor, pageSize)
+	if err != nil {
+		presenter.Error(w, r, err)
+		return
+	}
 	resp := make([]dto.AgentResponse, 0, len(agents))
 	for _, a := range agents {
-		resp = append(resp, h.toAgentResponseForCaller(r.Context(), a, grantedIDs))
+		resp = append(resp, h.toAgentResponse(r.Context(), a))
 	}
-	presenter.OK(w, r, map[string]any{"items": resp})
-}
-
-// callerGrantedAgentIDs resolves the caller's own project_members.id and
-// returns their granted-agent-ID set as a lookup map, for
-// toAgentResponseForCaller. Returns an empty (non-nil) map on any
-// resolution failure — see resolveActorMemberIDForDecoration's doc comment
-// on why this degrades silently rather than erroring.
-func (h *AgentHandler) callerGrantedAgentIDs(r *http.Request, projectID uuid.UUID) map[uuid.UUID]bool {
-	memberID := h.resolveActorMemberIDForDecoration(r, projectID)
-	if memberID == uuid.Nil {
-		return map[uuid.UUID]bool{}
+	var nextCursor *string
+	if hasMore && len(agents) > 0 {
+		c := agentdom.EncodeAgentCursor(agents[len(agents)-1])
+		nextCursor = &c
 	}
-	ids, err := h.svc.ListGrantedAgentIDsForMember(r.Context(), memberID)
-	if err != nil {
-		return map[uuid.UUID]bool{}
-	}
-	set := make(map[uuid.UUID]bool, len(ids))
-	for _, id := range ids {
-		set[id] = true
-	}
-	return set
+	presenter.OK(w, r, map[string]any{"items": resp, "page_size": pageSize, "next_cursor": nextCursor})
 }
 
 // GetAgent handles GET /projects/:projectId/agents/:agentId.
@@ -311,7 +239,7 @@ func (h *AgentHandler) GetAgent(w http.ResponseWriter, r *http.Request) {
 		presenter.Error(w, r, err)
 		return
 	}
-	presenter.OK(w, r, h.toAgentResponseForCaller(r.Context(), a, h.callerGrantedAgentIDs(r, projectID)))
+	presenter.OK(w, r, h.toAgentResponse(r.Context(), a))
 }
 
 // CreateAgent handles POST /projects/:projectId/agents.
@@ -337,8 +265,8 @@ func (h *AgentHandler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	case req.Handle == "":
 		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "handle is required"))
 		return
-	case req.ProjectRoleID == uuid.Nil:
-		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "project_role_id is required"))
+	case len(req.RoleIDs) == 0:
+		presenter.Error(w, r, apierr.New(apierr.CodeRoleRequired, "role_ids is required"))
 		return
 	}
 	switch agentType {
@@ -377,8 +305,7 @@ func (h *AgentHandler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "agent_type must be one of: llm, acp, provider_cli"))
 		return
 	}
-	claims := middleware.ClaimsFrom(r)
-	callerID, _ := uuid.Parse(claims.Subject)
+	callerID, _ := middleware.ActorIDFromContext(r.Context())
 
 	a, err := h.svc.CreateAgent(r.Context(), projectID, agentdom.CreateAgentInput{
 		Name:                 req.Name,
@@ -391,6 +318,8 @@ func (h *AgentHandler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		LLMBaseURL:           req.LLMBaseURL,
 		ACPProvider:          req.ACPProvider,
 		ACPCommand:           req.ACPCommand,
+		ACPModel:             req.ACPModel,
+		ACPEffort:            req.ACPEffort,
 		CLIProvider:          req.CLIProvider,
 		CLIModel:             req.CLIModel,
 		CLIAuthMode:          req.CLIAuthMode,
@@ -404,7 +333,7 @@ func (h *AgentHandler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		DockerEnabled:        req.DockerEnabled,
 		DefaultEnvironmentID: req.DefaultEnvironmentID,
 		DefaultFolderID:      req.DefaultFolderID,
-		ProjectRoleID:        req.ProjectRoleID,
+		RoleIDs:              req.RoleIDs,
 		CreatedBy:            &callerID,
 	})
 	if err != nil {
@@ -441,6 +370,8 @@ func (h *AgentHandler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		LLMBaseURL:           req.LLMBaseURL,
 		ACPProvider:          req.ACPProvider,
 		ACPCommand:           req.ACPCommand,
+		ACPModel:             req.ACPModel,
+		ACPEffort:            req.ACPEffort,
 		CLIProvider:          req.CLIProvider,
 		CLIModel:             req.CLIModel,
 		CLIAuthMode:          req.CLIAuthMode,
@@ -454,7 +385,6 @@ func (h *AgentHandler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		DockerEnabled:        req.DockerEnabled,
 		DefaultEnvironmentID: req.DefaultEnvironmentID,
 		DefaultFolderID:      req.DefaultFolderID,
-		AccessMode:           req.AccessMode,
 	})
 	if err != nil {
 		presenter.Error(w, r, err)
@@ -484,9 +414,16 @@ func (h *AgentHandler) DeleteAgent(w http.ResponseWriter, r *http.Request) {
 
 // --- Global Agents (admin) ---------------------------------------------------
 
-// ListGlobalAgents handles GET /admin/agents.
+// ListGlobalAgents handles GET /admin/agents and GET /agents — one
+// cursor-paginated page of the global agents, ordered by name (see
+// parseAgentListParams for search/ids/page_size/cursor).
 func (h *AgentHandler) ListGlobalAgents(w http.ResponseWriter, r *http.Request) {
-	agents, err := h.svc.ListGlobalAgents(r.Context())
+	filter, cursor, pageSize, err := parseAgentListParams(r)
+	if err != nil {
+		presenter.Error(w, r, err)
+		return
+	}
+	agents, hasMore, err := h.svc.ListGlobalAgents(r.Context(), filter, cursor, pageSize)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
@@ -495,7 +432,12 @@ func (h *AgentHandler) ListGlobalAgents(w http.ResponseWriter, r *http.Request) 
 	for _, a := range agents {
 		resp = append(resp, h.toAgentResponse(r.Context(), a))
 	}
-	presenter.OK(w, r, map[string]any{"items": resp})
+	var nextCursor *string
+	if hasMore && len(agents) > 0 {
+		c := agentdom.EncodeAgentCursor(agents[len(agents)-1])
+		nextCursor = &c
+	}
+	presenter.OK(w, r, map[string]any{"items": resp, "page_size": pageSize, "next_cursor": nextCursor})
 }
 
 // GetGlobalAgent handles GET /admin/agents/:agentId.
@@ -506,57 +448,6 @@ func (h *AgentHandler) GetGlobalAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a, err := h.svc.GetGlobalAgent(r.Context(), agentID)
-	if err != nil {
-		presenter.Error(w, r, err)
-		return
-	}
-	presenter.OK(w, r, h.toAgentResponse(r.Context(), a))
-}
-
-// errGlobalRoleNotAcceptedOnAgent is returned when a global agent create/update
-// body still sets global_role_id. Binding an agent to a global role is its own
-// privilege (global_roles.assign) and has its own routes; rejecting the field
-// outright, rather than ignoring it, keeps a client that still sends it from
-// believing the role was bound.
-var errGlobalRoleNotAcceptedOnAgent = apierr.New(apierr.CodeBadRequest,
-	"global_role_id cannot be set here; bind a role with PUT /admin/agents/{agentId}/global-role")
-
-// SetGlobalAgentRole handles PUT /admin/agents/:agentId/global-role — binds the
-// global agent to the global role that decides what it may do. The router
-// requires global_roles.assign on top of agents.write.
-func (h *AgentHandler) SetGlobalAgentRole(w http.ResponseWriter, r *http.Request) {
-	agentID, err := parseParamUUID(r, "agentId")
-	if err != nil {
-		presenter.Error(w, r, err)
-		return
-	}
-	var req dto.SetGlobalAgentRoleRequest
-	if !middleware.BindJSON(w, r, &req) {
-		return
-	}
-	if req.GlobalRoleID == uuid.Nil {
-		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "global_role_id is required"))
-		return
-	}
-	a, err := h.svc.SetGlobalAgentRole(r.Context(), agentID, &req.GlobalRoleID)
-	if err != nil {
-		presenter.Error(w, r, err)
-		return
-	}
-	presenter.OK(w, r, h.toAgentResponse(r.Context(), a))
-}
-
-// ClearGlobalAgentRole handles DELETE /admin/agents/:agentId/global-role —
-// unbinds the global agent from its role, leaving it with no global
-// permissions. Gated like SetGlobalAgentRole: removing a role is the same
-// privileged action as binding one.
-func (h *AgentHandler) ClearGlobalAgentRole(w http.ResponseWriter, r *http.Request) {
-	agentID, err := parseParamUUID(r, "agentId")
-	if err != nil {
-		presenter.Error(w, r, err)
-		return
-	}
-	a, err := h.svc.SetGlobalAgentRole(r.Context(), agentID, nil)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
@@ -605,13 +496,8 @@ func (h *AgentHandler) CreateGlobalAgent(w http.ResponseWriter, r *http.Request)
 		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "agent_type must be one of: llm, acp"))
 		return
 	}
-	if req.GlobalRoleID != nil {
-		presenter.Error(w, r, errGlobalRoleNotAcceptedOnAgent)
-		return
-	}
 
-	claims := middleware.ClaimsFrom(r)
-	callerID, _ := uuid.Parse(claims.Subject)
+	callerID, _ := middleware.ActorIDFromContext(r.Context())
 
 	a, err := h.svc.CreateGlobalAgent(r.Context(), agentdom.CreateGlobalAgentInput{
 		Name:              req.Name,
@@ -624,6 +510,8 @@ func (h *AgentHandler) CreateGlobalAgent(w http.ResponseWriter, r *http.Request)
 		LLMBaseURL:        req.LLMBaseURL,
 		ACPProvider:       req.ACPProvider,
 		ACPCommand:        req.ACPCommand,
+		ACPModel:          req.ACPModel,
+		ACPEffort:         req.ACPEffort,
 		SystemPrompt:      req.SystemPrompt,
 		MaxIterations:     req.MaxIterations,
 		TimeoutMinutes:    req.TimeoutMinutes,
@@ -652,10 +540,6 @@ func (h *AgentHandler) UpdateGlobalAgent(w http.ResponseWriter, r *http.Request)
 		presenter.Error(w, r, err)
 		return
 	}
-	if req.GlobalRoleID != nil {
-		presenter.Error(w, r, errGlobalRoleNotAcceptedOnAgent)
-		return
-	}
 	a, err := h.svc.UpdateGlobalAgent(r.Context(), agentID, agentdom.UpdateAgentInput{
 		Name:              req.Name,
 		Handle:            req.Handle,
@@ -666,6 +550,8 @@ func (h *AgentHandler) UpdateGlobalAgent(w http.ResponseWriter, r *http.Request)
 		LLMBaseURL:        req.LLMBaseURL,
 		ACPProvider:       req.ACPProvider,
 		ACPCommand:        req.ACPCommand,
+		ACPModel:          req.ACPModel,
+		ACPEffort:         req.ACPEffort,
 		SystemPrompt:      req.SystemPrompt,
 		MaxIterations:     req.MaxIterations,
 		TimeoutMinutes:    req.TimeoutMinutes,
@@ -673,7 +559,6 @@ func (h *AgentHandler) UpdateGlobalAgent(w http.ResponseWriter, r *http.Request)
 		GitCommitterName:  req.GitCommitterName,
 		GitCommitterEmail: req.GitCommitterEmail,
 		DockerEnabled:     req.DockerEnabled,
-		AccessMode:        req.AccessMode,
 	})
 	if err != nil {
 		presenter.Error(w, r, err)
@@ -697,10 +582,10 @@ func (h *AgentHandler) DeleteGlobalAgent(w http.ResponseWriter, r *http.Request)
 }
 
 // GetMyGlobalPermissions handles GET /agents/me/global-permissions.
-// Agent-API-key-authenticated only (X-Agent-ID header) — returns the
-// calling global agent's own effective global-scope permissions, resolved
-// via its global_role_id. This is what the MCP server (services/ai-agent)
-// calls to populate its permission map for a global-scope conversation.
+// Agent-authenticated only (the agent's own API key) — returns
+// {"actions": [...]}: the calling agent's own effective platform-level IAM
+// actions (never the bot user's behind its key). The MCP server calls this
+// for a global-scope conversation.
 func (h *AgentHandler) GetMyGlobalPermissions(w http.ResponseWriter, r *http.Request) {
 	agentID, ok := middleware.AgentIDFromRequest(r)
 	if !ok {
@@ -720,11 +605,11 @@ func (h *AgentHandler) GetMyGlobalPermissions(w http.ResponseWriter, r *http.Req
 	for _, p := range perms {
 		out = append(out, string(p))
 	}
-	presenter.OK(w, r, map[string]any{"permissions": out})
+	presenter.OK(w, r, map[string]any{"actions": out})
 }
 
-// GetMyInvitedProjects handles GET /agents/me/projects. Agent-API-key
-// authenticated only — returns the IDs of every project the calling global
+// GetMyInvitedProjects handles GET /agents/me/projects. Agent-authenticated
+// only — returns the IDs of every project the calling global
 // agent currently has an active membership in. Used by the MCP server to
 // discover which projects to probe for per-project permissions when running
 // in unpinned (global chat) mode.
@@ -775,77 +660,6 @@ func (h *AgentHandler) parseGlobalAgent(r *http.Request) (agentID uuid.UUID, err
 		return uuid.Nil, err
 	}
 	return agentID, nil
-}
-
-// ListAgentAccessGrants handles GET
-// /projects/:projectId/agents/:agentId/access-grants.
-func (h *AgentHandler) ListAgentAccessGrants(w http.ResponseWriter, r *http.Request) {
-	projectID, agentID, err := h.parseAgentForProject(r)
-	if err != nil {
-		presenter.Error(w, r, err)
-		return
-	}
-	grants, err := h.svc.ListAgentAccessGrants(r.Context(), projectID, agentID)
-	if err != nil {
-		presenter.Error(w, r, err)
-		return
-	}
-	resp := make([]dto.AgentAccessGrantResponse, 0, len(grants))
-	for _, g := range grants {
-		resp = append(resp, dto.AgentAccessGrantFromEntity(g))
-	}
-	presenter.OK(w, r, map[string]any{"items": resp})
-}
-
-// AddAgentAccessGrant handles POST
-// /projects/:projectId/agents/:agentId/access-grants.
-func (h *AgentHandler) AddAgentAccessGrant(w http.ResponseWriter, r *http.Request) {
-	projectID, agentID, err := h.parseAgentForProject(r)
-	if err != nil {
-		presenter.Error(w, r, err)
-		return
-	}
-	var req dto.AddAgentAccessGrantRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		presenter.Error(w, r, err)
-		return
-	}
-	if req.MemberID == uuid.Nil {
-		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "member_id is required"))
-		return
-	}
-	var grantedBy *uuid.UUID
-	if claims := middleware.ClaimsFrom(r); claims != nil {
-		if id, err := uuid.Parse(claims.Subject); err == nil {
-			grantedBy = &id
-		}
-	}
-	g, err := h.svc.AddAgentAccessGrant(r.Context(), projectID, agentID, req.MemberID, grantedBy)
-	if err != nil {
-		presenter.Error(w, r, err)
-		return
-	}
-	presenter.Created(w, r, dto.AgentAccessGrantFromEntity(g))
-}
-
-// RemoveAgentAccessGrant handles DELETE
-// /projects/:projectId/agents/:agentId/access-grants/:memberId.
-func (h *AgentHandler) RemoveAgentAccessGrant(w http.ResponseWriter, r *http.Request) {
-	projectID, agentID, err := h.parseAgentForProject(r)
-	if err != nil {
-		presenter.Error(w, r, err)
-		return
-	}
-	memberID, err := parseParamUUID(r, "memberId")
-	if err != nil {
-		presenter.Error(w, r, err)
-		return
-	}
-	if err := h.svc.RemoveAgentAccessGrant(r.Context(), projectID, agentID, memberID); err != nil {
-		presenter.Error(w, r, err)
-		return
-	}
-	presenter.OK(w, r, map[string]any{"message": "access grant removed"})
 }
 
 // ListMCPServers handles GET /projects/:projectId/agents/:agentId/mcp-servers.
@@ -1490,7 +1304,7 @@ func (h *AgentHandler) ListChatSessions(w http.ResponseWriter, r *http.Request) 
 		presenter.Error(w, r, err)
 		return
 	}
-	memberID, err := h.resolveMemberID(r, projectID)
+	memberID, err := callerMemberID(r, h.memberRepo, projectID)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
@@ -1533,7 +1347,7 @@ func (h *AgentHandler) StartChatSession(w http.ResponseWriter, r *http.Request) 
 		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, err.Error()))
 		return
 	}
-	memberID, err := h.resolveMemberID(r, projectID)
+	memberID, err := callerMemberID(r, h.memberRepo, projectID)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
@@ -1553,12 +1367,6 @@ func (h *AgentHandler) StartChatSession(w http.ResponseWriter, r *http.Request) 
 // ResolveAutoAgent handles POST /projects/:projectId/agents/resolve-auto —
 // Auto mode's first step: given the user's opening message, pick which of
 // the project's agents the frontend should then call StartChatSession with.
-// Candidates are filtered to exactly the agents this caller could otherwise
-// see and use (open-access agents, plus restricted ones they hold a grant
-// for) — the same access computation ListAgents/toAgentResponseForCaller
-// use, deliberately not a reimplementation, so Auto can never resolve to an
-// agent the caller couldn't have picked manually (which would otherwise
-// 403 on the StartChatSession call that follows).
 func (h *AgentHandler) ResolveAutoAgent(w http.ResponseWriter, r *http.Request) {
 	projectID, err := parseProjectID(r)
 	if err != nil {
@@ -1574,24 +1382,17 @@ func (h *AgentHandler) ResolveAutoAgent(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	agents, err := h.svc.ListAgents(r.Context(), projectID, "")
+	agents, err := h.svc.ListAllAgents(r.Context(), projectID, "")
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
 	}
-	grantedIDs := h.callerGrantedAgentIDs(r, projectID)
-	candidates := make([]*agentdom.Agent, 0, len(agents))
-	for _, a := range agents {
-		if a.AccessMode != agentdom.AccessModeRestricted || grantedIDs[a.ID] {
-			candidates = append(candidates, a)
-		}
-	}
-	if len(candidates) == 0 {
+	if len(agents) == 0 {
 		presenter.Error(w, r, apierr.New(apierr.CodeAgentNotFound, "no agents available to choose from"))
 		return
 	}
 
-	agentID, confidence := resolveAutoAgent(r.Context(), h.jevClientForProject(r.Context(), projectID), candidates, req.Message)
+	agentID, confidence := resolveAutoAgent(r.Context(), h.jevClientForProject(r.Context(), projectID), agents, req.Message)
 	presenter.OK(w, r, dto.ResolveAutoAgentResponse{AgentID: agentID, Confidence: confidence})
 }
 
@@ -1671,6 +1472,11 @@ func (h *AgentHandler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 		presenter.Error(w, r, err)
 		return
 	}
+	agentID, err := parseParamUUID(r, "agentId")
+	if err != nil {
+		presenter.Error(w, r, err)
+		return
+	}
 	sessionID, err := parseParamUUID(r, "sessionId")
 	if err != nil {
 		presenter.Error(w, r, err)
@@ -1689,13 +1495,13 @@ func (h *AgentHandler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, err.Error()))
 		return
 	}
-	memberID, err := h.resolveMemberID(r, projectID)
+	memberID, err := callerMemberID(r, h.memberRepo, projectID)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
 	}
 
-	conv, err := h.svc.SendChatMessage(r.Context(), projectID, sessionID, memberID, req.Message, req.ContextItems, req.OnBusy)
+	conv, err := h.svc.SendChatMessage(r.Context(), projectID, agentID, sessionID, memberID, req.Message, req.ContextItems, req.OnBusy)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
@@ -1708,7 +1514,7 @@ func (h *AgentHandler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 // Chatting with a global agent from the home page / admin pages — no
 // project context. The caller is always a JWT-authenticated human; there is
 // no project_members.id to resolve (unlike resolveMemberID above), only the
-// raw user ID from the JWT subject (see callerUserID).
+// raw user ID from the JWT subject (see callerAccountID).
 
 // ListGlobalChatSessions handles GET /agents/:agentId/chat-sessions (global).
 func (h *AgentHandler) ListGlobalChatSessions(w http.ResponseWriter, r *http.Request) {
@@ -1717,12 +1523,12 @@ func (h *AgentHandler) ListGlobalChatSessions(w http.ResponseWriter, r *http.Req
 		presenter.Error(w, r, err)
 		return
 	}
-	userID, err := callerUserID(r)
+	accountID, err := callerAccountID(r)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
 	}
-	sessions, err := h.svc.ListGlobalChatSessions(r.Context(), agentID, userID)
+	sessions, err := h.svc.ListGlobalChatSessions(r.Context(), agentID, accountID)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
@@ -1749,7 +1555,7 @@ func (h *AgentHandler) ResolveGlobalAutoAgent(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	agents, err := h.svc.ListGlobalAgents(r.Context())
+	agents, err := h.svc.ListAllGlobalAgents(r.Context())
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
@@ -1786,12 +1592,12 @@ func (h *AgentHandler) StartGlobalChatSession(w http.ResponseWriter, r *http.Req
 		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, err.Error()))
 		return
 	}
-	userID, err := callerUserID(r)
+	accountID, err := callerAccountID(r)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
 	}
-	session, conv, err := h.svc.StartGlobalChatSession(r.Context(), agentID, userID, req.Message, req.ContextItems, req.OnBusy)
+	session, conv, err := h.svc.StartGlobalChatSession(r.Context(), agentID, accountID, req.Message, req.ContextItems, req.OnBusy)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
@@ -1822,12 +1628,12 @@ func (h *AgentHandler) SendGlobalChatMessage(w http.ResponseWriter, r *http.Requ
 		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, err.Error()))
 		return
 	}
-	userID, err := callerUserID(r)
+	accountID, err := callerAccountID(r)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
 	}
-	conv, err := h.svc.SendGlobalChatMessage(r.Context(), sessionID, userID, req.Message, req.ContextItems, req.OnBusy)
+	conv, err := h.svc.SendGlobalChatMessage(r.Context(), sessionID, accountID, req.Message, req.ContextItems, req.OnBusy)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
@@ -1870,7 +1676,7 @@ func (h *AgentHandler) WriteTaskDescriptionWithAI(w http.ResponseWriter, r *http
 		return
 	}
 
-	memberID, err := h.resolveMemberID(r, projectID)
+	memberID, err := callerMemberID(r, h.memberRepo, projectID)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
@@ -1891,7 +1697,8 @@ func (h *AgentHandler) WriteTaskDescriptionWithAI(w http.ResponseWriter, r *http
 		_ = h.activityRec.RecordActivity(r.Context(), taskdom.RecordActivityInput{
 			TaskID:       taskID,
 			ProjectID:    projectID,
-			ActorAgentID: &agentID,
+			ActorID:      &agentID,
+			Origin:       taskdom.OriginAgent,
 			ActivityType: taskdom.ActivityTypeAgentSessionStarted,
 			Content:      content,
 		})
@@ -2223,14 +2030,8 @@ func (h *AgentHandler) InitiateAvatarUpload(w http.ResponseWriter, r *http.Reque
 		presenter.Error(w, r, err)
 		return
 	}
-	claims := middleware.ClaimsFrom(r)
-	if claims == nil {
-		presenter.Error(w, r, apierr.New(apierr.CodeUnauthenticated, "unauthenticated"))
-		return
-	}
-	uploaderID, err := uuid.Parse(claims.Subject)
-	if err != nil {
-		presenter.Error(w, r, apierr.New(apierr.CodeUnauthenticated, "invalid subject in token"))
+	uploaderID, ok := requireAccountID(w, r)
+	if !ok {
 		return
 	}
 
@@ -2300,14 +2101,8 @@ func (h *AgentHandler) InitiateGlobalAvatarUpload(w http.ResponseWriter, r *http
 		presenter.Error(w, r, err)
 		return
 	}
-	claims := middleware.ClaimsFrom(r)
-	if claims == nil {
-		presenter.Error(w, r, apierr.New(apierr.CodeUnauthenticated, "unauthenticated"))
-		return
-	}
-	uploaderID, err := uuid.Parse(claims.Subject)
-	if err != nil {
-		presenter.Error(w, r, apierr.New(apierr.CodeUnauthenticated, "invalid subject in token"))
+	uploaderID, ok := requireAccountID(w, r)
+	if !ok {
 		return
 	}
 
@@ -2385,7 +2180,7 @@ func (h *AgentHandler) ListAgentActivities(w http.ResponseWriter, r *http.Reques
 		presenter.Error(w, r, apierr.New(apierr.CodeInternalError, "activity log not available"))
 		return
 	}
-	member, err := h.memberRepo.FindMemberByAgent(r.Context(), projectID, agentID)
+	member, err := h.memberRepo.FindMember(r.Context(), projectID, agentID)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return

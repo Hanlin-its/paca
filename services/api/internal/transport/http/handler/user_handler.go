@@ -22,7 +22,7 @@ import (
 // address, returning the canonical address lowercased. An empty/whitespace
 // -only input passes through as "" unchanged — every Email input field in
 // this package treats "" as "not provided" (create) or "no change"
-// (update), matching FullName/Role's existing convention. Lowercasing keeps
+// (update), matching FullName's existing convention. Lowercasing keeps
 // the uniqueness pre-check consistent with the case-sensitive
 // uni_users_email_active index: without it, "User@x.com" and "user@x.com"
 // would be stored as distinct rows for what mail servers treat as the same
@@ -84,15 +84,8 @@ func (h *UserHandler) toUserResponse(ctx context.Context, u *domainuser.User) dt
 
 // GetMe handles GET /users/me — returns the caller's own profile.
 func (h *UserHandler) GetMe(w http.ResponseWriter, r *http.Request) {
-	claims := middleware.ClaimsFrom(r)
-	if claims == nil {
-		presenter.Error(w, r, apierr.New(apierr.CodeUnauthenticated, "unauthenticated"))
-		return
-	}
-
-	id, err := uuid.Parse(claims.Subject)
-	if err != nil {
-		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "invalid subject claim"))
+	id, ok := requireAccountID(w, r)
+	if !ok {
 		return
 	}
 
@@ -107,15 +100,8 @@ func (h *UserHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 
 // UpdateMe handles PATCH /users/me — lets users update their own profile.
 func (h *UserHandler) UpdateMe(w http.ResponseWriter, r *http.Request) {
-	claims := middleware.ClaimsFrom(r)
-	if claims == nil {
-		presenter.Error(w, r, apierr.New(apierr.CodeUnauthenticated, "unauthenticated"))
-		return
-	}
-
-	id, err := uuid.Parse(claims.Subject)
-	if err != nil {
-		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "invalid subject claim"))
+	id, ok := requireAccountID(w, r)
+	if !ok {
 		return
 	}
 
@@ -141,17 +127,11 @@ func (h *UserHandler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 	presenter.OK(w, r, h.toUserResponse(r.Context(), u))
 }
 
-// GetMyGlobalPermissions handles GET /users/me/global-permissions.
+// GetMyGlobalPermissions handles GET /users/me/global-permissions. It returns
+// {"actions": [...]}: the caller's effective platform-level IAM actions.
 func (h *UserHandler) GetMyGlobalPermissions(w http.ResponseWriter, r *http.Request) {
-	claims := middleware.ClaimsFrom(r)
-	if claims == nil {
-		presenter.Error(w, r, apierr.New(apierr.CodeUnauthenticated, "unauthenticated"))
-		return
-	}
-
-	id, err := uuid.Parse(claims.Subject)
-	if err != nil {
-		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "invalid subject claim"))
+	id, ok := requireAccountID(w, r)
+	if !ok {
 		return
 	}
 
@@ -161,7 +141,7 @@ func (h *UserHandler) GetMyGlobalPermissions(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	presenter.OK(w, r, map[string]any{"permissions": permissions})
+	presenter.OK(w, r, map[string]any{"actions": permissions})
 }
 
 // --- Admin user management routes ------------------------------------------
@@ -207,6 +187,48 @@ func (h *UserHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ListUsersByCursor handles GET /admin/users/cursor — a keyset-paginated
+// variant of ListUsers for infinite-scroll pickers.
+//
+// Supported query params (all optional):
+//   - page_size=<1-100>  defaults to 20
+//   - cursor=<opaque>    from the previous page's next_cursor; omit for the first page
+//   - search=<text>      same matching as ListUsers
+//   - role=<name>        same matching as ListUsers
+func (h *UserHandler) ListUsersByCursor(w http.ResponseWriter, r *http.Request) {
+	pageSize, err := parsePageSize(r, 20, 100)
+	if err != nil {
+		presenter.Error(w, r, err)
+		return
+	}
+	cursor := parseCursorParam(r)
+
+	users, hasMore, err := h.svc.ListAfter(r.Context(), pageSize, cursor, domainuser.ListFilter{
+		Search: strings.TrimSpace(r.URL.Query().Get("search")),
+		Role:   strings.TrimSpace(r.URL.Query().Get("role")),
+	})
+	if err != nil {
+		presenter.Error(w, r, err)
+		return
+	}
+
+	items := make([]dto.UserResponse, 0, len(users))
+	for _, u := range users {
+		items = append(items, h.toUserResponse(r.Context(), u))
+	}
+	var nextCursor *string
+	if hasMore && len(users) > 0 {
+		s := domainuser.EncodeCursor(users[len(users)-1])
+		nextCursor = &s
+	}
+
+	presenter.OK(w, r, dto.CursorUsersResponse{
+		Items:      items,
+		PageSize:   pageSize,
+		NextCursor: nextCursor,
+	})
+}
+
 // GetUserByID handles GET /admin/users/:userId.
 func (h *UserHandler) GetUserByID(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "userId"))
@@ -224,21 +246,10 @@ func (h *UserHandler) GetUserByID(w http.ResponseWriter, r *http.Request) {
 	presenter.OK(w, r, h.toUserResponse(r.Context(), u))
 }
 
-// errRoleNotAcceptedOnUser is returned when a create/update body still names a
-// role. Role assignment is its own privilege (global_roles.assign) and has its
-// own route; rejecting the field outright, rather than ignoring it, keeps a
-// client that still sends it from believing the role was changed.
-var errRoleNotAcceptedOnUser = apierr.New(apierr.CodeBadRequest,
-	"role cannot be set here; assign it with PUT /admin/users/{userId}/global-roles")
-
 // CreateUser handles POST /admin/users — admin-only user creation.
 func (h *UserHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
 	var req dto.CreateUserRequest
 	if !middleware.BindJSON(w, r, &req) {
-		return
-	}
-	if strings.TrimSpace(req.Role) != "" {
-		presenter.Error(w, r, errRoleNotAcceptedOnUser)
 		return
 	}
 	if req.Username == "" || req.FullName == "" {
@@ -280,10 +291,6 @@ func (h *UserHandler) AdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 
 	var req dto.AdminUpdateUserRequest
 	if !middleware.BindJSON(w, r, &req) {
-		return
-	}
-	if strings.TrimSpace(req.Role) != "" {
-		presenter.Error(w, r, errRoleNotAcceptedOnUser)
 		return
 	}
 	email, err := normalizeEmail(req.Email)
@@ -348,15 +355,8 @@ func (h *UserHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 // ChangeMyPassword handles PATCH /users/me/password — lets a user change their own password.
 // After a successful change the current session is revoked and the user must re-authenticate.
 func (h *UserHandler) ChangeMyPassword(w http.ResponseWriter, r *http.Request) {
-	claims := middleware.ClaimsFrom(r)
-	if claims == nil {
-		presenter.Error(w, r, apierr.New(apierr.CodeUnauthenticated, "unauthenticated"))
-		return
-	}
-
-	id, err := uuid.Parse(claims.Subject)
-	if err != nil {
-		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "invalid subject claim"))
+	id, ok := requireAccountID(w, r)
+	if !ok {
 		return
 	}
 
@@ -381,7 +381,7 @@ func (h *UserHandler) ChangeMyPassword(w http.ResponseWriter, r *http.Request) {
 	// Revoke the current session so old tokens cannot be reused after the
 	// password change. The client must re-authenticate with the new password.
 	if h.authSvc != nil {
-		if err := h.authSvc.Logout(r.Context(), claims.FamilyID); err != nil {
+		if err := h.authSvc.Logout(r.Context(), middleware.ClaimsFrom(r).FamilyID); err != nil {
 			presenter.Error(w, r, err)
 			return
 		}
@@ -416,14 +416,8 @@ func (h *UserHandler) SetPassword(w http.ResponseWriter, r *http.Request) {
 
 // InitiateAvatarUpload handles POST /users/me/avatar/initiate-upload.
 func (h *UserHandler) InitiateAvatarUpload(w http.ResponseWriter, r *http.Request) {
-	claims := middleware.ClaimsFrom(r)
-	if claims == nil {
-		presenter.Error(w, r, apierr.New(apierr.CodeUnauthenticated, "unauthenticated"))
-		return
-	}
-	id, err := uuid.Parse(claims.Subject)
-	if err != nil {
-		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "invalid subject claim"))
+	id, ok := requireAccountID(w, r)
+	if !ok {
 		return
 	}
 
@@ -443,14 +437,8 @@ func (h *UserHandler) InitiateAvatarUpload(w http.ResponseWriter, r *http.Reques
 
 // CompleteAvatarUpload handles POST /users/me/avatar/complete-upload.
 func (h *UserHandler) CompleteAvatarUpload(w http.ResponseWriter, r *http.Request) {
-	claims := middleware.ClaimsFrom(r)
-	if claims == nil {
-		presenter.Error(w, r, apierr.New(apierr.CodeUnauthenticated, "unauthenticated"))
-		return
-	}
-	id, err := uuid.Parse(claims.Subject)
-	if err != nil {
-		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "invalid subject claim"))
+	id, ok := requireAccountID(w, r)
+	if !ok {
 		return
 	}
 
@@ -470,14 +458,8 @@ func (h *UserHandler) CompleteAvatarUpload(w http.ResponseWriter, r *http.Reques
 
 // DeleteAvatar handles DELETE /users/me/avatar.
 func (h *UserHandler) DeleteAvatar(w http.ResponseWriter, r *http.Request) {
-	claims := middleware.ClaimsFrom(r)
-	if claims == nil {
-		presenter.Error(w, r, apierr.New(apierr.CodeUnauthenticated, "unauthenticated"))
-		return
-	}
-	id, err := uuid.Parse(claims.Subject)
-	if err != nil {
-		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "invalid subject claim"))
+	id, ok := requireAccountID(w, r)
+	if !ok {
 		return
 	}
 

@@ -14,8 +14,8 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { EntityAvatar } from "@/components/shared/entity-avatar";
 import { NoPermissionState } from "@/components/shared/no-permission-state";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import {
@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
+import { useActorAvatar } from "@/hooks/use-actor-avatar";
 import { useProjectPermissions } from "@/hooks/use-project-permissions";
 import {
 	addComment,
@@ -41,6 +42,7 @@ import {
 	getApiErrorCode,
 	isForbiddenError,
 } from "@/lib/api-error";
+import { copyToClipboard } from "@/lib/clipboard";
 import {
 	environmentConfigQueryOptions,
 	portForwardQueryOptions,
@@ -66,11 +68,11 @@ export function CommentDetailView({
 	const { t } = useTranslation("projects");
 	const qc = useQueryClient();
 	const { hasProjectPermission } = useProjectPermissions(projectId);
-	const canResolve = hasProjectPermission("annotations.resolve");
-	const canReply = hasProjectPermission("annotations.write");
+	const canResolve = hasProjectPermission("annotations:resolve");
+	const canReply = hasProjectPermission("annotations:write");
 	const canCreateTask =
-		hasProjectPermission("annotations.write") &&
-		hasProjectPermission("tasks.write");
+		hasProjectPermission("annotations:write") &&
+		hasProjectPermission("tasks:write");
 
 	const annotationKey = annotationQueryOptions(
 		projectId,
@@ -118,9 +120,11 @@ export function CommentDetailView({
 
 	const handleCopyLink = () => {
 		const url = `${window.location.origin}/projects/${projectId}/environments/${environmentId}/port-forwards/${portForwardId}/comments/${annotationId}`;
-		navigator.clipboard?.writeText(url)?.catch(() => {});
-		setLinkCopied(true);
-		setTimeout(() => setLinkCopied(false), 2000);
+		void copyToClipboard(url).then((ok) => {
+			if (!ok) return;
+			setLinkCopied(true);
+			setTimeout(() => setLinkCopied(false), 2000);
+		});
 	};
 
 	const resolveMutation = useMutation({
@@ -359,6 +363,8 @@ export function CommentDetailView({
 					</div>
 
 					<CommentEntry
+						projectId={projectId}
+						actorId={annotation.created_by}
 						name={annotation.created_by_name}
 						username={annotation.created_by_username}
 						avatarUrl={
@@ -371,6 +377,8 @@ export function CommentDetailView({
 					{annotation.comments.map((c) => (
 						<CommentEntry
 							key={c.id}
+							projectId={projectId}
+							actorId={c.created_by}
 							name={c.created_by_name}
 							username={c.created_by_username}
 							avatarUrl={
@@ -450,12 +458,16 @@ export function CommentDetailView({
 }
 
 function CommentEntry({
+	projectId,
+	actorId,
 	name,
 	username,
 	avatarUrl,
 	createdAt,
 	body,
 }: {
+	projectId: string;
+	actorId?: string;
 	name: string;
 	username: string;
 	avatarUrl?: string;
@@ -463,14 +475,19 @@ function CommentEntry({
 	body: string;
 }) {
 	const displayName = name || username;
+	const resolveActor = useActorAvatar(projectId);
 	return (
 		<div className="flex gap-2.5">
-			<Avatar className="size-7 shrink-0">
-				{avatarUrl ? <AvatarImage src={avatarUrl} /> : null}
-				<AvatarFallback className="text-xs font-medium">
-					{displayName ? displayName.charAt(0).toUpperCase() : "?"}
-				</AvatarFallback>
-			</Avatar>
+			<EntityAvatar
+				{...resolveActor({
+					id: actorId,
+					name,
+					username,
+					avatarUrl,
+				})}
+				size="md"
+				className="shrink-0"
+			/>
 			<div className="min-w-0 flex-1">
 				<div className="flex items-baseline gap-2">
 					<span className="text-sm font-medium">{displayName}</span>

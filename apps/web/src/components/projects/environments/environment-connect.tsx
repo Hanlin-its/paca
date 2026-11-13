@@ -1,4 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+	useInfiniteQuery,
+	useMutation,
+	useQuery,
+	useQueryClient,
+} from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import {
 	Check,
@@ -19,6 +24,7 @@ import {
 	EnvironmentStatusRing,
 	useEnvironmentUsage,
 } from "@/components/projects/environments/environment-status-ring";
+import { LoadMoreSentinel } from "@/components/shared/load-more-sentinel";
 import { Button, buttonVariants } from "@/components/ui/button";
 import {
 	Dialog,
@@ -33,13 +39,14 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { ApiErrorCode, getApiErrorCode } from "@/lib/api-error";
+import { copyToClipboard } from "@/lib/clipboard";
 import {
 	addSSHKey,
 	deleteSSHKey,
 	type Environment,
 	environmentConfigQueryOptions,
 	environmentQueryOptions,
-	environmentSSHKeysQueryOptions,
+	environmentSSHKeysInfiniteQueryOptions,
 	startEnvironment,
 } from "@/lib/environment-api";
 
@@ -77,17 +84,13 @@ function CommandBox({ command }: { command: string }) {
 	const [copied, setCopied] = useState(false);
 
 	const copy = () => {
-		navigator.clipboard
-			.writeText(command)
-			.then(() => {
-				setCopied(true);
-				setTimeout(() => setCopied(false), 2000);
-			})
-			.catch(() => {
-				// Best-effort — clipboard write can fail (permission denied,
-				// insecure context); the command is still selectable/copyable
-				// by hand from the <code> block itself.
-			});
+		// Best-effort: on failure the command is still selectable/copyable by
+		// hand from the <code> block itself.
+		void copyToClipboard(command).then((ok) => {
+			if (!ok) return;
+			setCopied(true);
+			setTimeout(() => setCopied(false), 2000);
+		});
 	};
 
 	return (
@@ -138,8 +141,10 @@ function AddSSHKeyDialog({
 			}),
 		onSuccess: () => {
 			qc.invalidateQueries({
-				queryKey: environmentSSHKeysQueryOptions(projectId, environmentId)
-					.queryKey,
+				queryKey: environmentSSHKeysInfiniteQueryOptions(
+					projectId,
+					environmentId,
+				).queryKey,
 			});
 			onOpenChange(false);
 			setLabel("");
@@ -238,26 +243,20 @@ function SSHKeysManager({
 	projectId,
 	environmentId,
 	canConnect,
-	hasAccess,
 }: {
 	projectId: string;
 	environmentId: string;
 	canConnect: boolean;
-	hasAccess: boolean;
 }) {
 	const { t } = useTranslation("projects");
 	const qc = useQueryClient();
-	const { data: keys = [] } = useQuery({
-		...environmentSSHKeysQueryOptions(projectId, environmentId),
-		// Listing (and a fortiori adding/removing) SSH keys is gated on
-		// RequireEnvironmentAccess when the environment is restricted — this
-		// component isn't even rendered when !hasAccess (see SSHConnectTab
-		// below), but `enabled` is a second, defensive guard against ever
-		// firing the request regardless of how this component is reached.
-		enabled: hasAccess,
-	});
+	const keysQuery = useInfiniteQuery(
+		environmentSSHKeysInfiniteQueryOptions(projectId, environmentId),
+	);
+	const keys = keysQuery.data?.pages.flatMap((p) => p.items) ?? [];
+	const keyCount = keysQuery.data?.pages[0]?.total_count ?? keys.length;
 	const [addOpen, setAddOpen] = useState(false);
-	const keysKey = environmentSSHKeysQueryOptions(
+	const keysKey = environmentSSHKeysInfiniteQueryOptions(
 		projectId,
 		environmentId,
 	).queryKey;
@@ -272,7 +271,7 @@ function SSHKeysManager({
 		<div className="space-y-3">
 			<div className="flex items-center justify-between">
 				<p className="text-sm text-muted-foreground">
-					{t("environments.detail.sshKeys.count", { count: keys.length })}
+					{t("environments.detail.sshKeys.count", { count: keyCount })}
 				</p>
 				{canConnect && (
 					<Button size="sm" variant="outline" onClick={() => setAddOpen(true)}>
@@ -328,6 +327,12 @@ function SSHKeysManager({
 							)}
 						</div>
 					))}
+					<LoadMoreSentinel
+						hasMore={keysQuery.hasNextPage}
+						isLoadingMore={keysQuery.isFetchingNextPage}
+						isError={keysQuery.isFetchNextPageError}
+						onLoadMore={() => void keysQuery.fetchNextPage()}
+					/>
 				</div>
 			)}
 
@@ -354,13 +359,11 @@ function WebAppConnectTab({
 	environment,
 	canWrite,
 	canConnect,
-	hasAccess,
 }: {
 	projectId: string;
 	environment: Environment;
 	canWrite: boolean;
 	canConnect: boolean;
-	hasAccess: boolean;
 }) {
 	const { t } = useTranslation("projects");
 	const qc = useQueryClient();
@@ -382,7 +385,7 @@ function WebAppConnectTab({
 				{t("environments.connect.webApp.description")}
 			</p>
 			{isRunning ? (
-				canConnect && hasAccess ? (
+				canConnect ? (
 					<Link
 						to="/projects/$projectId/environments/$environmentId/terminal"
 						params={{ projectId, environmentId: environment.id }}
@@ -393,17 +396,6 @@ function WebAppConnectTab({
 						<ExternalLink className="size-4 mr-2" />
 						{t("environments.connect.webApp.connect")}
 					</Link>
-				) : !hasAccess ? (
-					// Restricted (environment.access_mode === "restricted", no
-					// EnvironmentAccessGrant for this caller) — a distinct
-					// reason from the plain-permission case below, since
-					// granting environments.connect alone wouldn't fix this;
-					// the project admin needs to add this member to the
-					// environment's access list instead (see
-					// environment-detail.tsx's Access tab).
-					<p className="text-sm text-muted-foreground">
-						{t("environments.connect.webApp.restricted")}
-					</p>
 				) : (
 					// The terminal ticket endpoint requires
 					// environments:connect (see router.go) — a member without
@@ -455,12 +447,10 @@ function SSHConnectTab({
 	projectId,
 	environment,
 	canConnect,
-	hasAccess,
 }: {
 	projectId: string;
 	environment: Environment;
 	canConnect: boolean;
-	hasAccess: boolean;
 }) {
 	const { t } = useTranslation("projects");
 	const { data: config } = useQuery(environmentConfigQueryOptions());
@@ -473,18 +463,6 @@ function SSHConnectTab({
 	// environment's `ssh` command shares the exact same host and is
 	// disambiguated only by -p.
 	const host = config?.ssh_bastion_host || null;
-
-	// Restricted: neither registering a key nor the ssh command itself is
-	// actionable (they couldn't authenticate even seeing it), so show one
-	// message instead of the empty shell of both steps — same "one clear
-	// state" approach WebAppConnectTab takes for the same condition.
-	if (!hasAccess) {
-		return (
-			<p className="text-sm text-muted-foreground max-w-2xl">
-				{t("environments.connect.ssh.restricted")}
-			</p>
-		);
-	}
 
 	return (
 		<div className="space-y-6">
@@ -501,7 +479,6 @@ function SSHConnectTab({
 						projectId={projectId}
 						environmentId={environment.id}
 						canConnect={canConnect}
-						hasAccess={hasAccess}
 					/>
 				</div>
 			</div>
@@ -592,15 +569,6 @@ export function EnvironmentConnectView({
 		);
 	}
 
-	// Whether this caller may actually use environment right now — always
-	// true when it's open; only true for a restricted one if they hold an
-	// EnvironmentAccessGrant. Distinct from canConnect (the plain
-	// environments.connect permission): both must hold for the terminal
-	// link, and either one failing needs its own message since only a
-	// project admin granting access fixes the latter.
-	const hasAccess =
-		environment.access_mode !== "restricted" || environment.access_granted;
-
 	return (
 		<div className="flex flex-col flex-1 min-h-0">
 			<div className="border-b border-border/50 px-6 py-5 shrink-0 space-y-3">
@@ -663,7 +631,6 @@ export function EnvironmentConnectView({
 						environment={environment}
 						canWrite={canWrite}
 						canConnect={canConnect}
-						hasAccess={hasAccess}
 					/>
 				)}
 				{activeTab === "ssh" && (
@@ -671,7 +638,6 @@ export function EnvironmentConnectView({
 						projectId={projectId}
 						environment={environment}
 						canConnect={canConnect}
-						hasAccess={hasAccess}
 					/>
 				)}
 			</div>

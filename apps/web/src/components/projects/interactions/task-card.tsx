@@ -5,6 +5,7 @@ import {
 	GripVertical,
 	Layers,
 	Link,
+	ListChecks,
 	Loader2,
 	Search,
 	User,
@@ -13,7 +14,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { getTaskTypeIconComponent } from "@/components/projects/task-types/task-type-icons";
-import { EntityAvatarContent } from "@/components/shared/entity-avatar";
+import { EntityAvatar } from "@/components/shared/entity-avatar";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -33,14 +34,14 @@ import {
 } from "@/lib/custom-field-colors";
 import { formatDate } from "@/lib/format-date";
 import type { Task } from "@/lib/interaction-api";
+import { useMemberDirectory } from "@/lib/member-directory";
 import {
 	type CustomFieldDefinition,
 	findEpicType,
-	type ProjectMember,
 	type TaskStatus,
 	type TaskType,
 } from "@/lib/project-api";
-import { resolveMemberAvatarUrl } from "@/lib/provider-logos";
+import { memberAvatar } from "@/lib/provider-logos";
 import { useHoveredTaskStore } from "@/lib/shortcuts/hovered-task-store";
 import { cn } from "@/lib/utils";
 import { AssigneePicker } from "./assignee-picker";
@@ -66,7 +67,6 @@ interface TaskCardProps {
 	taskIdPrefix?: string;
 	statuses: TaskStatus[];
 	taskTypes: TaskType[];
-	members?: ProjectMember[];
 	epics?: Task[];
 	/** Load-more state for the epic picker Popover — omitted when the caller
 	 * doesn't paginate epics (e.g. fewer than one page's worth). */
@@ -96,7 +96,6 @@ export function TaskCard({
 	taskIdPrefix = "",
 	statuses,
 	taskTypes,
-	members = [],
 	epics = [],
 	epicsPagination,
 	visibleFields = DEFAULT_VISIBLE_FIELDS,
@@ -115,6 +114,7 @@ export function TaskCard({
 	const { t } = useTranslation("projects");
 	const isMobile = useIsMobile();
 	const jevEnabled = useJevEnabled(task.project_id);
+	const getMember = useMemberDirectory(task.project_id);
 	const isAutoAssign = isAutoAssignPending(task);
 	const [isHovered, setIsHovered] = useState(false);
 	const [typePopoverOpen, setTypePopoverOpen] = useState(false);
@@ -154,7 +154,7 @@ export function TaskCard({
 				return (
 					<AssigneePicker
 						key="assignee"
-						members={members}
+						projectId={task.project_id}
 						assigneeIds={task.assignee_ids ?? []}
 						isAutoAssign={isAutoAssign}
 						autoEnabled={jevEnabled}
@@ -394,32 +394,23 @@ export function TaskCard({
 
 			case "reporter": {
 				const reporter = task.reporter_id
-					? members.find((m) => m.id === task.reporter_id)
+					? getMember(task.reporter_id)
 					: undefined;
 				return (
-					<div
+					<span
 						key="reporter"
 						title={
 							reporter
 								? reporter.full_name || reporter.username
 								: t("board.taskCard.reporterTitle")
 						}
-						className="flex size-5 items-center justify-center rounded-full bg-linear-to-br from-muted/80 to-muted/40 text-muted-foreground text-xs font-bold ring-1 ring-border/25"
 					>
-						<EntityAvatarContent
-							avatarUrl={
-								reporter ? resolveMemberAvatarUrl(reporter) : undefined
-							}
-						>
-							{reporter ? (
-								(reporter.full_name || reporter.username)
-									.slice(0, 1)
-									.toUpperCase()
-							) : (
-								<User className="size-2.5" />
-							)}
-						</EntityAvatarContent>
-					</div>
+						<EntityAvatar
+							{...(reporter ? memberAvatar(reporter) : { name: "" })}
+							fallback={<User className="size-2.5" />}
+							size="xs"
+						/>
+					</span>
 				);
 			}
 
@@ -729,9 +720,25 @@ export function TaskCard({
 				{task.title}
 			</span>
 
-			{fieldChips.length > 0 && (
+			{(fieldChips.length > 0 || (task.subtask_count ?? 0) > 0) && (
 				<div className="mt-2 flex flex-wrap items-center gap-1.5">
 					{fieldChips}
+					{(task.subtask_count ?? 0) > 0 && (
+						<span
+							title={t("board.subtasks.progress", {
+								done: task.subtask_done_count ?? 0,
+								n: task.subtask_count,
+							})}
+							className={cn(
+								"inline-flex items-center gap-1 rounded-md bg-muted/50 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-muted-foreground",
+								task.subtask_done_count === task.subtask_count &&
+									"text-emerald-600",
+							)}
+						>
+							<ListChecks className="size-3" aria-hidden />
+							{task.subtask_done_count ?? 0}/{task.subtask_count}
+						</span>
+					)}
 				</div>
 			)}
 

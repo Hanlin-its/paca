@@ -3,7 +3,9 @@
 		"notFound": "Not found",
 		"somethingWentWrong": "Something went wrong",
 		"retry": "Retry",
-		"noPermissionToView": "You don't have permission to view this"
+		"noPermissionToView": "You don't have permission to view this",
+		"loadMore": "Cargar más",
+		"loadingMore": "Cargando más…"
 	},
 	"dialog": {
 		"closeLabel": "Cerrar",
@@ -39,6 +41,8 @@
 		"previous": "Página anterior",
 		"next": "Página siguiente",
 		"page": "Página {{page}}",
-		"pageOfTotal": "Página {{page}} de {{totalPages}}"
+		"pageOfTotal": "Página {{page}} de {{totalPages}}",
+		"rowsPerPage": "Filas por página",
+		"range": "{{from}}–{{to}} de {{total}}"
 	}
 }

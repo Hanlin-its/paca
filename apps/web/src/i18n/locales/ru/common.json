@@ -3,7 +3,9 @@
 		"notFound": "Not found",
 		"somethingWentWrong": "Something went wrong",
 		"retry": "Retry",
-		"noPermissionToView": "You don't have permission to view this"
+		"noPermissionToView": "You don't have permission to view this",
+		"loadMore": "Загрузить ещё",
+		"loadingMore": "Загрузка…"
 	},
 	"dialog": {
 		"closeLabel": "Закрыть",
@@ -45,6 +47,8 @@
 		"previous": "Предыдущая страница",
 		"next": "Следующая страница",
 		"page": "Страница {{page}}",
-		"pageOfTotal": "Страница {{page}} из {{totalPages}}"
+		"pageOfTotal": "Страница {{page}} из {{totalPages}}",
+		"rowsPerPage": "Строк на странице",
+		"range": "{{from}}–{{to}} из {{total}}"
 	}
 }

@@ -13,6 +13,7 @@ import {
 	SuggestionPrimitive,
 	ThreadPrimitive,
 	type ToolCallMessagePartComponent,
+	useAui,
 	useAuiState,
 } from "@assistant-ui/react";
 import {
@@ -36,7 +37,9 @@ import {
 	type PropsWithChildren,
 	type ReactNode,
 	useContext,
+	useEffect,
 	useMemo,
+	useRef,
 } from "react";
 import { useTranslation } from "react-i18next";
 import { UserMessageAttachments } from "@/components/assistant-ui/attachment";
@@ -63,6 +66,16 @@ import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button
 import { Button } from "@/components/ui/button";
 import { getAnnotation } from "@/lib/annotation-api";
 import { matchAnnotationLinkOnly } from "@/lib/annotation-link";
+import {
+	isAskQuestionTool,
+	parseAskQuestionFromCall,
+} from "@/lib/ask-question";
+import { copyToClipboard } from "@/lib/clipboard";
+import {
+	composerDraftKey,
+	loadComposerDraft,
+	saveComposerDraft,
+} from "@/lib/composer-draft";
 import { useContextInjectionStore } from "@/lib/context-injection-store";
 import { parseContextItems } from "@/lib/context-items";
 import { excerptOf } from "@/lib/mention-api";
@@ -358,8 +371,41 @@ function handleComposerPaste(
 		});
 }
 
+/**
+ * Keeps whatever is typed in the composer until it is sent, so a reload the
+ * app cannot avoid — an expired session bouncing through the login/SSO flow
+ * and back to the same URL — restores the message instead of throwing away
+ * work that was never submitted (see lib/composer-draft.ts for the storage).
+ * Attached context chips are not restored: that store is memory-only.
+ */
+function useComposerDraft(aui: ReturnType<typeof useAui>, text: string) {
+	// Fixed at mount: a composer that outlives an SPA navigation (the project
+	// float, a reused conversation view) keeps writing to the page it was
+	// mounted on, rather than copying its live text onto every page it passes.
+	const key = useRef(composerDraftKey(window.location.pathname)).current;
+	// Restoring must happen before the first persist, or an empty first render
+	// deletes the very draft it is meant to bring back.
+	const restored = useRef(false);
+
+	useEffect(() => {
+		if (!restored.current) {
+			restored.current = true;
+			const saved = loadComposerDraft(key);
+			if (saved && !text) {
+				aui.composer().setText(saved);
+				return;
+			}
+		}
+		saveComposerDraft(key, text);
+	}, [aui, key, text]);
+}
+
 const Composer: FC = () => {
 	const { t } = useTranslation("projects");
+	useComposerDraft(
+		useAui(),
+		useAuiState((s: AssistantState) => s.composer.text),
+	);
 	return (
 		<ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
 			{/* No AttachmentDropzone/ComposerAttachments here — onNew only
@@ -477,6 +523,27 @@ const MessageError: FC = () => {
 	);
 };
 
+const baseGroupBy = groupPartByType({
+	reasoning: ["group-chainOfThought", "group-reasoning"],
+	"tool-call": ["group-chainOfThought", "group-tool"],
+	"standalone-tool-call": [],
+});
+
+// An ask_user_question call is a prompt for the user, not background work:
+// it stays outside the collapsible tool group so its answer buttons are
+// visible without expanding anything. Module-level so the function identity
+// is stable across renders.
+const groupBy: typeof baseGroupBy = (part, context) => {
+	if (
+		part.type === "tool-call" &&
+		isAskQuestionTool(part.toolName) &&
+		parseAskQuestionFromCall(part.argsText, part.result) !== null
+	) {
+		return [];
+	}
+	return baseGroupBy(part, context);
+};
+
 const AssistantMessage: FC = () => {
 	const { t } = useTranslation("projects");
 	const {
@@ -513,13 +580,7 @@ const AssistantMessage: FC = () => {
 				// [contain-intrinsic-size:auto_24px] fixes issue #4104, don't change without checking for regressions
 				className="text-foreground px-2 leading-relaxed wrap-break-word [contain-intrinsic-size:auto_24px] [content-visibility:auto]"
 			>
-				<MessagePrimitive.GroupedParts
-					groupBy={groupPartByType({
-						reasoning: ["group-chainOfThought", "group-reasoning"],
-						"tool-call": ["group-chainOfThought", "group-tool"],
-						"standalone-tool-call": [],
-					})}
-				>
+				<MessagePrimitive.GroupedParts groupBy={groupBy}>
 					{({ part, children }) => {
 						switch (part.type) {
 							case "group-chainOfThought":
@@ -603,6 +664,20 @@ const AssistantMessage: FC = () => {
 
 const AssistantActionBar: FC = () => {
 	const { t } = useTranslation("projects");
+	const aui = useAui();
+	// The primitive's built-in copy uses navigator.clipboard, which is
+	// undefined on non-secure (plain http) origins. Handle the copy ourselves
+	// (with an execCommand fallback) and cancel the primitive's own handler.
+	const handleCopy = (event: { preventDefault: () => void }) => {
+		event.preventDefault();
+		const text = aui.message().getCopyText();
+		if (!text) return;
+		void copyToClipboard(text).then((ok) => {
+			if (!ok) return;
+			aui.message().setIsCopied(true);
+			setTimeout(() => aui.message().setIsCopied(false), 3000);
+		});
+	};
 	return (
 		<ActionBarPrimitive.Root
 			hideWhenRunning
@@ -610,6 +685,7 @@ const AssistantActionBar: FC = () => {
 			className="aui-assistant-action-bar-root text-muted-foreground animate-in fade-in col-start-3 row-start-2 -ms-1 flex gap-1 duration-200"
 		>
 			<ActionBarPrimitive.Copy
+				onClick={handleCopy}
 				render={<TooltipIconButton tooltip={t("agents.thread.copy")} />}
 			>
 				<AuiIf condition={(s) => s.message.isCopied}>

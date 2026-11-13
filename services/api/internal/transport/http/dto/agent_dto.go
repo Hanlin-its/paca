@@ -16,16 +16,16 @@ import (
 // =========================================================================
 
 // AgentResponse is the public view of an agent. ProjectID is nil for a
-// global-scope agent (AgentScope == "global"); GlobalRoleID is only ever
-// set for a global-scope agent.
+// global-scope agent (AgentScope == "global"); Roles lists the platform roles
+// attached to a global-scope agent (omitted for project agents).
 type AgentResponse struct {
-	ID           uuid.UUID  `json:"id"`
-	ProjectID    *uuid.UUID `json:"project_id,omitempty"`
-	AgentScope   string     `json:"agent_scope"`
-	GlobalRoleID *uuid.UUID `json:"global_role_id,omitempty"`
-	MemberID     *uuid.UUID `json:"member_id,omitempty"`
-	Name         string     `json:"name"`
-	Handle       string     `json:"handle"`
+	ID         uuid.UUID             `json:"id"`
+	ProjectID  *uuid.UUID            `json:"project_id,omitempty"`
+	AgentScope string                `json:"agent_scope"`
+	Roles      []RoleSummaryResponse `json:"roles,omitempty"`
+	MemberID   *uuid.UUID            `json:"member_id,omitempty"`
+	Name       string                `json:"name"`
+	Handle     string                `json:"handle"`
 	// Description is shown to Jev (the AI decision API) when picking which
 	// agent should handle a chat in Auto mode, or whether to assign it a
 	// task — see agentdom.Agent.ComposeJevDescription.
@@ -41,6 +41,8 @@ type AgentResponse struct {
 	LLMBaseURL        string   `json:"llm_base_url"`
 	ACPProvider       *string  `json:"acp_provider,omitempty"`
 	ACPCommand        []string `json:"acp_command,omitempty"`
+	ACPModel          string   `json:"acp_model,omitempty"`
+	ACPEffort         string   `json:"acp_effort,omitempty"`
 	HasACPBridgeToken bool     `json:"has_acp_bridge_token"`
 	HasMCPAPIKey      bool     `json:"has_mcp_api_key"`
 	// CLIProvider/CLIModel/CLIAuthMode/HasCLIAPIKey/CLILoginVerifiedAt are
@@ -70,22 +72,13 @@ type AgentResponse struct {
 	// agent's conversations work in by default — nil unless
 	// DefaultEnvironmentID is also set. See
 	// agentdom.Agent.DefaultFolderID's doc comment.
-	DefaultFolderID *uuid.UUID `json:"default_folder_id,omitempty"`
-	// AccessMode is "open" or "restricted" — see agentdom.Agent.AccessMode's
-	// doc comment. AccessGranted is per-caller (not stored on the entity):
-	// true whenever the requesting member could actually use this agent
-	// right now — always true when AccessMode is "open", populated by the
-	// handler from AgentAccessGrantService otherwise. Together these drive
-	// the "visible but locked" UI for a restricted agent the caller isn't
-	// granted.
-	AccessMode    string                   `json:"access_mode"`
-	AccessGranted bool                     `json:"access_granted"`
-	CreatedBy     *uuid.UUID               `json:"created_by,omitempty"`
-	CreatedAt     time.Time                `json:"created_at"`
-	UpdatedAt     time.Time                `json:"updated_at"`
-	MCPServers    []AgentMCPServerResponse `json:"mcp_servers,omitempty"`
-	Skills        []AgentSkillResponse     `json:"skills,omitempty"`
-	EnvVars       []AgentEnvVarResponse    `json:"env_vars,omitempty"`
+	DefaultFolderID *uuid.UUID               `json:"default_folder_id,omitempty"`
+	CreatedBy       *uuid.UUID               `json:"created_by,omitempty"`
+	CreatedAt       time.Time                `json:"created_at"`
+	UpdatedAt       time.Time                `json:"updated_at"`
+	MCPServers      []AgentMCPServerResponse `json:"mcp_servers,omitempty"`
+	Skills          []AgentSkillResponse     `json:"skills,omitempty"`
+	EnvVars         []AgentEnvVarResponse    `json:"env_vars,omitempty"`
 }
 
 // CreateAgentRequest is the body for POST /projects/:projectId/agents.
@@ -105,6 +98,8 @@ type CreateAgentRequest struct {
 	LLMBaseURL  string   `json:"llm_base_url"`
 	ACPProvider string   `json:"acp_provider"`
 	ACPCommand  []string `json:"acp_command"`
+	ACPModel    string   `json:"acp_model"`
+	ACPEffort   string   `json:"acp_effort"`
 	// CLIProvider/CLIModel/CLIAuthMode/CLIAPIKey are required (and the
 	// fields above meaningless) when agent_type is "provider_cli" — see
 	// agentdom.Agent.CLIProvider's doc comment. CLIAuthMode defaults to
@@ -133,12 +128,12 @@ type CreateAgentRequest struct {
 	// must belong to DefaultEnvironmentID, also set in this same request
 	// (validated in agent.CreateAgent).
 	DefaultFolderID *uuid.UUID `json:"default_folder_id"`
-	ProjectRoleID   uuid.UUID  `json:"project_role_id" binding:"required"`
+	// RoleIDs are the roles the new agent holds in the project (at least one).
+	RoleIDs []uuid.UUID `json:"role_ids"`
 }
 
 // UpdateAgentRequest is the body for PATCH /projects/:projectId/agents/:agentId
-// and PATCH /admin/agents/:agentId. GlobalRoleID is no longer accepted on
-// either — see its comment.
+// and PATCH /admin/agents/:agentId.
 type UpdateAgentRequest struct {
 	Name        *string  `json:"name"`
 	Handle      *string  `json:"handle"`
@@ -149,6 +144,8 @@ type UpdateAgentRequest struct {
 	LLMBaseURL  *string  `json:"llm_base_url"`
 	ACPProvider *string  `json:"acp_provider"`
 	ACPCommand  []string `json:"acp_command"`
+	ACPModel    *string  `json:"acp_model"`
+	ACPEffort   *string  `json:"acp_effort"`
 	// CLIProvider/CLIModel/CLIAuthMode/CLIAPIKey: nil means "unchanged",
 	// same convention as every other pointer field here — only meaningful
 	// for an existing provider_cli agent.
@@ -165,12 +162,6 @@ type UpdateAgentRequest struct {
 	// ParallelismLimit: nil means unchanged, same convention as every other
 	// pointer field here.
 	ParallelismLimit *int `json:"parallelism_limit"`
-	// GlobalRoleID is not accepted here: binding a global agent to a role
-	// needs global_roles.assign, so it has its own routes
-	// (PUT/DELETE /admin/agents/:agentId/global-role). The field exists only
-	// so PATCH /admin/agents/:agentId can reject a request that still sends
-	// one with a clear 400 instead of ignoring it.
-	GlobalRoleID *uuid.UUID `json:"global_role_id"`
 	// DefaultEnvironmentID: omit to leave unchanged, pass a zero UUID
 	// ("00000000-0000-0000-0000-000000000000") to clear it, or a real
 	// environment ID to set it — see agentdom.UpdateAgentInput.
@@ -180,16 +171,13 @@ type UpdateAgentRequest struct {
 	// DefaultEnvironmentID above — see agentdom.UpdateAgentInput.
 	// DefaultFolderID's doc comment. Ignored for global-scope agents.
 	DefaultFolderID *uuid.UUID `json:"default_folder_id"`
-	// AccessMode: nil means unchanged. Must be "open" or "restricted" when
-	// set — see agentdom.Agent.AccessMode's doc comment.
-	AccessMode *string `json:"access_mode"`
 }
 
 // CreateGlobalAgentRequest is the body for POST /admin/agents. Mirrors
-// CreateAgentRequest minus ProjectRoleID (nothing to assign at creation
-// time — a global agent gets a project role only later, when invited into a
-// project). A new global agent has no global role; bind one afterwards with
-// PUT /admin/agents/:agentId/global-role.
+// CreateAgentRequest minus RoleIDs (nothing to assign at creation time — a
+// global agent gets a project role only later, when invited into a project).
+// A new global agent starts with the default role; change its roles with
+// PUT /admin/agents/:agentId/roles.
 type CreateGlobalAgentRequest struct {
 	Name              string   `json:"name" binding:"required"`
 	Handle            string   `json:"handle" binding:"required"`
@@ -201,6 +189,8 @@ type CreateGlobalAgentRequest struct {
 	LLMBaseURL        string   `json:"llm_base_url"`
 	ACPProvider       string   `json:"acp_provider"`
 	ACPCommand        []string `json:"acp_command"`
+	ACPModel          string   `json:"acp_model"`
+	ACPEffort         string   `json:"acp_effort"`
 	SystemPrompt      string   `json:"system_prompt"`
 	MaxIterations     int      `json:"max_iterations"`
 	TimeoutMinutes    int      `json:"timeout_minutes"`
@@ -208,15 +198,6 @@ type CreateGlobalAgentRequest struct {
 	GitCommitterEmail string   `json:"git_committer_email"`
 	DockerEnabled     bool     `json:"docker_enabled"`
 	ParallelismLimit  int      `json:"parallelism_limit"`
-	// GlobalRoleID is not accepted here — see UpdateAgentRequest.GlobalRoleID.
-	GlobalRoleID *uuid.UUID `json:"global_role_id"`
-}
-
-// SetGlobalAgentRoleRequest is the body for PUT /admin/agents/:agentId/global-role:
-// the global role the agent is bound to. Requires global_roles.assign on top
-// of agents.write.
-type SetGlobalAgentRoleRequest struct {
-	GlobalRoleID uuid.UUID `json:"global_role_id" binding:"required"`
 }
 
 // GenerateACPBridgeTokenResponse is the body returned for POST
@@ -258,7 +239,7 @@ func AgentFromEntity(a *agentdom.Agent) AgentResponse {
 	resp := AgentResponse{
 		ID:                   a.ID,
 		AgentScope:           scope,
-		GlobalRoleID:         a.GlobalRoleID,
+		Roles:                roleSummaries(a),
 		MemberID:             a.MemberID,
 		Name:                 a.Name,
 		Handle:               a.Handle,
@@ -269,6 +250,8 @@ func AgentFromEntity(a *agentdom.Agent) AgentResponse {
 		LLMBaseURL:           a.LLMBaseURL,
 		ACPProvider:          a.ACPProvider,
 		ACPCommand:           a.ACPCommand,
+		ACPModel:             a.ACPModel,
+		ACPEffort:            a.ACPEffort,
 		HasACPBridgeToken:    a.HasACPBridgeToken,
 		HasMCPAPIKey:         a.HasMCPAPIKey,
 		CLIProvider:          a.CLIProvider,
@@ -285,18 +268,9 @@ func AgentFromEntity(a *agentdom.Agent) AgentResponse {
 		ParallelismLimit:     a.ParallelismLimit,
 		DefaultEnvironmentID: a.DefaultEnvironmentID,
 		DefaultFolderID:      a.DefaultFolderID,
-		AccessMode:           a.AccessMode,
-		// Correct as-is for an "open" agent (the common case, no caller
-		// context needed); the handler overrides this for a "restricted"
-		// one once it knows which member is asking — see
-		// AgentHandler.toAgentResponse.
-		AccessGranted: a.AccessMode != agentdom.AccessModeRestricted,
-		CreatedBy:     a.CreatedBy,
-		CreatedAt:     a.CreatedAt,
-		UpdatedAt:     a.UpdatedAt,
-	}
-	if resp.AccessMode == "" {
-		resp.AccessMode = agentdom.AccessModeOpen
+		CreatedBy:            a.CreatedBy,
+		CreatedAt:            a.CreatedAt,
+		UpdatedAt:            a.UpdatedAt,
 	}
 	if a.ProjectID != uuid.Nil {
 		id := a.ProjectID
@@ -507,7 +481,7 @@ type WriteWithAIRequest struct {
 // =========================================================================
 
 // AgentConversationResponse is the public view of a conversation. ProjectID
-// is nil for a global-chat conversation, which carries ActorUserID instead
+// is nil for a global-chat conversation, which carries ActorAccountID instead
 // of TriggeredByMemberID.
 type AgentConversationResponse struct {
 	ID                  uuid.UUID  `json:"id"`
@@ -517,7 +491,7 @@ type AgentConversationResponse struct {
 	TaskID              *uuid.UUID `json:"task_id,omitempty"`
 	ChatSessionID       *uuid.UUID `json:"chat_session_id,omitempty"`
 	TriggeredByMemberID *uuid.UUID `json:"triggered_by_member_id,omitempty"`
-	ActorUserID         *uuid.UUID `json:"actor_user_id,omitempty"`
+	ActorAccountID      *uuid.UUID `json:"actor_account_id,omitempty"`
 	Status              string     `json:"status"`
 	IterationCount      int        `json:"iteration_count"`
 	InputTokens         int64      `json:"input_tokens"`
@@ -596,7 +570,7 @@ func ConversationFromEntity(c *agentdom.AgentConversation) AgentConversationResp
 		TaskID:              c.TaskID,
 		ChatSessionID:       c.ChatSessionID,
 		TriggeredByMemberID: c.TriggeredByMemberID,
-		ActorUserID:         c.ActorUserID,
+		ActorAccountID:      c.ActorAccountID,
 		Status:              c.Status,
 		IterationCount:      c.IterationCount,
 		InputTokens:         c.InputTokens,
@@ -677,16 +651,16 @@ func ConversationEventFromEntity(e *agentdom.AgentConversationEvent) AgentConver
 
 // AgentChatSessionResponse is the public view of a chat session. ProjectID
 // and MemberID are nil for a global chat session, which carries
-// ActorUserID instead.
+// ActorAccountID instead.
 type AgentChatSessionResponse struct {
-	ID            uuid.UUID  `json:"id"`
-	AgentID       uuid.UUID  `json:"agent_id"`
-	ProjectID     *uuid.UUID `json:"project_id,omitempty"`
-	MemberID      *uuid.UUID `json:"member_id,omitempty"`
-	ActorUserID   *uuid.UUID `json:"actor_user_id,omitempty"`
-	Title         *string    `json:"title,omitempty"`
-	LastMessageAt *time.Time `json:"last_message_at,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
+	ID             uuid.UUID  `json:"id"`
+	AgentID        uuid.UUID  `json:"agent_id"`
+	ProjectID      *uuid.UUID `json:"project_id,omitempty"`
+	MemberID       *uuid.UUID `json:"member_id,omitempty"`
+	ActorAccountID *uuid.UUID `json:"actor_account_id,omitempty"`
+	Title          *string    `json:"title,omitempty"`
+	LastMessageAt  *time.Time `json:"last_message_at,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
 }
 
 // StartChatSessionRequest is the body for POST /agents/:agentId/chat.
@@ -741,12 +715,12 @@ type SendChatMessageRequest struct {
 // ChatSessionFromEntity maps an AgentChatSession entity to its DTO.
 func ChatSessionFromEntity(s *agentdom.AgentChatSession) AgentChatSessionResponse {
 	resp := AgentChatSessionResponse{
-		ID:            s.ID,
-		AgentID:       s.AgentID,
-		ActorUserID:   s.ActorUserID,
-		Title:         s.Title,
-		LastMessageAt: s.LastMessageAt,
-		CreatedAt:     s.CreatedAt,
+		ID:             s.ID,
+		AgentID:        s.AgentID,
+		ActorAccountID: s.ActorAccountID,
+		Title:          s.Title,
+		LastMessageAt:  s.LastMessageAt,
+		CreatedAt:      s.CreatedAt,
 	}
 	if s.ProjectID != uuid.Nil {
 		id := s.ProjectID
@@ -787,28 +761,10 @@ func SkillTemplateFromEntity(t *agentdom.SkillTemplate) SkillTemplateResponse {
 	}
 }
 
-// AgentAccessGrantResponse is one member's access grant on a restricted agent.
-type AgentAccessGrantResponse struct {
-	ID        uuid.UUID  `json:"id"`
-	AgentID   uuid.UUID  `json:"agent_id"`
-	MemberID  uuid.UUID  `json:"member_id"`
-	GrantedBy *uuid.UUID `json:"granted_by,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
-}
-
-// AgentAccessGrantFromEntity maps an AgentAccessGrant entity to its DTO.
-func AgentAccessGrantFromEntity(g *agentdom.AgentAccessGrant) AgentAccessGrantResponse {
-	return AgentAccessGrantResponse{
-		ID:        g.ID,
-		AgentID:   g.AgentID,
-		MemberID:  g.MemberID,
-		GrantedBy: g.GrantedBy,
-		CreatedAt: g.CreatedAt,
+// roleSummaries maps the roles of a global agent; project agents show none.
+func roleSummaries(a *agentdom.Agent) []RoleSummaryResponse {
+	if a.AgentScope != agentdom.AgentScopeGlobal {
+		return nil
 	}
-}
-
-// AddAgentAccessGrantRequest is the body for POST
-// /projects/:projectId/agents/:agentId/access-grants.
-type AddAgentAccessGrantRequest struct {
-	MemberID uuid.UUID `json:"member_id" binding:"required"`
+	return RoleSummariesFromEntities(a.Roles)
 }

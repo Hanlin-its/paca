@@ -30,7 +30,8 @@
 		"team": "团队",
 		"settings": "设置",
 		"changelog": "最新动态",
-		"activity": "动态"
+		"activity": "动态",
+		"serviceAccounts": "服务账号"
 	},
 	"projectSwitcher": {
 		"projects": "项目",
@@ -73,12 +74,18 @@
 		"unmuteSound": "取消静音通知提示音",
 		"text": {
 			"assigned": "{{actor}} 将任务 #{{taskNumber}} — {{taskTitle}} 分配给了您",
-			"mentioned": "{{actor}} 在 #{{taskNumber}} — {{taskTitle}} 中提到了您"
-		}
+			"mentioned": "{{actor}} 在 #{{taskNumber}} — {{taskTitle}} 中提到了您",
+			"question": "{{actor}} 在 {{title}} 中向你提问",
+			"mentionedInDoc": "{{actor}} 在文档 {{title}} 中提到了你",
+			"automation": "自动化：{{message}} (#{{taskNumber}} — {{taskTitle}})"
+		},
+		"untitledConversation": "未命名对话",
+		"globalChat": "全局聊天",
+		"untitledDocument": "未命名文档"
 	},
 	"userMenu": {
 		"signIn": "登录",
-		"myProfile": "个人资料",
+		"myProfile": "账户",
 		"apiKeys": "API 密钥",
 		"logOut": "退出登录",
 		"loggingOut": "正在退出登录…"

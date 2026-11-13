@@ -12,13 +12,204 @@
 				"customFields": "自訂欄位",
 				"dangerZone": "危險區域",
 				"plugins": "外掛",
-				"jev": "Jev AI"
+				"jev": "Jev AI",
+				"git": "Git",
+				"export": "匯出"
 			},
 			"pluginTab": {
 				"noPermission": {
 					"title": "你沒有檢視此分頁的權限",
 					"description": "請要求專案擁有者或管理員授予你 {{pluginName}} 的存取權。"
 				}
+			}
+		},
+		"git": {
+			"title": "Git 儲存庫",
+			"description": "此專案的 AI Agent 可透過下方連線使用的儲存庫。",
+			"empty": {
+				"title": "尚未連結儲存庫",
+				"description": "連結儲存庫，讓此專案的 AI Agent 能讀取程式碼、建立提取請求（PR）並回應提及。",
+				"readOnly": "你需要此專案的 Git 寫入權限才能連結儲存庫。",
+				"noConnection": "請先新增連線，再透過該連線連結儲存庫。"
+			},
+			"noProviders": "尚未安裝 Git 提供者。請要求管理員安裝。",
+			"link": {
+				"platform": "平台",
+				"repository": "儲存庫",
+				"placeholder": "owner/name 或儲存庫 URL",
+				"button": "連結",
+				"open": "連結儲存庫",
+				"cancel": "取消",
+				"help": "貼上儲存庫 URL，或輸入 owner/name。",
+				"noConnection": "連結儲存庫前，請先在上方新增 {{provider}} 連線。",
+				"connection": "連線",
+				"anyConnection": "任何可查看此儲存庫的連線",
+				"connectionHelp": "當多個連線可查看此儲存庫時，請選擇其中一個，例如來自兩個組織的連線。",
+				"description": "描述（選填）",
+				"descriptionPlaceholder": "例如：產品的網頁用戶端",
+				"descriptionHelp": "告訴 AI Agent 此儲存庫的用途，讓它們選擇正確的儲存庫。最多 1000 個字元。",
+				"title": "連結儲存庫",
+				"dialogDescription": "選擇此專案的 AI Agent 要使用的平台與儲存庫。"
+			},
+			"picker": {
+				"browse": "瀏覽儲存庫",
+				"unsupported": "此連線無法列出儲存庫。請關閉此視窗，改為輸入路徑或 URL。",
+				"error": "無法載入清單。請關閉此視窗，改為輸入路徑或 URL。",
+				"empty": "找不到儲存庫。",
+				"linked": "已連結",
+				"private": "私人",
+				"title": "瀏覽儲存庫",
+				"description": "瀏覽此連線可查看的所有儲存庫，然後選擇一個填入。"
+			},
+			"unlink": {
+				"button": "解除連結",
+				"confirm": "確認解除連結",
+				"cancel": "取消"
+			},
+			"resumed": "歡迎回來。現在請連結 {{repository}}。",
+			"access": {
+				"title": "此連線無法查看此儲存庫",
+				"description": "{{provider}} 應用程式只能查看已安裝該應用程式之帳號的儲存庫。請將其安裝至 {{owner}}（你會前往平台並返回此處），然後再次連結。",
+				"descriptionNoOwner": "{{provider}} 應用程式只能查看已安裝該應用程式之帳號的儲存庫。請選擇安裝位置（你會前往平台並返回此處），然後再次連結。",
+				"button": "安裝至 {{owner}}",
+				"buttonNoOwner": "選擇安裝位置",
+				"connection": "要安裝的連線",
+				"choose": "選擇連線"
+			},
+			"errors": {
+				"generic": "發生錯誤，請重試。",
+				"setupInvalid": "此連結無效、已過期或已使用。請重新開始。",
+				"identityExists": "此處已有身分。",
+				"publicUrlRequired": "尚未設定執行個體的公開 URL（PUBLIC_URL）。",
+				"providerUnavailable": "Git 提供者外掛無法使用。",
+				"providerRejected": "平台拒絕了此請求。",
+				"providerDetail": "平台提供的詳細資訊：{{message}}",
+				"notFound": "找不到。",
+				"accessNotGranted": "此連線無法查看此儲存庫。",
+				"noIdentity": "此平台尚無可用的連線。請在「連線」中新增。",
+				"alreadyLinked": "此儲存庫已連結至此專案。",
+				"identityRequired": "有多個連線可查看此儲存庫。請選擇要使用的連線。",
+				"notVisible": "此專案的連線皆無法查看此儲存庫。請新增有權存取的連線（GitLab 需使用該專案或其群組的 Token），然後重試。",
+				"descriptionTooLong": "描述過長（最多 1000 個字元）。"
+			},
+			"triggerKinds": {
+				"mention": {
+					"label": "被提及",
+					"description": "有人在留言、審查或描述中提及機器人。"
+				},
+				"own_cr_feedback": {
+					"label": "自己提取請求（PR）的回饋",
+					"description": "此 AI Agent 建立的提取請求（PR）收到審查或留言。"
+				},
+				"ci_failure": {
+					"label": "自己的提取請求（PR）發生 CI 失敗",
+					"description": "此 AI Agent 建立的提取請求（PR）之最新提交有檢查失敗（最多嘗試數次）。"
+				},
+				"review_request": {
+					"label": "收到審查請求",
+					"description": "在平台允許的情況下，機器人被請求擔任審查者。"
+				},
+				"assignment": {
+					"label": "已指派",
+					"description": "在平台允許的情況下，機器人被指派至議題或提取請求（PR）。"
+				},
+				"label": {
+					"label": "標籤",
+					"description": "議題或提取請求（PR）被加入「paca」（或「paca:<agent handle>」）標籤。"
+				},
+				"auto_review": {
+					"label": "審查每個提取請求（PR）",
+					"description": "自動審查每個新的提取請求（PR）。啟用前為關閉狀態；草稿和此 AI Agent 自己的提取請求（PR）會被略過。"
+				}
+			},
+			"repositories": {
+				"title": "儲存庫",
+				"description": "此專案的 AI Agent 可以使用這些儲存庫。",
+				"mention": "在留言中提及：",
+				"noDescription": "沒有描述",
+				"addDescription": "新增描述",
+				"editDescription": "編輯描述",
+				"saveDescription": "儲存描述",
+				"cancelDescription": "取消",
+				"descriptionLabel": "儲存庫描述"
+			},
+			"automation": {
+				"title": "自動化",
+				"description": "決定 Git 活動如何啟動你的 AI Agent。",
+				"locked": "請先連結儲存庫。這些設定適用於連結至此專案的儲存庫。",
+				"responder": {
+					"label": "預設回應者",
+					"none": "沒有預設回應者",
+					"help": "回應未指定 AI Agent 的提及、標籤與審查請求。在提及中加入「agent:<handle>」可選擇其他 AI Agent。",
+					"warning": "未設定預設回應者時，未指定 AI Agent 的提及會被忽略。"
+				},
+				"minPermission": {
+					"label": "啟動 AI Agent 所需的最低存取權限",
+					"help": "儲存庫存取權限低於此門檻的人仍可留言，但 AI Agent 不會執行。"
+				},
+				"permission": {
+					"read": "讀取",
+					"triage": "分流",
+					"write": "寫入",
+					"maintain": "維護",
+					"admin": "管理"
+				},
+				"paused": {
+					"label": "暫停自動化",
+					"help": "暫停期間，任何 Git 活動都不會啟動 AI Agent。已在進行中的執行會完成。"
+				},
+				"save": "儲存",
+				"saved": "已儲存。",
+				"advanced": "進階"
+			},
+			"usage": {
+				"title": "使用方式",
+				"description": "從 Git 平台啟動 AI Agent 的三種方式。",
+				"mention": {
+					"title": "提及機器人",
+					"description": "在議題或提取請求（PR）中留言。預設回應者會回應。"
+				},
+				"pick": {
+					"title": "選擇 AI Agent",
+					"description": "在提及中加入 agent:<handle>，選擇要回應的 AI Agent。"
+				},
+				"label": {
+					"title": "新增標籤",
+					"description": "在議題或提取請求（PR）中新增「paca」標籤。"
+				},
+				"automatic": "AI Agent 也可自行啟動，例如追蹤自己的提取請求（PR），或審查每個新的提取請求（PR）。請在各 AI Agent 的 Git 分頁中啟用這些功能。"
+			},
+			"connections": {
+				"title": "連線",
+				"description": "Paca 用來存取儲存庫的 GitHub Apps 與存取權Token。一個專案可以有多個來自不同組織的連線；每個連線可供所有專案共用，或僅供此專案使用。",
+				"add": "新增 {{provider}}",
+				"empty": {
+					"title": "尚無連線",
+					"description": "新增連線，讓 Paca 能存取你的儲存庫。請使用應用程式；若平台沒有應用程式，則貼上存取權Token。",
+					"noPermission": "請要求有權管理 Git 連線的人新增連線。"
+				},
+				"scope": {
+					"shared": "所有專案",
+					"project": "此專案"
+				},
+				"expires": "於 {{date}} 到期",
+				"expired": "已過期",
+				"remove": "移除"
+			},
+			"webhook": {
+				"title": "此儲存庫的事件未傳送至 Paca",
+				"description": "Paca 無法透過此連線在此儲存庫註冊 Webhook。",
+				"permissionHint": "最常見的原因是 Token 缺少管理 Webhook 的權限（GitLab 的 Maintainer 角色，或 GitHub 的 Webhooks 權限）。請授予 Token 該權限（在 GitLab 中，請建立具有 Maintainer 角色的新 Token 並新增為連線），然後重試。",
+				"retry": "重試",
+				"descriptionNotTried": "Paca 尚未在此儲存庫註冊 Webhook（例如，儲存庫是從先前版本的外掛沿用）。註冊後即可開始接收事件。",
+				"register": "註冊 Webhook",
+				"failed": "仍無法註冊 Webhook。"
+			},
+			"reconnect": {
+				"title": "此儲存庫沒有連線",
+				"description": "此儲存庫的連線已刪除，因此無法使用。請透過可查看此儲存庫的連線重新連接。",
+				"noConnection": "此儲存庫的連線已刪除。請先新增可查看此儲存庫的連線，再重新連接。",
+				"button": "重新連接"
 			}
 		}
 	},
@@ -95,7 +286,8 @@
 			"handleTaken": "該 Handle 已被佔用，請返回並選擇其他 Handle。",
 			"defaultEnvironmentInvalid": "該環境已不可用，請返回並選擇其他環境。",
 			"defaultFolderInvalid": "該資料夾已不可用，請返回並選擇其他資料夾。",
-			"finish": "完成"
+			"finish": "完成",
+			"acpProviderOpenCode": "OpenCode"
 		},
 		"card": {
 			"configure": "設定",
@@ -109,7 +301,6 @@
 				"deleteFailed": "刪除 AI Agent 失敗，請重試。"
 			},
 			"restricted": "存取受限",
-			"restrictedTooltip": "此 AI Agent 已限制存取 — 請要求專案管理員授予你存取權，才能與其聊天。",
 			"acpStatusConnected": "線上",
 			"acpStatusDisconnected": "離線"
 		},
@@ -125,7 +316,8 @@
 			"noPermission": {
 				"title": "你沒有檢視 AI Agent 的權限",
 				"description": "請要求專案管理員授予你 agents.read 權限。"
-			}
+			},
+			"searchPlaceholder": "依名稱或 Handle 搜尋 AI Agent…"
 		},
 		"detail": {
 			"tabs": {
@@ -134,8 +326,8 @@
 				"skills": "技能",
 				"envVars": "環境變數",
 				"globalRole": "全域角色",
-				"access": "存取權",
-				"activity": "活動"
+				"activity": "活動",
+				"git": "Git"
 			},
 			"overview": {
 				"nameLabel": "名稱",
@@ -198,7 +390,8 @@
 				"cliLoginNotAuthenticated": "尚未通過驗證 — 請透過終端機登入後再次驗證。",
 				"cliLoginVerifyFailed": "無法檢查登入狀態，請重試。",
 				"cliLoginLastVerified": "上次驗證時間：{{date}}。",
-				"cliLoginNoEnvironment": "該 AI Agent 尚未設定環境 — 請先在上方選擇一個環境。"
+				"cliLoginNoEnvironment": "該 AI Agent 尚未設定環境 — 請先在上方選擇一個環境。",
+				"acpProviderOpenCode": "OpenCode"
 			},
 			"mcp": {
 				"serverCount_one": "已設定 {{count}} 個伺服器",
@@ -309,15 +502,6 @@
 					"removeFailed": "頭像移除失敗，請重試。"
 				}
 			},
-			"access": {
-				"restrictLabel": "限制存取",
-				"restrictDescription": "啟用後，只有下方獲得存取權的成員可以與此 AI Agent 聊天。所有可管理 AI Agent 的人員仍可檢視並設定此 AI Agent。",
-				"pickMember": "選擇成員…",
-				"grantAccess": "授予存取權",
-				"alreadyGranted": "此成員已有存取權。",
-				"grantFailed": "授予存取權失敗，請重試。",
-				"empty": "尚未授予任何成員存取權。"
-			},
 			"activity": {
 				"commented": "留下了留言",
 				"sourceType": {
@@ -344,6 +528,69 @@
 			},
 			"system": {
 				"badge": "系統"
+			},
+			"git": {
+				"title": "Git 身分",
+				"description": "此 AI Agent 預設使用工作區的共用 Git 身分。為它建立專屬身分，讓其提交、提取請求（PR）與留言以獨立機器人身分顯示。再將該身分安裝至相關儲存庫所屬的帳號與組織。",
+				"providersUnavailable": "無法載入此專案的 Git 提供者。",
+				"noProviders": {
+					"title": "沒有可用的 Git 平台",
+					"description": "請要求工作區管理員安裝並連接 Git 提供者外掛，之後 AI Agent 才能使用儲存庫。"
+				},
+				"ownIdentity": "專屬身分",
+				"usesShared": "使用共用身分",
+				"singleIdentity": "此平台的每個主機只有一個身分，因此使用共用身分。",
+				"remove": "移除",
+				"create": {
+					"title": "為此 AI Agent 建立專屬身分",
+					"description": "此 AI Agent 的提交、提取請求（PR）與留言將以獨立機器人身分顯示，其他人也能以名稱提及它。你會在平台上核准並立即安裝。",
+					"button": "建立身分"
+				},
+				"askAdmin": "請要求工作區管理員建立一個身分。",
+				"install": {
+					"label": "安裝至其他帳號或組織",
+					"placeholder": "帳號或組織（選填）",
+					"button": "安裝",
+					"help": "開啟平台的安裝頁面。名稱留空即可在該頁面選擇帳號。",
+					"title": "安裝至其他帳號或組織"
+				},
+				"triggers": {
+					"title": "Git 觸發條件",
+					"description": "哪些 Git 事件會啟動此 AI Agent。此處僅列出已安裝的 Git 提供者能傳遞的事件。",
+					"filters": {
+						"branches": "僅限這些目標分支",
+						"authors": "僅限這些作者",
+						"help": "以逗號分隔。留空則符合所有項目。必須列出機器人作者才會審查其變更。",
+						"save": "儲存篩選條件"
+					},
+					"unsupported": "已連接的 Git 平台不支援。",
+					"groups": {
+						"requests": {
+							"title": "回應請求",
+							"description": "有人要求此 AI Agent 時啟動。"
+						},
+						"followUp": {
+							"title": "追蹤自己的提取請求（PR）",
+							"description": "此 AI Agent 建立的提取請求（PR）發生事件時啟動。"
+						},
+						"proactive": {
+							"title": "自行執行",
+							"description": "無須他人要求即可啟動。預設關閉。"
+						}
+					}
+				},
+				"identity": {
+					"title": "身分",
+					"description": "此 AI Agent 在各 Git 平台使用的帳號。"
+				},
+				"own": {
+					"description": "此 AI Agent 有專屬機器人，因此其提交、提取請求（PR）與留言會以獨立名稱顯示。",
+					"mention": "使用以下方式提及："
+				},
+				"shared": {
+					"description": "此 AI Agent 與其他 AI Agent 一樣，使用工作區的共用機器人。"
+				},
+				"permissions": "此 AI Agent 在 Git 中可執行的操作取決於其專案角色：讀取與寫入權限來自該角色的 Git 權限。預設不授予核准及合併提取請求（PR）的權限。"
 			}
 		},
 		"conversationView": {
@@ -359,14 +606,13 @@
 			"connect": "連線",
 			"conversationEnded": "此對話已結束。",
 			"textOnlyMessage": "僅支援文字訊息。",
-			"agentAccessRestricted": "此 AI Agent 已限制存取。請要求專案管理員授予你存取權後再與其聊天。",
-			"environmentAccessRestricted": "此對話的環境已限制存取。請要求專案管理員授予你存取權後再與此 AI Agent 聊天。",
 			"chatNoPermission": "你沒有權限在此對話中發送訊息。",
 			"failed": "對話失敗",
 			"noOutput": "AI Agent 未產生任何輸出。",
 			"loadingOlder": "載入中…",
 			"newBelow_one": "{{count}} 條新訊息",
-			"newBelow_other": "{{count}} 條新訊息"
+			"newBelow_other": "{{count}} 條新訊息",
+			"cliProviderNeedsEnvironment": "此 AI Agent 使用 CLI 提供者，需要預設環境，但目前沒有可用的預設環境。請要求專案管理員為此 AI Agent 設定預設環境。"
 		},
 		"acpSetup": {
 			"dialogTitle": "連接本機 ACP 橋接器",
@@ -378,15 +624,15 @@
 			"step1Title": "安裝 ACP 橋接器",
 			"step1Description": "將預先建置的二進位檔下載至你的 PATH，不需要 Python、uv 或 Go。",
 			"step2Title": "執行本機橋接器",
-			"step2Description": "產生一個權杖，然後在你的專案資料夾中執行此命令。",
-			"noTokenYet": "產生權杖以顯示執行命令。",
-			"generateToken": "產生權杖",
-			"regenerateToken": "重新產生權杖",
+			"step2Description": "產生一個 Token，然後在你的專案資料夾中執行此命令。",
+			"noTokenYet": "產生 Token 以顯示執行命令。",
+			"generateToken": "產生 Token",
+			"regenerateToken": "重新產生 Token",
 			"generating": "正在產生…",
-			"generateFailed": "無法產生權杖，請重試。",
+			"generateFailed": "無法產生 Token，請重試。",
 			"tokenWarning": "請立即複製 — 它不會再次顯示。",
 			"claudeSetupTokenHint": "Claude Code 還需要單獨登入一次。請在啟動下方的橋接器前執行此指令，否則橋接器將沒有可用於驗證的憑證：",
-			"claudeOauthExportHint": "此指令只會輸出權杖。請複製並匯出權杖，橋接器才能實際使用：",
+			"claudeOauthExportHint": "此指令只會輸出 Token。請複製並匯出 Token，橋接器才能實際使用：",
 			"localAuthExportHint": "{{provider}} 也必須在橋接器啟動前完成本機驗證，否則沒有可用於驗證的憑證：",
 			"copy": "複製",
 			"copied": "已複製！",
@@ -404,7 +650,8 @@
 			"step4KeyWarning": "請立即複製 — 它不會再次顯示，並且之前的金鑰將立即失效。",
 			"step4GenericHint": "註冊 MCP 伺服器的確切步驟因 CLI 而異；{{provider}} 通常會從自己的設定檔讀取。請以此指令作為參考：",
 			"customProviderLabel": "你的自訂 ACP 伺服器",
-			"done": "完成"
+			"done": "完成",
+			"stepSkillMcpConnectLabelConfig": "將以下內容加入 {{file}}（合併至既有的「{{section}}」區段）："
 		},
 		"busyDialog": {
 			"title": "AI Agent 正忙",
@@ -477,6 +724,19 @@
 				"noContextResults": "找不到結果",
 				"contextSearchMinChars": "請輸入至少 2 個字元以進行搜尋"
 			}
+		},
+		"acpModelEffort": {
+			"modelLabel": "模型",
+			"modelPlaceholder": "例如 claude-sonnet-4-5",
+			"modelHint": "選填要使用的模型名稱。輸入內容會原樣傳送給提供者。留空則使用提供者的預設值。",
+			"effortLabel": "推理強度",
+			"effortDefault": "提供者預設值",
+			"effort_low": "低",
+			"effort_medium": "中",
+			"effort_high": "高",
+			"effort_xhigh": "極高",
+			"effort_max": "最高",
+			"effortHint": "選填。只有提供者支援所選等級時才會套用。"
 		}
 	},
 	"docs": {
@@ -512,7 +772,6 @@
 			"deleteRole": "刪除角色",
 			"errors": {
 				"notFound": "該角色已不存在。",
-				"hasMembers": "該角色仍被指派給一個或多個成員，無法刪除。",
 				"forbidden": "你沒有權限刪除該角色。",
 				"internalError": "出現錯誤，請重試。",
 				"generic": "出現錯誤。"
@@ -531,15 +790,6 @@
 			"cancel": "取消",
 			"saveChanges": "儲存變更",
 			"createRole": "建立角色",
-			"errors": {
-				"nameTaken": "已存在同名角色。",
-				"nameInvalid": "角色名稱只能使用大寫字母、數字和下劃線。",
-				"notFound": "該角色已不存在，可能已被刪除。",
-				"forbidden": "你沒有權限執行此操作。",
-				"internalError": "伺服器出現錯誤，請重試。",
-				"generic": "出現錯誤。"
-			},
-			"fullAccessBadge": "完整存取權",
 			"fullAccessDescription": "此角色自動包含所有權限，包括將來新增的權限。切換下方任意權限都會將其轉換為目前權限的固定集合。"
 		},
 		"permissions": {
@@ -557,7 +807,7 @@
 			},
 			"membersWrite": {
 				"label": "管理成員",
-				"description": "新增、移除和重新指派專案成員"
+				"description": "新增及移除專案成員（變更其角色需要「指派角色」權限）"
 			},
 			"rolesRead": {
 				"label": "檢視角色",
@@ -662,6 +912,38 @@
 			"activitiesRead": {
 				"label": "檢視活動記錄",
 				"description": "檢視此專案中記錄的所有活動"
+			},
+			"projectsRead": {
+				"label": "檢視專案",
+				"description": "開啟專案並查看其基本資料"
+			},
+			"rolesAssign": {
+				"label": "指派角色",
+				"description": "為此專案的成員及 AI Agent 指派任何角色，或移除其角色"
+			},
+			"projectExport": {
+				"label": "匯出專案資料",
+				"description": "匯出此專案的任務（含留言與活動）及文件"
+			},
+			"gitRead": {
+				"label": "檢視 Git",
+				"description": "檢視連結至此專案的儲存庫"
+			},
+			"gitWrite": {
+				"label": "管理 Git",
+				"description": "連結及解除連結儲存庫、授予儲存庫存取權，以及允許 AI Agent 推送變更"
+			},
+			"gitApprove": {
+				"label": "核准變更請求",
+				"description": "核准提取請求（PR）與合併請求(MR)，可滿足必要的審查要求。留言與要求變更只需要「管理 Git」權限。"
+			},
+			"gitMerge": {
+				"label": "合併變更請求",
+				"description": "將提取請求（PR）與合併請求(MR)合併至目標分支。平台的分支保護仍然適用。"
+			},
+			"gitConnectionsManage": {
+				"label": "管理 Git 連線",
+				"description": "新增及移除僅供此專案使用的 GitHub Apps 與存取權Token。連結儲存庫仍需要 Git 寫入權限。"
 			}
 		},
 		"permissionGroups": {
@@ -677,7 +959,8 @@
 			"environments": "環境",
 			"annotations": "註解",
 			"workflows": "自動化",
-			"plugins": "外掛"
+			"plugins": "外掛",
+			"git": "Git"
 		}
 	},
 	"settings": {
@@ -690,9 +973,6 @@
 			"taskIdPrefixPlaceholder": "PROJ",
 			"descriptionLabel": "描述",
 			"descriptionPlaceholder": "描述一下這個專案是關於什麼的…",
-			"publicProjectLabel": "公開專案",
-			"publicProjectHintPublic": "任何擁有連結的人都可以檢視此專案。匿名使用者擁有唯讀權限。",
-			"publicProjectHintPrivate": "僅團隊成員可以存取此專案。",
 			"saveChanges": "儲存變更",
 			"saved": "已儲存 ✓",
 			"noPermission": "你沒有權限編輯此專案。",
@@ -718,7 +998,6 @@
 			"title": "專案角色",
 			"description": "管理此專案成員的角色和權限。",
 			"newRole": "新增角色",
-			"noPermissionsAssigned": "未指派權限",
 			"editRole": "編輯角色",
 			"deleteRole": "刪除角色",
 			"rolesDefined_one": "個已定義角色",
@@ -731,14 +1010,15 @@
 			},
 			"table": {
 				"name": "名稱",
-				"permissions": "權限",
-				"created": "建立時間"
+				"created": "建立時間",
+				"description": "描述"
 			},
-			"systemRolesNote": "系統角色是共享模闆，無法編輯或刪除。",
+			"systemRolesNote": "從工作區共用的角色只能在工作區的角色設定中變更。",
 			"noPermission": {
 				"title": "你沒有檢視角色的權限",
 				"description": "請要求專案管理員授予你 project.roles.read 權限。"
-			}
+			},
+			"noDescription": "沒有描述"
 		},
 		"taskStatuses": {
 			"title": "任務狀態",
@@ -804,7 +1084,8 @@
 				"displayName": "顯示名稱",
 				"fieldKey": "欄位鍵",
 				"type": "類型",
-				"required": "必填"
+				"required": "必填",
+				"useInSearch": "用於搜尋"
 			},
 			"yes": "是",
 			"no": "否",
@@ -831,7 +1112,8 @@
 				"checkbox": "覈取方塊",
 				"select": "單選",
 				"multiSelect": "多選",
-				"url": "URL"
+				"url": "URL",
+				"longText": "長文字"
 			},
 			"createDialog": {
 				"title": "建立自訂欄位",
@@ -864,7 +1146,11 @@
 				"description": "請要求專案管理員授予你 project.settings.custom_fields.read 權限。"
 			},
 			"optionColorLabel": "選項顏色",
-			"noColor": "無顏色"
+			"noColor": "無顏色",
+			"useInSearchLabel": "用於搜尋",
+			"useInSearchHint": "搜尋任務時也會比對此欄位的值。",
+			"rowsLabel": "顯示行數",
+			"rowsHint": "編輯時顯示的行數（{{min}}–{{max}}）。"
 		},
 		"dangerZone": {
 			"title": "危險區域",
@@ -934,6 +1220,41 @@
 				"title": "尚未設定 Jev",
 				"description": "在上方新增提供者憑證，以啟用任務自動填入與自動指派功能。"
 			}
+		},
+		"export": {
+			"title": "匯出",
+			"description": "下載你的專案資料。匯出檔會在背景產生並保留 7 天。",
+			"recent": {
+				"title": "最近的匯出紀錄",
+				"empty": "尚無匯出紀錄。"
+			},
+			"status": {
+				"pending": "排隊中",
+				"processing": "產生中…",
+				"completed": "已備妥",
+				"failed": "失敗",
+				"expired": "已過期"
+			},
+			"rows": "任務：{{count}}",
+			"availableUntil": "可使用至 {{date}}",
+			"download": "下載",
+			"failedMessage": "無法產生匯出檔，請重試。",
+			"errors": {
+				"inProgress": "此專案已有匯出作業進行中。",
+				"requestFailed": "無法開始匯出，請重試。",
+				"downloadFailed": "無法下載匯出檔，請重試。",
+				"expired": "此匯出檔已過期，請重新申請。"
+			},
+			"noPermission": {
+				"title": "你沒有匯出此專案的權限",
+				"description": "請要求專案擁有者或管理員授予你匯出權限。"
+			},
+			"archive": {
+				"title": "專案資料（ZIP）",
+				"description": "將所有任務匯出為 CSV，留言及活動分別匯出為 CSV 檔案，文件則匯出為 Markdown 檔案。",
+				"button": "匯出專案",
+				"inProgress": "匯出中…"
+			}
 		}
 	},
 	"taskStatuses": {
@@ -987,30 +1308,44 @@
 			"noUsersMatch": "沒有符合搜尋條件的使用者。",
 			"noUsersAvailable": "沒有可新增的使用者。",
 			"roleLabel": "角色",
-			"rolePlaceholder": "選擇角色…",
 			"cancel": "取消",
 			"addMember": "新增成員",
 			"errors": {
 				"addFailed": "新增成員失敗，請重試。",
 				"alreadyAdded": "該使用者或 AI Agent 已是該專案的成員。",
-				"roleNotFound": "該角色已不存在，請選擇其他角色。"
+				"roleNotFound": "該角色已不存在，請選擇其他角色。",
+				"roleForbidden": "你沒有權限指派其中一個角色。"
 			},
 			"modeUser": "使用者",
 			"modeAgent": "AI Agent",
 			"agentLabel": "AI Agent",
 			"noAgentsAvailable": "沒有可邀請的全域 AI Agent。",
-			"loadingMore": "載入中…"
+			"loadingMore": "載入中…",
+			"modeServiceAccount": "服務帳號",
+			"serviceAccountLabel": "服務帳號",
+			"noServiceAccountsAvailable": "沒有可新增的服務帳號。",
+			"searchAgentsPlaceholder": "依名稱或 Handle 搜尋…",
+			"noAgentsMatch": "沒有符合搜尋條件的 AI Agent。",
+			"searchServiceAccountsPlaceholder": "依名稱或描述搜尋…",
+			"noServiceAccountsMatch": "沒有符合搜尋條件的服務帳號。"
 		},
 		"roleChip": {
 			"changeRole": "變更角色",
 			"errors": {
 				"memberNotFound": "該成員已不再屬於該專案。",
 				"roleNotFound": "該角色已不存在。",
-				"changeFailed": "變更角色失敗。"
-			}
+				"changeFailed": "變更角色失敗。",
+				"roleForbidden": "你沒有權限指派或移除其中一個角色。"
+			},
+			"dialogDescription": "選擇 {{name}} 的角色。成員至少須保留一個角色。",
+			"assign": "指派角色",
+			"assigning": "指派中…"
 		},
 		"memberRow": {
-			"removeMember": "移除成員"
+			"removeMember": "移除成員",
+			"agentBadge": "AI Agent",
+			"actions": "成員操作",
+			"serviceAccountBadge": "服務帳號"
 		},
 		"removeDialog": {
 			"title": "移除成員",
@@ -1097,7 +1432,8 @@
 		"common": {
 			"empty": "空",
 			"dash": "—",
-			"unassigned": "未指派"
+			"unassigned": "未指派",
+			"none": "無"
 		},
 		"notFound": {
 			"title": "找不到任務",
@@ -1157,7 +1493,8 @@
 				"noAgents": "此專案尚未設定 AI Agent。",
 				"cancel": "取消",
 				"starting": "正在啟動...",
-				"writeButton": "撰寫描述"
+				"writeButton": "撰寫描述",
+				"searchAgents": "搜尋 AI Agent…"
 			}
 		},
 		"subtasks": {
@@ -1220,7 +1557,8 @@
 				"checkbox": "覈取方塊",
 				"select": "單選",
 				"multiSelect": "多選",
-				"url": "URL"
+				"url": "URL",
+				"longText": "長文字"
 			}
 		},
 		"addTaskLinkModal": {
@@ -1246,7 +1584,8 @@
 					"label": "重復於",
 					"description": "此任務與另一任務重復"
 				}
-			}
+			},
+			"loadError": "無法載入任務，請重試。"
 		},
 		"propertyField": {
 			"dateEditor": {
@@ -1335,6 +1674,66 @@
 		"searchableList": {
 			"searchPlaceholder": "搜尋…",
 			"noResults": "找不到符合條件的項目"
+		},
+		"git": {
+			"branches": "分支",
+			"pullRequests": "提取請求（PR）",
+			"linkBranch": "連結分支",
+			"newBranch": "新分支",
+			"linkPullRequest": "連結提取請求（PR）",
+			"noBranches": "尚未連結分支。",
+			"noPullRequests": "尚未連結提取請求（PR）。",
+			"by": "作者：{{author}}",
+			"unlink": "解除連結",
+			"unlinkPullRequest": "解除連結提取請求（PR）{{name}}",
+			"unlinkBranch": "解除連結分支 {{name}}",
+			"copyCheckout": "複製 checkout 指令",
+			"copy": "複製",
+			"copied": "已複製",
+			"state": {
+				"open": "開啟中",
+				"draft": "草稿",
+				"merged": "已合併",
+				"closed": "已關閉"
+			},
+			"ci": {
+				"passing": "CI 通過",
+				"failing": "CI 未通過",
+				"pending": "CI 執行中",
+				"failingNames": "未通過：{{names}}",
+				"counts": "{{total}} 項檢查中有 {{passed}} 項通過"
+			},
+			"forms": {
+				"selectRepository": "選擇儲存庫…",
+				"cancel": "取消",
+				"pullRequest": "提取請求（PR）",
+				"pullRequestHint": "貼上提取請求（PR）的連結，或輸入其編號。",
+				"willLink": "將連結 {{repository}} 的 {{what}}",
+				"repository": "儲存庫",
+				"linkPullRequest": "連結提取請求（PR）",
+				"existingBranch": "既有分支",
+				"branchHint": "請輸入分支名稱或貼上分支連結。",
+				"linkBranch": "連結分支",
+				"branchType": "類型",
+				"branchName": "分支名稱",
+				"branchFrom": "分支來源",
+				"branchFromHint": "選填，預設使用儲存庫的預設分支。",
+				"createBranch": "建立分支",
+				"orLocally": "或在本機建立"
+			},
+			"errors": {
+				"notFound": "在該儲存庫中找不到。",
+				"rejected": "Git 平台拒絕了對此儲存庫的請求。",
+				"unavailable": "Git 提供者暫時無法使用，請重試。",
+				"noIdentity": "沒有可操作此儲存庫的 Git 身分。",
+				"forbidden": "你沒有執行此操作的權限。",
+				"generic": "發生錯誤，請重試。",
+				"repoNotLinked": "「{{repository}}」尚未連結至此專案。",
+				"selectRepository": "請選擇儲存庫。",
+				"invalidNumber": "請輸入編號或貼上連結。",
+				"branchRequired": "請輸入分支名稱或貼上連結。",
+				"createRefused": "平台無法建立該分支（名稱可能已被使用或無效）。"
+			}
 		}
 	},
 	"board": {
@@ -1412,6 +1811,19 @@
 			"copyId": "複製任務 ID（{{id}}）",
 			"copyLink": "複製連結",
 			"delete": "刪除任務"
+		},
+		"subtasks": {
+			"expand": "展開 {{n}} 個子任務",
+			"collapse": "收合 {{n}} 個子任務",
+			"progress": "{{n}} 個子任務中有 {{done}} 個已完成",
+			"loading": "載入子任務中",
+			"loadError": "無法載入子任務。",
+			"retry": "重試",
+			"matching": "{{total}} 個子任務中有 {{n}} 個符合目前的篩選條件",
+			"noMatch": "沒有子任務符合目前的篩選條件",
+			"loadMore": "載入更多子任務",
+			"add": "新增子任務",
+			"addPlaceholder": "子任務標題"
 		}
 	},
 	"layout": {
@@ -1426,7 +1838,8 @@
 				"deleteFailed": "刪除檢視失敗，請重試。",
 				"reorderInvalid": "檢視清單已在別處變更，請重新整理頁面後重試。",
 				"reorderFailed": "檢視排序失敗，請重試。"
-			}
+			},
+			"columnsTruncated": "僅顯示前 {{max}} 欄；部分任務未顯示於任何欄中。請使用篩選條件縮小檢視範圍，以查看其餘任務。"
 		},
 		"viewSettings": {
 			"viewSettingsAriaLabel": "檢視設定",
@@ -1494,7 +1907,11 @@
 			"tagsFilter": {
 				"addTag": "新增標籤",
 				"addTagPlaceholder": "新增標籤…"
-			}
+			},
+			"subtasksLabel": "子任務",
+			"subtasksCollapsed": "巢狀顯示，已收合",
+			"subtasksExpanded": "巢狀顯示，已展開",
+			"subtasksHidden": "隱藏（平面清單）"
 		},
 		"roadmap": {
 			"taskColumnLabel": "任務",
@@ -1620,7 +2037,8 @@
 			"assignee": "負責人",
 			"importance": "重要程度",
 			"type": "類型",
-			"reporter": "回報者"
+			"reporter": "回報者",
+			"tags": "標籤"
 		},
 		"sortBy": {
 			"manual": "手動",
@@ -1671,7 +2089,6 @@
 			"subtitle": "可供 AI Agent 跨對話連線使用的具名長期執行沙箱",
 			"newEnvironment": "新增環境",
 			"restricted": "存取受限",
-			"restrictedTooltip": "此環境已限制存取 — 請要求專案管理員授予你存取權後再使用。",
 			"noPermission": {
 				"title": "你沒有檢視環境的權限",
 				"description": "請要求專案管理員授予你 environments.read 權限。"
@@ -1714,8 +2131,7 @@
 			"tabs": {
 				"overview": "概覽",
 				"folders": "資料夾",
-				"portForwards": "連接埠轉送",
-				"access": "存取權"
+				"portForwards": "連接埠轉送"
 			},
 			"busy": "環境正在啟動、停止或重新啟動，請稍後再試。",
 			"actionFailed": "操作失敗，請重試。",
@@ -1830,15 +2246,6 @@
 					"confirm": "重新啟動",
 					"restartFailed": "重新啟動環境失敗，請重試。"
 				}
-			},
-			"access": {
-				"restrictLabel": "限制存取",
-				"restrictDescription": "啟用後，只有下方獲得存取權的成員可以瀏覽此環境、透過 SSH 連線、轉送連接埠或開啟終端機。所有可管理環境的人員仍可檢視並設定此環境。",
-				"pickMember": "選擇成員…",
-				"grantAccess": "授予存取權",
-				"alreadyGranted": "此成員已有存取權。",
-				"grantFailed": "授予存取權失敗，請重試。",
-				"empty": "尚未授予任何成員存取權。"
 			},
 			"sshKeys": {
 				"connectHint": "將 <bastion-host> 替換為此部署設定的 SSH 堡壘主機位址。",
@@ -2035,7 +2442,8 @@
 			"searchPlaceholder": "搜尋訊息…",
 			"dateFrom": "起始日期",
 			"dateTo": "結束日期",
-			"clearAll": "清除篩選"
+			"clearAll": "清除篩選",
+			"searchAgents": "搜尋 AI Agent…"
 		},
 		"list": {
 			"noPermission": {
@@ -2114,7 +2522,14 @@
 			"triggerGroups": {
 				"taskEvents": "任務事件",
 				"sprintEvents": "Sprint 事件",
-				"scheduleWebhook": "排程與 Webhook"
+				"scheduleWebhook": "排程與 Webhook",
+				"taskActivity": "活動與子任務"
+			},
+			"git": "Git",
+			"actionGroups": {
+				"taskActions": "任務",
+				"flowActions": "流程與整合",
+				"sprintActions": "Sprint"
 			}
 		},
 		"nodeKind": {
@@ -2139,7 +2554,12 @@
 			"sprint_created": "Sprint 建立時",
 			"sprint_started": "Sprint 開始時",
 			"sprint_completed": "Sprint 完成時",
-			"sprint_deleted": "Sprint 刪除時"
+			"sprint_deleted": "Sprint 刪除時",
+			"field_changed": "欄位變更時",
+			"comment_added": "新增留言時",
+			"link_added": "新增連結時",
+			"attachment_added": "新增附件時",
+			"child_changed": "子任務變更時"
 		},
 		"actionTypes": {
 			"update_task": "更新任務",
@@ -2147,7 +2567,11 @@
 			"call_api": "呼叫 API",
 			"wait": "等待",
 			"update_sprint": "更新 Sprint",
-			"complete_sprint": "完成 Sprint"
+			"complete_sprint": "完成 Sprint",
+			"create_task": "建立子任務",
+			"link_task": "連結任務",
+			"add_comment": "新增留言",
+			"notify": "傳送通知"
 		},
 		"conditionTypes": {
 			"jev_condition": "Jev 條件"
@@ -2185,13 +2609,30 @@
 				"cronTargetTaskHint": "每次依排程觸發時，自動化將作用於此任務。若只要連接至不需要任務的「呼叫 API」或「觸發 AI Agent」動作，可留空。",
 				"apiTriggerTargetTaskHint": "每次呼叫下方 Webhook 時，自動化將作用於此任務。若只要連接至不需要任務的「呼叫 API」或「觸發 AI Agent」動作，可留空。",
 				"webhookUrlLabel": "Webhook 網址",
-				"webhookTokenLabel": "Webhook 權杖",
-				"generateTokenButton": "產生權杖",
-				"regenerateTokenButton": "重新產生權杖",
-				"tokenShownOnceWarning": "請立即複製此權杖 — 之後將不再顯示。",
+				"webhookTokenLabel": "Webhook Token",
+				"generateTokenButton": "產生 Token",
+				"regenerateTokenButton": "重新產生 Token",
+				"tokenShownOnceWarning": "請立即複製此 Token — 之後將不再顯示。",
 				"copy": "複製",
 				"copied": "已複製",
-				"noTokenYet": "尚未產生權杖"
+				"noTokenYet": "尚未產生 Token",
+				"fieldLabel": "監看欄位",
+				"fieldPlaceholder": "選擇欄位…",
+				"fieldChangedHint": "任務中的此欄位編輯後執行。",
+				"childChangedHint": "任一子任務建立或進入其他狀態時，對其父任務執行。可新增子任務條件，例如只在所有子任務完成時執行。",
+				"childStatusLabel": "子任務進入此狀態時",
+				"changedFields": {
+					"sprint": "Sprint",
+					"due_date": "截止日期",
+					"start_date": "開始日期",
+					"title": "標題",
+					"story_points": "故事點",
+					"reporter": "回報者",
+					"task_type": "任務類型",
+					"parent_task": "父任務",
+					"description": "描述",
+					"custom_fields": "自訂欄位"
+				}
 			},
 			"condition": {
 				"branchesTitle": "分支",
@@ -2226,8 +2667,14 @@
 					"sprint_status": "Sprint 狀態",
 					"sprint_goal": "Sprint 目標",
 					"sprint_start_date": "Sprint 開始日期",
-					"sprint_end_date": "Sprint 結束日期"
-				}
+					"sprint_end_date": "Sprint 結束日期",
+					"child_count": "子任務數量"
+				},
+				"dateMode": {
+					"fixed": "指定日期",
+					"relative": "相對於今天"
+				},
+				"relativeHint": "相對於今天的天數：0 = 現在，3 = 3 天後，-1 = 昨天。選擇 less_than（早於）並設為 0，表示已逾期。"
 			},
 			"jev": {
 				"answerTypeLabel": "回答類型",
@@ -2307,7 +2754,58 @@
 				"pluginConditionLabel": "外掛條件",
 				"pluginConditionHint": "由外掛提供的條件判斷此分支是否符合，而非比較任務欄位。",
 				"selectPluginPlaceholder": "選擇外掛條件…",
-				"addCustomField": "新增自訂欄位…"
+				"addCustomField": "新增自訂欄位…",
+				"createTaskHint": "將新任務建立為下方所選任務的子任務。可新增所需欄位，各欄位可使用固定值，或從觸發任務或其父任務複製。若父任務已有標題完全相同的子任務，則不會建立新任務。",
+				"createTitlePlaceholder": "{{task.title}} - 審查",
+				"descriptionLabel": "描述",
+				"ops": {
+					"set": "設為",
+					"replace": "取代為",
+					"add": "新增",
+					"remove": "移除",
+					"clear": "清除",
+					"task": "從此任務複製",
+					"parent": "從父任務複製",
+					"now": "今天"
+				},
+				"clearHint": "清空此欄位。",
+				"dynamicFieldLabel": "複製此欄位",
+				"offsetDaysLabel": "調整天數",
+				"offsetDaysHint": "正數表示延後，負數表示提前。",
+				"dynamicHint": {
+					"task": "自動化執行時，從觸發自動化的任務複製。若該任務的欄位沒有值，則此欄位保持不變。",
+					"parent": "從觸發自動化的任務之父任務複製。若沒有父任務或父任務的欄位沒有值，則此欄位保持不變。",
+					"now": "自動化執行當天的日期，並依上方天數調整。"
+				},
+				"addMember": "新增成員…",
+				"removeMember": "移除成員",
+				"commentHint": "在任務中發表由自動化撰寫的留言。",
+				"commentTextLabel": "留言",
+				"commentPlaceholder": "例如：所有子任務皆已完成。",
+				"notifyHint": "向下列人員傳送與此任務有關的應用程式內通知。",
+				"notifyRecipientsLabel": "通知",
+				"notifyRecipients": {
+					"assignees": "負責人",
+					"reporter": "回報者",
+					"parent_assignees": "父任務的負責人"
+				},
+				"notifyMembersLabel": "同時通知",
+				"notifyMessageLabel": "訊息",
+				"notifyMessagePlaceholder": "例如：已準備好審查。",
+				"linkHint": "將任務連結至另一個任務。關係方向以此任務為準。",
+				"linkTypeLabel": "連結類型",
+				"linkTypes": {
+					"blocks": "阻擋",
+					"is_blocked_by": "被阻擋",
+					"relates_to": "相關",
+					"duplicates": "重複",
+					"is_duplicated_by": "被重複"
+				},
+				"linkToLabel": "連結至",
+				"createLinkLabel": "連結至父任務",
+				"createLinkNone": "不連結",
+				"createLinkHint": "可選擇將新任務連結至父任務。關係方向以新任務為準（例如「阻擋」表示子任務阻擋父任務）。",
+				"opsLabel": "如何套用此欄位"
 			},
 			"target": {
 				"label": "作用目標",
@@ -2320,7 +2818,8 @@
 					"relates_to": "相關任務",
 					"duplicates": "此任務所重複的任務",
 					"is_duplicated_by": "重複此任務的任務",
-					"other": "其他任務…"
+					"other": "其他任務…",
+					"siblings": "同層任務（父任務的其他子任務）"
 				},
 				"matchMode": {
 					"any": "符合任一條件",
@@ -2342,8 +2841,14 @@
 				"branchFallback": "分支 {{n}}",
 				"cronSchedule": "執行時間：{{expression}}",
 				"webhookReady": "已設定 Webhook",
-				"callApiSummary": "{{method}} {{host}}"
-			}
+				"callApiSummary": "{{method}} {{host}}",
+				"pluginField": "{{field}}：{{value}}",
+				"waitMinutes": "等待 {{minutes}} 分鐘",
+				"createTaskSummary": "建立：{{title}}",
+				"commentSummary": "留言：{{text}}",
+				"notifySummary": "通知：{{message}}"
+			},
+			"noConfigNeeded": "此節點不需要設定；自動化執行至此節點時會立即發揮作用。"
 		},
 		"runHistory": {
 			"title": "執行記錄",

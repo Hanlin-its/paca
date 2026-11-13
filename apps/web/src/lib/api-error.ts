@@ -1,3 +1,5 @@
+import type { TFunction } from "i18next";
+
 /**
  * Machine-readable error codes returned by the API in error envelopes.
  * Switch on these values instead of HTTP status codes or message strings,
@@ -11,8 +13,55 @@ export const ApiErrorCode = {
 	Unauthenticated: "AUTH_UNAUTHENTICATED",
 	TooManyRequests: "TOO_MANY_REQUESTS",
 
+	// Second factor / login restriction errors.
+	MfaRequired: "AUTH_MFA_REQUIRED",
+	MfaInvalidCode: "AUTH_MFA_INVALID_CODE",
+	MfaSetupRequired: "AUTH_MFA_SETUP_REQUIRED",
+	IpNotAllowed: "AUTH_IP_NOT_ALLOWED",
+	MfaAlreadyEnabled: "MFA_ALREADY_ENABLED",
+	MfaUnavailable: "MFA_UNAVAILABLE",
+	PasskeyInvalid: "PASSKEY_INVALID",
+	PasskeyLimit: "PASSKEY_LIMIT",
+	InvalidCidr: "INVALID_CIDR",
+	SelfLockout: "SELF_LOCKOUT",
+
 	// Password / session gate errors.
 	PasswordChangeRequired: "AUTH_PASSWORD_CHANGE_REQUIRED",
+
+	// Role domain errors (platform and project roles alike).
+	RoleNotFound: "ROLE_NOT_FOUND",
+	RoleNameTaken: "ROLE_NAME_TAKEN",
+	RoleNameInvalid: "ROLE_NAME_INVALID",
+	RolePolicyInvalid: "ROLE_POLICY_INVALID",
+	RoleIsSystem: "ROLE_IS_SYSTEM",
+	RoleIsDefault: "ROLE_IS_DEFAULT",
+	RoleLastFullAccess: "ROLE_LAST_FULL_ACCESS",
+	RoleNotAttachable: "ROLE_NOT_ATTACHABLE",
+	RoleNoDefault: "ROLE_NO_DEFAULT",
+	RoleRequired: "ROLE_REQUIRED",
+
+	// Service account domain errors.
+	ServiceAccountNotFound: "SERVICE_ACCOUNT_NOT_FOUND",
+	ServiceAccountNameInvalid: "SERVICE_ACCOUNT_NAME_INVALID",
+	ServiceAccountDescriptionTooLong: "SERVICE_ACCOUNT_DESCRIPTION_TOO_LONG",
+
+	// API key errors.
+	APIKeyNameInvalid: "API_KEY_NAME_INVALID",
+	APIKeyNameTooLong: "API_KEY_NAME_TOO_LONG",
+
+	// Git integration errors.
+	GitNotFound: "GIT_NOT_FOUND",
+	GitAlreadyLinked: "GIT_ALREADY_LINKED",
+	GitIdentityExists: "GIT_IDENTITY_EXISTS",
+	GitIdentityRequired: "GIT_IDENTITY_REQUIRED",
+	GitAccessNotGranted: "GIT_ACCESS_NOT_GRANTED",
+	GitRepositoryNotVisible: "GIT_REPOSITORY_NOT_VISIBLE",
+	GitNoIdentity: "GIT_NO_IDENTITY",
+	GitSetupInvalid: "GIT_SETUP_INVALID",
+	GitPublicURLRequired: "GIT_PUBLIC_URL_REQUIRED",
+	GitProviderUnavailable: "GIT_PROVIDER_UNAVAILABLE",
+	GitProviderRejected: "GIT_PROVIDER_REJECTED",
+	GitDescriptionTooLong: "GIT_DESCRIPTION_TOO_LONG",
 
 	// User domain errors.
 	UserNotFound: "USER_NOT_FOUND",
@@ -23,12 +72,6 @@ export const ApiErrorCode = {
 	Forbidden: "FORBIDDEN",
 
 	// Global role domain errors.
-	GlobalRoleNotFound: "GLOBAL_ROLE_NOT_FOUND",
-	GlobalRoleNameTaken: "GLOBAL_ROLE_NAME_TAKEN",
-	GlobalRoleNameInvalid: "GLOBAL_ROLE_NAME_INVALID",
-	GlobalRoleHasUsers: "GLOBAL_ROLE_HAS_ASSIGNED_USERS",
-	GlobalRoleIsDefault: "GLOBAL_ROLE_IS_DEFAULT",
-	GlobalRoleNoDefault: "GLOBAL_ROLE_NO_DEFAULT",
 
 	// SSO provider errors.
 	SSOProviderNotFound: "SSO_PROVIDER_NOT_FOUND",
@@ -41,10 +84,6 @@ export const ApiErrorCode = {
 	ProjectNameTaken: "PROJECT_NAME_TAKEN",
 	ProjectNameInvalid: "PROJECT_NAME_INVALID",
 	ProjectPrefixInvalid: "PROJECT_PREFIX_INVALID",
-	ProjectRoleNotFound: "PROJECT_ROLE_NOT_FOUND",
-	ProjectRoleNameTaken: "PROJECT_ROLE_NAME_TAKEN",
-	ProjectRoleNameInvalid: "PROJECT_ROLE_NAME_INVALID",
-	ProjectRoleHasMembers: "PROJECT_ROLE_HAS_MEMBERS",
 	ProjectMemberNotFound: "PROJECT_MEMBER_NOT_FOUND",
 	ProjectMemberAlreadyAdded: "PROJECT_MEMBER_ALREADY_ADDED",
 
@@ -134,6 +173,10 @@ export const ApiErrorCode = {
 	// agent-detail.tsx's OverviewTab.
 	AgentDefaultEnvironmentInvalid: "AGENT_DEFAULT_ENVIRONMENT_INVALID",
 	AgentDefaultFolderInvalid: "AGENT_DEFAULT_FOLDER_INVALID",
+	// A provider_cli agent has no usable default environment, so a chat turn
+	// can't start: see conversation-to-thread-messages.ts.
+	AgentDefaultEnvironmentRequiredForCLIProvider:
+		"AGENT_DEFAULT_ENVIRONMENT_REQUIRED_FOR_CLI_PROVIDER",
 	// Sent from AddSkill when the skill name collides with one of Paca's own
 	// internal scaffolding names, or is malformed ("."/".."/contains a path
 	// separator) — see agent-detail.tsx's AddSkillDialog.
@@ -177,7 +220,6 @@ export const ApiErrorCode = {
 	// Sent instead of dispatching a chat turn when the agent itself is
 	// access_mode=restricted and the caller holds no grant for it. See
 	// conversation-to-thread-messages.ts's chatSessionAccessDeniedKey.
-	AgentAccessRestricted: "AGENT_ACCESS_RESTRICTED",
 	// Environment domain errors (static environments — see
 	// docs/ai-agent/environment-management.md).
 	// Sent instead of dispatching a chat turn when the environment the
@@ -187,8 +229,14 @@ export const ApiErrorCode = {
 	// separate code/remedy ("ask for environment access", not agent
 	// access). See conversation-to-thread-messages.ts's
 	// chatSessionAccessDeniedKey.
-	EnvironmentAccessRestricted: "ENVIRONMENT_ACCESS_RESTRICTED",
 	EnvironmentNameInvalid: "ENVIRONMENT_NAME_INVALID",
+	// Project export errors — see export-api.ts and ExportSettings.tsx.
+	ProjectExportNotFound: "PROJECT_EXPORT_NOT_FOUND",
+	// Sent from POST /exports when one is already queued/running.
+	ProjectExportInProgress: "PROJECT_EXPORT_IN_PROGRESS",
+	ProjectExportNotReady: "PROJECT_EXPORT_NOT_READY",
+	ProjectExportExpired: "PROJECT_EXPORT_EXPIRED",
+
 	// Sent from start/stop/restart when the environment is already
 	// mid-transition — see environment-detail.tsx's header actions and
 	// RestartEnvironmentDialog, and environment-connect.tsx's
@@ -326,4 +374,48 @@ export function getApiErrorDetails(
 		response?: { data?: { error_details?: Record<string, string> } };
 	};
 	return err?.response?.data?.error_details ?? null;
+}
+
+/**
+ * Seconds a rate-limited or locked-out caller should wait, from the
+ * `retry_after_seconds` error detail or the `Retry-After` header. Returns
+ * `null` when the server gave none.
+ */
+export function getRetryAfterSeconds(error: unknown): number | null {
+	const fromDetails = Number(getApiErrorDetails(error)?.retry_after_seconds);
+	if (Number.isFinite(fromDetails) && fromDetails > 0) return fromDetails;
+	const header = (error as { response?: { headers?: Record<string, unknown> } })
+		?.response?.headers?.["retry-after"];
+	const fromHeader = Number(header);
+	return Number.isFinite(fromHeader) && fromHeader > 0 ? fromHeader : null;
+}
+
+/**
+ * Formats a wait as a localized duration ("15 minutes", "40 seconds"),
+ * rounding up so the user is never told to retry too early.
+ */
+export function formatWait(seconds: number, locale: string): string {
+	const minutes = seconds >= 60;
+	return new Intl.NumberFormat(locale, {
+		style: "unit",
+		unit: minutes ? "minute" : "second",
+		unitDisplay: "long",
+	}).format(minutes ? Math.ceil(seconds / 60) : Math.ceil(seconds));
+}
+
+/**
+ * The "too many attempts" sign-in message, naming the wait when the server
+ * said how long it is. `t` and `locale` come from the `auth` namespace hook.
+ */
+export function tooManyAttemptsMessage(
+	error: unknown,
+	t: TFunction<"auth">,
+	locale: string,
+): string {
+	const wait = getRetryAfterSeconds(error);
+	return wait === null
+		? t("login.errors.tooManyAttempts")
+		: t("login.errors.tooManyAttemptsWait", {
+				time: formatWait(wait, locale),
+			});
 }

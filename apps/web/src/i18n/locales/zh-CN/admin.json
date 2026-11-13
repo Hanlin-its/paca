@@ -25,8 +25,7 @@
 			"description": "您仍可以使用上方的按钮创建新用户。"
 		},
 		"table": {
-			"columnUsername": "用户名",
-			"columnFullName": "姓名",
+			"columnUser": "用户",
 			"columnRole": "角色",
 			"columnCreated": "创建时间",
 			"pwdResetBadge": "密码已重置",
@@ -35,7 +34,10 @@
 			"resetPasswordAction": "重置密码",
 			"editAction": "编辑用户",
 			"changeRoleAction": "更改角色",
-			"deleteAction": "删除用户"
+			"deleteAction": "删除用户",
+			"pwdResetHint": "该用户必须在下次登录时设置新密码",
+			"columnActions": "操作",
+			"securityAction": "安全"
 		},
 		"formDialog": {
 			"createdTitle": "用户已创建",
@@ -141,6 +143,24 @@
 			"title": "没有匹配的用户",
 			"description": "请尝试其他搜索词或角色筛选。",
 			"clear": "清除筛选"
+		},
+		"security": {
+			"title": "{{name}} 的登录保护",
+			"description": "控制此人可以从哪里登录，并清除其两步验证。",
+			"ip": {
+				"label": "允许的 IP 地址",
+				"hint": "每行一个 IP 地址或 CIDR 范围。留空则允许任何地址。适用于密码登录。"
+			},
+			"mfa": {
+				"title": "两步验证",
+				"description": "如果对方同时丢失了设备和恢复码，请清除它以便其重新设置。",
+				"reset": "重置两步验证",
+				"confirmReset": "是，重置",
+				"resetDone": "两步验证已重置。对方可在下次登录时重新设置。",
+				"resetFailed": "无法重置两步验证。"
+			},
+			"cancel": "取消",
+			"save": "保存"
 		}
 	},
 	"globalRoles": {
@@ -170,14 +190,16 @@
 		},
 		"table": {
 			"columnName": "名称",
-			"columnPermissions": "权限",
+			"columnDescription": "描述",
 			"columnDefault": "默认",
 			"noPermissionsAssigned": "未分配权限",
 			"default": "默认",
 			"setDefaultAction": "设为默认角色",
 			"editAction": "编辑角色",
 			"deleteAction": "删除角色",
-			"deleteDefaultDisabled": "无法删除默认角色。请先将其他角色设为默认。"
+			"deleteDefaultDisabled": "无法删除默认角色。请先将其他角色设为默认。",
+			"builtIn": "内置角色",
+			"noDescription": "无描述"
 		},
 		"formDialog": {
 			"editTitle": "编辑角色",
@@ -192,16 +214,7 @@
 			"cancel": "取消",
 			"saving": "正在保存…",
 			"saveChanges": "保存更改",
-			"createRole": "创建角色",
-			"errors": {
-				"roleNameRequired": "角色名称不能为空。",
-				"nameTaken": "已存在同名角色。",
-				"nameInvalid": "角色名称只能包含大写字母、数字和下划线。",
-				"roleNotFound": "该角色已不存在，可能已被删除。",
-				"forbidden": "您没有权限执行此操作。",
-				"internalError": "服务器出现错误，请重试。",
-				"generic": "出现错误。"
-			}
+			"createRole": "创建角色"
 		},
 		"deleteDialog": {
 			"title": "删除角色",
@@ -213,7 +226,6 @@
 			"confirmButton": "删除角色",
 			"errors": {
 				"roleNotFound": "该角色已不存在。",
-				"hasUsersWarning": "该角色仍被分配给一个或多个用户，无法删除。",
 				"isDefault": "无法删除默认角色。请先将其他角色设为默认。",
 				"forbidden": "您没有权限删除该角色。",
 				"internalError": "出现错误，请重试。",
@@ -284,14 +296,49 @@
 			"settingsSsoWrite": {
 				"label": "管理 SSO 提供商",
 				"description": "配置用户登录所用的身份提供商。该权限可用于以其他用户身份登录，请视同完整管理员权限。"
+			},
+			"agentsRead": {
+				"label": "查看智能体",
+				"description": "查看工作区级别的 AI 智能体"
+			},
+			"agentsWrite": {
+				"label": "管理智能体",
+				"description": "创建、编辑和删除工作区级别的 AI 智能体"
+			},
+			"pluginsRead": {
+				"label": "查看插件",
+				"description": "查看已安装的插件"
+			},
+			"pluginsWrite": {
+				"label": "管理插件",
+				"description": "安装、更新、启用和移除插件"
+			},
+			"serviceAccountsRead": {
+				"label": "查看服务账号",
+				"description": "查看服务账号及其 API 密钥"
+			},
+			"serviceAccountsWrite": {
+				"label": "管理服务账号",
+				"description": "创建、编辑、删除服务账号，并签发或吊销其 API 密钥"
+			},
+			"gitIdentitiesManage": {
+				"label": "管理工作区 Git 连接",
+				"description": "添加和移除工作区内所有项目都可使用的 GitHub 应用和访问令牌"
+			},
+			"settingsSecurityWrite": {
+				"label": "管理登录安全",
+				"description": "设置谁必须使用两步验证、允许从哪些 IP 地址登录，并重置他人的两步验证。为账户移除这项保护等同于接管该账户，因此请将其视为完整的管理员权限。"
 			}
 		},
 		"permissionGroups": {
 			"globalRoles": "全局角色",
 			"users": "用户",
+			"agents": "AI 智能体",
 			"projects": "项目",
 			"plugins": "插件",
-			"settings": "设置"
+			"settings": "设置",
+			"serviceAccounts": "服务账号",
+			"git": "Git"
 		},
 		"defaultDialog": {
 			"title": "设置默认角色",
@@ -339,6 +386,7 @@
 		"empty": "暂无发布说明。"
 	},
 	"agents": {
+		"searchPlaceholder": "按名称或标识搜索智能体…",
 		"header": {
 			"title": "全局智能体",
 			"description": "管理可以在主页和管理页面聊天、并可被邀请加入任意项目的 AI 智能体。",
@@ -454,6 +502,266 @@
 				"loadFailed": "加载 SSO 提供商失败。",
 				"deleteFailed": "删除提供商失败，请重试。"
 			}
+		},
+		"nav": {
+			"workspace": "工作区",
+			"signIn": "登录",
+			"branding": "品牌",
+			"sso": "单点登录",
+			"security": "登录安全"
+		},
+		"security": {
+			"roles": {
+				"title": "受保护的角色",
+				"description": "以下规则适用于拥有所选角色之一的人。开启“所有角色”可覆盖所有人，包括之后创建的角色。",
+				"all": "所有角色"
+			},
+			"mfa": {
+				"title": "要求两步验证",
+				"description": "拥有受保护角色的人必须先设置验证器应用，才能使用密码登录。SSO 登录则依赖身份提供商自身的多重身份验证设置。",
+				"rolloutNote": "尚未设置的人会在下次登录时被引导完成设置。"
+			},
+			"ip": {
+				"title": "允许的 IP 地址",
+				"description": "将受保护角色的密码登录限制在这些地址。留空则允许任何地址。",
+				"hint": "每行一个 IP 地址或 CIDR 范围，例如 203.0.113.0/24。支持 IPv4 和 IPv6。",
+				"lockoutWarning": "请确保包含你自己的地址，否则你可能无法登录。SSO 登录不受影响。"
+			},
+			"noRoles": "目前还没有受保护的角色，因此这些规则暂不适用于任何人。",
+			"errors": {
+				"invalidCidr": "其中一项不是有效的 IP 地址或 CIDR 范围。",
+				"selfLockout": "列表中必须包含您自己的 IP 地址，否则您会把自己锁在外面。请添加后再保存。",
+				"saveFailed": "保存失败，请重试。",
+				"loadFailed": "无法加载登录安全设置。"
+			}
 		}
+	},
+	"serviceAccounts": {
+		"searchPlaceholder": "按名称或描述搜索…",
+		"header": {
+			"title": "服务账号",
+			"description": "拥有独立 API 密钥和角色的非人类账号，用于集成、CI 和自动化。",
+			"newAccount": "新建服务账号"
+		},
+		"empty": {
+			"title": "还没有服务账号",
+			"description": "创建一个，为集成提供独立的身份和 API 密钥。",
+			"create": "创建服务账号"
+		},
+		"errors": {
+			"loadFailed": "无法加载服务账号",
+			"tryAgain": "请刷新页面后重试。"
+		},
+		"noPermission": {
+			"title": "你没有查看服务账号的权限",
+			"description": "请向工作区管理员申请访问权限。"
+		},
+		"table": {
+			"columnAccount": "账号",
+			"columnActions": "操作",
+			"noDescription": "无描述",
+			"changeRoleAction": "更改角色",
+			"editAction": "编辑服务账号",
+			"deleteAction": "删除服务账号",
+			"columnRole": "角色"
+		},
+		"formDialog": {
+			"createTitle": "新建服务账号",
+			"editTitle": "编辑服务账号",
+			"createDescription": "新账号没有任何权限。请为其创建 API 密钥，然后授予角色。",
+			"editDescription": "修改名称、描述或头像。API 密钥和角色需单独管理。",
+			"nameLabel": "名称",
+			"namePlaceholder": "例如：CI 部署机器人",
+			"descriptionLabel": "描述",
+			"descriptionPlaceholder": "此账号用于什么？",
+			"cancel": "取消",
+			"create": "创建",
+			"creating": "正在创建…",
+			"save": "保存",
+			"saving": "正在保存…",
+			"avatar": {
+				"change": "更换头像",
+				"remove": "移除头像",
+				"uploading": "正在上传…",
+				"errors": {
+					"invalidType": "请使用 PNG、JPEG、WebP 或 GIF 图片。",
+					"tooLarge": "图片不得超过 5 MB。",
+					"uploadFailed": "无法上传头像，请重试。",
+					"removeFailed": "无法移除头像，请重试。"
+				}
+			},
+			"errors": {
+				"nameInvalid": "名称长度必须为 1–100 个字符。",
+				"descriptionTooLong": "描述过长（最多 1000 个字符）。",
+				"notFound": "此服务账号已不存在。",
+				"generic": "出错了，请重试。"
+			}
+		},
+		"deleteDialog": {
+			"title": "删除服务账号",
+			"description": "删除“{{name}}”？其 API 密钥将立即失效，角色和项目成员身份将被移除。此操作无法撤销。",
+			"cancel": "取消",
+			"confirm": "删除",
+			"deleting": "正在删除…",
+			"error": "无法删除服务账号，请重试。"
+		},
+		"keys": {
+			"nameLabel": "密钥名称",
+			"namePlaceholder": "例如：GitHub Actions",
+			"expiryLabel": "过期时间",
+			"expiryOptional": "（可选）",
+			"create": "创建密钥",
+			"creating": "正在创建…",
+			"empty": "还没有 API 密钥。",
+			"revokeAria": "吊销密钥 {{name}}",
+			"reveal": {
+				"title": "请复制新的 API 密钥",
+				"description": "这是唯一一次显示完整密钥。请妥善保存；若丢失，请创建新的密钥。",
+				"copyAria": "复制密钥",
+				"copied": "已复制到剪贴板",
+				"done": "完成"
+			},
+			"errors": {
+				"nameRequired": "请为密钥命名。",
+				"nameTooLong": "密钥名称过长（最多 100 个字符）。",
+				"createFailed": "无法创建密钥。请使用你的账号登录（而非 API 密钥）后重试。",
+				"revokeFailed": "无法吊销密钥，请重试。",
+				"copyFailed": "无法复制到剪贴板。请选中密钥并手动复制。"
+			},
+			"revoke": {
+				"title": "吊销 API 密钥",
+				"description": "吊销“{{name}}”？使用它的一切将立即失效。此操作无法撤销。",
+				"cancel": "取消",
+				"confirm": "吊销密钥",
+				"revoking": "正在吊销…"
+			},
+			"count": "API 密钥：{{count}}",
+			"newKey": "新建密钥",
+			"createFirst": "创建第一个密钥",
+			"createDialog": {
+				"title": "创建 API 密钥",
+				"description": "该密钥以此账号身份认证，仅在创建后显示一次。",
+				"cancel": "取消"
+			},
+			"row": {
+				"created": "创建于 {{date}}",
+				"expires": "{{date}} 过期",
+				"noExpiry": "永不过期",
+				"lastUsed": "最后使用于 {{date}}",
+				"neverUsed": "从未使用"
+			}
+		},
+		"roleDialog": {
+			"title": "更改角色",
+			"description": "选择 {{name}} 拥有的工作区角色。它只能执行这些角色允许的操作。",
+			"assign": "保存角色",
+			"assigning": "正在保存…",
+			"fullAccessWarning": "该角色授予所有权限。持有此账号 API 密钥的任何人都将拥有完全访问权限。"
+		},
+		"detail": {
+			"notFound": {
+				"title": "未找到服务账号",
+				"description": "它可能已被删除。"
+			},
+			"roles": {
+				"description": "此账号在工作区中可以执行的操作。新账号没有任何角色。",
+				"none": "无角色：此账号目前什么也做不了。",
+				"change": "更改角色",
+				"noneHint": "授予角色后才能执行操作。",
+				"readOnly": "你可以查看此账号的角色，但无法更改。"
+			},
+			"badge": "服务账号",
+			"tabs": {
+				"overview": "概览",
+				"apiKeys": "API 密钥",
+				"roles": "角色"
+			},
+			"overview": {
+				"descriptionHint": "显示在账号列表中以及邀请其加入项目时。",
+				"saveChanges": "保存更改",
+				"saved": "已保存",
+				"saveFailed": "无法保存更改，请重试。",
+				"idLabel": "ID",
+				"createdLabel": "创建时间",
+				"updatedLabel": "更新时间",
+				"deleteTitle": "删除此服务账号",
+				"deleteHint": "其 API 密钥将失效，角色和项目成员身份将被移除。"
+			}
+		}
+	},
+	"git": {
+		"cancel": "取消",
+		"setup": {
+			"dialogTitle": "在 {{host}} 上设置 {{provider}}",
+			"dialogDescription": "Paca 将在 {{host}} 上创建一个机器人身份，供智能体用于克隆、推送以及处理{{changeRequests}}。你将被带到 {{host}} 进行批准，然后返回此处。",
+			"name": "应用名称（可选）",
+			"nameHelp": "机器人在平台上的显示名称。留空则使用默认值。",
+			"org": "组织（可选）",
+			"orgHelp": "留空则在你自己的账户下创建。",
+			"start": "继续前往 {{host}}",
+			"submitToken": "保存",
+			"public": "允许安装到其他账户（公开应用）",
+			"publicHelp": "当各项目使用不同用户或组织的仓库时需要开启。私有应用只能安装在拥有它的账户上。",
+			"next": "下一步",
+			"tokenDescription": "Paca 使用您在 {{host}} 上创建的访问令牌进行连接。下一步中粘贴该令牌。",
+			"host": "主机",
+			"hostHelp": "您的实例地址，例如 gitlab.example.com。",
+			"kind": {
+				"label": "连接方式",
+				"app": {
+					"title": "应用",
+					"help": "Paca 会在 {{provider}} 上为您创建应用。访问范围仅限于您安装该应用的仓库。"
+				},
+				"bot_user": {
+					"title": "访问令牌",
+					"help": "粘贴项目或群组访问令牌。Paca 将以其机器人用户的身份操作。"
+				},
+				"token": {
+					"title": "访问令牌",
+					"help": "粘贴个人访问令牌。它以其所有者的身份操作，因此请使用专用的机器账号。"
+				}
+			},
+			"scope": {
+				"label": "可用范围",
+				"project": {
+					"title": "仅此项目",
+					"help": "只有此项目可以通过它关联仓库。"
+				},
+				"workspace": {
+					"title": "所有项目",
+					"help": "工作区中的所有项目都可以通过它关联仓库。",
+					"noPermission": "需要管理 Git 连接的工作区权限。"
+				},
+				"none": "您没有在此添加连接的权限。"
+			}
+		},
+		"delete": {
+			"button": "移除",
+			"title": "移除此连接？",
+			"description": "通过 {{host}} 上的 {{name}} 关联的仓库将停止工作，直到您通过其他连接重新连接它们。应用或令牌本身不会在平台上被删除；如不再需要，请在平台上自行移除。",
+			"confirm": "移除连接",
+			"usage": {
+				"title": "使用它的仓库（{{count}} 个）：",
+				"others": "另有 {{count}} 个在其他项目中。",
+				"consequence": "它们仍保持关联，但没有凭据，智能体无法使用。之后请将每个仓库重新连接到其他连接。"
+			}
+		},
+		"callback": {
+			"working": "正在完成设置…",
+			"workingHint": "请保持此页面打开。",
+			"failedTitle": "无法完成设置",
+			"back": "返回 Git 设置"
+		},
+		"errors": {
+			"generic": "出了点问题，请重试。",
+			"setupInvalid": "此设置链接无效、已过期或已被使用。请重新开始设置。",
+			"identityExists": "此处已有身份。请先移除它，再设置新的身份。",
+			"publicUrlRequired": "实例的公开 URL（PUBLIC_URL）未配置，平台无法访问。",
+			"providerUnavailable": "Git 提供方插件不可用。请检查它是否已安装并启用。",
+			"providerRejected": "平台拒绝了该请求。请检查所用账户的权限。",
+			"notFound": "未找到。"
+		},
+		"copy": "复制",
+		"copied": "已复制"
 	}
 }

@@ -4,32 +4,34 @@ import {
 	ChevronDown,
 	ChevronRight,
 	GripVertical,
+	Search,
 	Settings,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getTaskTypeIconComponent } from "@/components/projects/task-types/task-type-icons";
-import { EntityAvatarContent } from "@/components/shared/entity-avatar";
+import { EntityAvatar } from "@/components/shared/entity-avatar";
+import { LoadMoreSentinel } from "@/components/shared/load-more-sentinel";
 import {
 	Popover,
 	PopoverContent,
 	PopoverTrigger,
 } from "@/components/ui/popover";
 import { useDebouncedCallback } from "@/hooks/use-debounced-callback";
-import {
-	type CustomFieldFilterConfig,
-	type FilterConfig,
-	type FilterEntry,
-	type InteractionView,
-	sprintsQueryOptions,
-	type ViewConfig,
-	type ViewFilters,
+import { useMemberSearch } from "@/hooks/use-member-search";
+import { useSprintSearch } from "@/hooks/use-sprint-search";
+import type {
+	CustomFieldFilterConfig,
+	FilterConfig,
+	FilterEntry,
+	InteractionView,
+	ViewConfig,
+	ViewFilters,
 } from "@/lib/interaction-api";
+import { useMemberDirectory } from "@/lib/member-directory";
 import {
 	type CustomFieldDefinition,
 	customFieldsQueryOptions,
-	type ProjectMember,
-	projectMembersQueryOptions,
 	STATUS_CATEGORIES,
 	STATUS_CATEGORY_LABELS,
 	type StatusCategory,
@@ -38,11 +40,12 @@ import {
 	taskStatusesQueryOptions,
 	taskTypesQueryOptions,
 } from "@/lib/project-api";
-import { resolveMemberAvatarUrl } from "@/lib/provider-logos";
+import { memberAvatar } from "@/lib/provider-logos";
+import { useSprintDirectory } from "@/lib/sprint-directory";
 import { cn } from "@/lib/utils";
 import { PRIORITY_LEVELS } from "./priority";
 import { ChipField } from "./task-detail/property-field/chip-field";
-
+import { resolveSubtaskMode } from "./use-subtask-expansion";
 import {
 	buildAllFieldOptions,
 	buildColumnByOptions,
@@ -54,6 +57,19 @@ import {
 	getDefaultPageSize,
 	PAGE_SIZE_OPTIONS,
 } from "./view-utils";
+
+/**
+ * The value to store for a chosen Subtasks option. "Collapsed" is the unset
+ * default, but when the team default is something else it has to be stored
+ * explicitly, or a personal "collapsed" could never override it.
+ */
+export function pickSubtaskMode(
+	chosen: string | undefined,
+	shared: ViewConfig | undefined,
+): ViewConfig["subtask_mode"] {
+	if (chosen === "expanded" || chosen === "hidden") return chosen;
+	return resolveSubtaskMode(shared) === "collapsed" ? undefined : "collapsed";
+}
 
 // ── Category visual config ────────────────────────────────────────────────────
 
@@ -327,24 +343,18 @@ function FieldPicker({
 // ── Sprint filter ─────────────────────────────────────────────────────────────
 
 function SprintFilterSection({
-	sprints,
+	projectId,
 	selectedIds,
 	onChange,
 }: {
-	sprints: { id: string; name: string }[];
+	projectId: string;
 	selectedIds: string[];
 	onChange: (ids: string[]) => void;
 }) {
 	const { t } = useTranslation("projects");
 	const isAll = selectedIds.length === 0;
-
-	if (sprints.length === 0) {
-		return (
-			<p className="px-3 pb-2 text-xs text-muted-foreground/50">
-				{t("layout.viewSettings.sprintFilter.noSprints")}
-			</p>
-		);
-	}
+	const search = useSprintSearch(projectId, true);
+	const getSprint = useSprintDirectory(projectId);
 
 	const toggle = (id: string) => {
 		if (selectedIds.includes(id)) {
@@ -354,25 +364,59 @@ function SprintFilterSection({
 		}
 	};
 
+	if (
+		!search.isLoading &&
+		search.sprints.length === 0 &&
+		search.query.trim() === "" &&
+		isAll
+	) {
+		return (
+			<p className="px-3 pb-2 text-xs text-muted-foreground/50">
+				{t("layout.viewSettings.sprintFilter.noSprints")}
+			</p>
+		);
+	}
+
+	// Picked sprints always show (resolved by id, so they appear even when
+	// they're not on a loaded page); the rest of the loaded page follows.
+	const unselected = search.sprints.filter((s) => !selectedIds.includes(s.id));
+
 	return (
-		<div className="px-3 pb-3 space-y-1.5">
+		<div className="px-3 pb-3 space-y-2">
+			<input
+				type="text"
+				value={search.query}
+				onChange={(e) => search.onQueryChange(e.target.value)}
+				placeholder={t("taskDetail.searchableList.searchPlaceholder")}
+				aria-label={t("taskDetail.searchableList.searchPlaceholder")}
+				className="w-full rounded-lg border border-border/30 bg-muted/25 px-2.5 py-1.5 text-xs placeholder:text-muted-foreground/50 focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/20"
+			/>
 			<div className="flex flex-wrap gap-1.5">
 				<FilterPill selected={isAll} onClick={() => onChange([])}>
 					{t("layout.viewSettings.sprintFilter.allSprints")}
 				</FilterPill>
-				{sprints.map((sprint) => {
-					const selected = selectedIds.includes(sprint.id);
-					return (
-						<FilterPill
-							key={sprint.id}
-							selected={selected}
-							onClick={() => toggle(sprint.id)}
-						>
-							{sprint.name}
-						</FilterPill>
-					);
-				})}
+				{selectedIds.map((id) => (
+					<FilterPill key={id} selected onClick={() => toggle(id)}>
+						{getSprint(id)?.name ?? id.slice(0, 8)}
+					</FilterPill>
+				))}
+				{unselected.map((sprint) => (
+					<FilterPill
+						key={sprint.id}
+						selected={false}
+						onClick={() => toggle(sprint.id)}
+					>
+						{sprint.name}
+					</FilterPill>
+				))}
 			</div>
+			<LoadMoreSentinel
+				compact
+				hasMore={search.hasMore}
+				isLoadingMore={search.isLoadingMore}
+				isError={search.isError}
+				onLoadMore={search.onLoadMore}
+			/>
 		</div>
 	);
 }
@@ -494,85 +538,107 @@ function StatusFilterSection({
 export const UNASSIGNED_FILTER_ID = "__unassigned";
 
 function AssigneeFilterSection({
-	members,
+	projectId,
 	selectedIds,
 	onChange,
 }: {
-	members: Pick<
-		ProjectMember,
-		| "id"
-		| "full_name"
-		| "username"
-		| "avatar_thumb_url"
-		| "member_type"
-		| "agent_type"
-		| "agent_llm_provider"
-		| "agent_acp_provider"
-	>[];
+	projectId: string;
 	selectedIds: string[];
 	onChange: (ids: string[]) => void;
 }) {
 	const { t } = useTranslation("projects");
-	const allFilterIds = [...members.map((m) => m.id), UNASSIGNED_FILTER_ID];
+	const getMember = useMemberDirectory(projectId);
+	const search = useMemberSearch(projectId, true);
 	const isAll = selectedIds.length === 0;
 
+	// An empty selection means "all assignees"; otherwise the chosen people
+	// (and/or Unassigned) are listed explicitly.
 	const toggle = (id: string) => {
-		if (isAll) {
-			onChange([id]);
-		} else if (selectedIds.includes(id)) {
-			const next = selectedIds.filter((x) => x !== id);
-			onChange(next.length === allFilterIds.length ? [] : next);
-		} else {
-			const next = [...selectedIds, id];
-			onChange(next.length === allFilterIds.length ? [] : next);
-		}
+		if (isAll) onChange([id]);
+		else if (selectedIds.includes(id))
+			onChange(selectedIds.filter((x) => x !== id));
+		else onChange([...selectedIds, id]);
 	};
 
+	// Selected people stay visible and uncheckable even when the current
+	// search results (or loaded pages) don't include them.
+	const shownIds = new Set(search.members.map((m) => m.id));
+	const pinnedSelected = selectedIds.filter(
+		(id) => id !== UNASSIGNED_FILTER_ID && !shownIds.has(id),
+	);
+	const row = (m: NonNullable<ReturnType<typeof getMember>>) => (
+		<CheckRow
+			key={m.id}
+			id={`assignee-${m.id}`}
+			label={m.full_name || m.username}
+			checked={isAll || selectedIds.includes(m.id)}
+			onChange={() => toggle(m.id)}
+			icon={<EntityAvatar {...memberAvatar(m)} size="xs" />}
+		/>
+	);
+
 	return (
-		<div className="px-1 pb-3 space-y-0.5 max-h-44 overflow-y-auto">
-			<CheckRow
-				id="assignee-all"
-				label={t("layout.viewSettings.assigneeFilter.allAssignees")}
-				checked={isAll}
-				bold
-				onChange={() => onChange([])}
-			/>
-			{members.length === 0 ? (
-				<p className="px-2 py-1 text-xs text-muted-foreground/50">
-					{t("layout.viewSettings.assigneeFilter.noMembers")}
-				</p>
-			) : (
-				members.map((m) => {
-					const display = m.full_name || m.username;
-					return (
+		<div className="px-1 pb-3">
+			<div className="relative px-1 pb-1.5">
+				<Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-[calc(50%+0.0625rem)] text-muted-foreground/50" />
+				<input
+					type="text"
+					value={search.query}
+					onChange={(e) => search.onQueryChange(e.target.value)}
+					placeholder={t("taskDetail.searchableList.searchPlaceholder")}
+					aria-label={t("taskDetail.searchableList.searchPlaceholder")}
+					className="w-full rounded-lg border border-border/30 bg-muted/25 py-1.5 pr-2 pl-8 text-xs placeholder:text-muted-foreground/50 focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/20"
+				/>
+			</div>
+			<div className="max-h-44 space-y-0.5 overflow-y-auto">
+				<CheckRow
+					id="assignee-all"
+					label={t("layout.viewSettings.assigneeFilter.allAssignees")}
+					checked={isAll}
+					bold
+					onChange={() => onChange([])}
+				/>
+				{pinnedSelected.map((id) => {
+					const m = getMember(id);
+					return m ? (
+						row(m)
+					) : (
 						<CheckRow
-							key={m.id}
-							id={`assignee-${m.id}`}
-							label={display}
-							checked={isAll || selectedIds.includes(m.id)}
-							onChange={() => toggle(m.id)}
-							icon={
-								<div className="flex size-5 shrink-0 items-center justify-center rounded-full bg-linear-to-br from-primary/20 to-primary/10 text-primary text-xs font-bold ring-1 ring-primary/20">
-									<EntityAvatarContent avatarUrl={resolveMemberAvatarUrl(m)}>
-										{display.slice(0, 1).toUpperCase()}
-									</EntityAvatarContent>
-								</div>
-							}
+							key={id}
+							id={`assignee-${id}`}
+							label={id.slice(0, 8)}
+							checked
+							onChange={() => toggle(id)}
 						/>
 					);
-				})
-			)}
-			<CheckRow
-				id="assignee-unassigned"
-				label={t("layout.viewSettings.assigneeFilter.unassigned")}
-				checked={isAll || selectedIds.includes(UNASSIGNED_FILTER_ID)}
-				onChange={() => toggle(UNASSIGNED_FILTER_ID)}
-				icon={
-					<div className="flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground text-xs ring-1 ring-border">
-						–
-					</div>
-				}
-			/>
+				})}
+				{search.members.length === 0 && !search.isLoading ? (
+					<p className="px-2 py-1 text-xs text-muted-foreground/50">
+						{search.query.trim()
+							? t("taskDetail.searchableList.noResults")
+							: t("layout.viewSettings.assigneeFilter.noMembers")}
+					</p>
+				) : (
+					search.members.map(row)
+				)}
+				<LoadMoreSentinel
+					hasMore={search.hasMore}
+					isLoadingMore={search.isLoadingMore}
+					isError={search.isError}
+					onLoadMore={search.onLoadMore}
+				/>
+				<CheckRow
+					id="assignee-unassigned"
+					label={t("layout.viewSettings.assigneeFilter.unassigned")}
+					checked={isAll || selectedIds.includes(UNASSIGNED_FILTER_ID)}
+					onChange={() => toggle(UNASSIGNED_FILTER_ID)}
+					icon={
+						<div className="flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground text-xs ring-1 ring-border">
+							–
+						</div>
+					}
+				/>
+			</div>
 		</div>
 	);
 }
@@ -1059,7 +1125,7 @@ function CustomFieldFilterSection({
 		);
 	}
 
-	// text / url
+	// text / url / long_text
 	return (
 		<CustomFieldContainsFilter
 			value={value?.contains}
@@ -1144,10 +1210,6 @@ export function ViewSettingsPanel({
 	);
 	const { data: statuses = [] } = useQuery(taskStatusesQueryOptions(projectId));
 	const { data: taskTypes = [] } = useQuery(taskTypesQueryOptions(projectId));
-	const { data: members = [] } = useQuery(
-		projectMembersQueryOptions(projectId),
-	);
-	const { data: sprints = [] } = useQuery(sprintsQueryOptions(projectId));
 
 	const [draft, setDraft] = useState<ViewConfig>(() => view?.config ?? {});
 	const [fieldsOpen, setFieldsOpen] = useState(false);
@@ -1430,6 +1492,33 @@ export function ViewSettingsPanel({
 								/>
 							</SettingRow>
 
+							{(view?.layout === "Table" || view?.layout === "Roadmap") && (
+								<SettingRow label={t("layout.viewSettings.subtasksLabel")}>
+									<DynamicSelect
+										value={draft.subtask_mode ?? "collapsed"}
+										options={[
+											{
+												key: "collapsed",
+												label: t("layout.viewSettings.subtasksCollapsed"),
+											},
+											{
+												key: "expanded",
+												label: t("layout.viewSettings.subtasksExpanded"),
+											},
+											{
+												key: "hidden",
+												label: t("layout.viewSettings.subtasksHidden"),
+											},
+										]}
+										onChange={(v) =>
+											update({
+												subtask_mode: pickSubtaskMode(v, view?.shared_config),
+											})
+										}
+									/>
+								</SettingRow>
+							)}
+
 							<SettingRow label={t("layout.viewSettings.fieldSumLabel")}>
 								<DynamicSelect
 									value={draft.field_sum ?? "count"}
@@ -1474,7 +1563,7 @@ export function ViewSettingsPanel({
 									defaultOpen={filterSprintIds.length > 0}
 								>
 									<SprintFilterSection
-										sprints={sprints}
+										projectId={projectId}
 										selectedIds={filterSprintIds}
 										onChange={(ids) =>
 											updateFilters({ sprints: idsToFilterConfig(ids) })
@@ -1502,7 +1591,7 @@ export function ViewSettingsPanel({
 									defaultOpen={filterAssigneeIds.length > 0}
 								>
 									<AssigneeFilterSection
-										members={members}
+										projectId={projectId}
 										selectedIds={filterAssigneeIds}
 										onChange={(ids) =>
 											updateFilters({ assignees: idsToFilterConfig(ids) })
@@ -1674,18 +1763,18 @@ export function ViewSettingsPanel({
 					)}
 					{canSaveForEveryone ? (
 						<div className="flex items-stretch">
-							{/* "Save for everyone" is primary here: for anyone who can
-							    publish shared settings, that's the common case — a
-							    personal-only save is the exception, tucked in the menu. */}
+							{/* PE-1: personal save is the default so Timeline/Board filters
+							    never leak to other users. Publishing the team default stays
+							    in the dropdown for views.write holders. */}
 							<button
 								type="button"
-								onClick={handleSaveForEveryone}
-								disabled={isPending || !differsFromShared}
+								onClick={handleSave}
+								disabled={isPending || !differsFromEffective}
 								className="rounded-l-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-sm transition-all duration-150 hover:bg-primary/90 disabled:opacity-40"
 							>
 								{isPending
 									? t("layout.viewSettings.saving")
-									: t("layout.viewSettings.saveForEveryone")}
+									: t("layout.viewSettings.saveOnlyForMe")}
 							</button>
 							<Popover>
 								<PopoverTrigger
@@ -1701,11 +1790,11 @@ export function ViewSettingsPanel({
 								>
 									<button
 										type="button"
-										onClick={handleSave}
-										disabled={isPending || !differsFromEffective}
+										onClick={handleSaveForEveryone}
+										disabled={isPending || !differsFromShared}
 										className="flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-xs font-medium transition-colors duration-100 hover:bg-muted/60 disabled:opacity-40"
 									>
-										{t("layout.viewSettings.saveOnlyForMe")}
+										{t("layout.viewSettings.saveForEveryone")}
 									</button>
 								</PopoverContent>
 							</Popover>

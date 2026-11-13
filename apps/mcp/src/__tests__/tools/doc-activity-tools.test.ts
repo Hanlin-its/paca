@@ -35,7 +35,9 @@ const comment = {
 
 function makeClient(overrides: Record<string, any> = {}) {
 	return {
-		listDocumentActivities: vi.fn().mockResolvedValue([activity]),
+		listDocumentActivities: vi
+			.fn()
+			.mockResolvedValue({ items: [activity], nextCursor: null }),
 		addDocumentComment: vi.fn().mockResolvedValue(comment),
 		updateDocumentComment: vi
 			.fn()
@@ -62,11 +64,12 @@ describe("getDocActivityTools", () => {
 		expect(names).toContain("delete_doc_comment");
 	});
 
-	it("warns in add_doc_comment's description that mentions don't notify", () => {
+	it("describes in add_doc_comment's description that mentions start agents and notify people", () => {
 		const tool = getDocActivityTools().find(
 			(t) => t.name === "add_doc_comment",
 		);
-		expect(tool?.description).toContain("does not send a notification");
+		expect(tool?.description).toContain("is started");
+		expect(tool?.description).toContain("in-app notification");
 	});
 });
 
@@ -82,7 +85,10 @@ describe("handleDocActivityTool – list_doc_activities", () => {
 			{ projectId: "p1", docId: "d1" },
 			client,
 		);
-		expect(client.listDocumentActivities).toHaveBeenCalledWith("p1", "d1");
+		expect(client.listDocumentActivities).toHaveBeenCalledWith("p1", "d1", {
+			cursor: undefined,
+			pageSize: undefined,
+		});
 	});
 
 	it("includes 'Document Activities:' header, activity type, and username", async () => {
@@ -91,7 +97,7 @@ describe("handleDocActivityTool – list_doc_activities", () => {
 			{ projectId: "p1", docId: "d1" },
 			makeClient(),
 		);
-		expect(result.content[0].text).toContain("Document Activities:");
+		expect(result.content[0].text).toContain("Document Activities");
 		expect(result.content[0].text).toContain("system_event");
 		expect(result.content[0].text).toContain("@alice");
 	});

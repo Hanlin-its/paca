@@ -8,6 +8,7 @@ import { getTaskTypeIconComponent } from "@/components/projects/task-types/task-
 import { DisabledDeleteButton } from "@/components/shared/disabled-delete-button";
 import { NoPermissionState } from "@/components/shared/no-permission-state";
 import { Button } from "@/components/ui/button";
+import { Pagination } from "@/components/ui/pagination";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
 	Table,
@@ -18,6 +19,7 @@ import {
 	TableRow,
 } from "@/components/ui/table";
 import { useProjectPermissions } from "@/hooks/use-project-permissions";
+import { usePagedSlice } from "@/hooks/use-table-paging";
 import { isForbiddenError } from "@/lib/api-error";
 import {
 	setDefaultTaskType,
@@ -39,13 +41,17 @@ export function TaskTypesSettings({
 	// type list is implied by tasks.read, same as viewing the tasks that
 	// reference it (see authz.PermissionProjectSettingsTaskTypesWrite's doc
 	// comment on the Go side).
-	const canRead = hasProjectPermission("tasks.read");
+	const canRead = hasProjectPermission("tasks:read");
 	const {
 		data: types,
 		isLoading: isDataLoading,
 		isError,
 		error,
 	} = useQuery({ ...taskTypesQueryOptions(projectId), enabled: canRead });
+	const { pageItems: pagedTypes, paginationProps } = usePagedSlice(
+		"project-task-types",
+		types ?? [],
+	);
 	// While permissions are still loading, canRead defaults to false same as
 	// a confirmed denial — guard on isPermissionsLoading (and fold it into
 	// isLoading) so the section shows the skeleton instead of flashing
@@ -159,7 +165,7 @@ export function TaskTypesSettings({
 							</TableRow>
 						</TableHeader>
 						<TableBody>
-							{types.map((type) => (
+							{pagedTypes.map((type) => (
 								<TableRow key={type.id} className="group">
 									<TableCell className="px-5">
 										{(() => {
@@ -255,6 +261,7 @@ export function TaskTypesSettings({
 							))}
 						</TableBody>
 					</Table>
+					<Pagination className="border-t px-4 py-3" {...paginationProps} />
 				</div>
 			)}
 

@@ -5,6 +5,7 @@
   "additionalProperties": true,
   "properties": {
     "publicUrl": { "type": "string" },
+    "gitWebhookPublicUrl": { "type": "string" },
     "imagePullSecrets": {
       "type": "array",
       "items": {
@@ -24,8 +25,8 @@
         "adminPassword": { "type": "string" },
         "encryptionKey": { "type": "string" },
         "internalApiKey": { "type": "string" },
-        "agentApiKey": { "type": "string" },
         "postgresPassword": { "type": "string" },
+        "valkeyPassword": { "type": "string" },
         "storageAccessKeyId": { "type": "string" },
         "storageSecretAccessKey": { "type": "string" }
       }
@@ -256,6 +257,7 @@
             "namespace": { "type": "string" },
             "cpuLimit": { "type": "string" },
             "memoryLimit": { "type": "string" },
+            "podReadyTimeout": { "type": "string", "minLength": 1 },
             "imagePullSecrets": {
               "type": "array",
               "items": {
@@ -302,6 +304,7 @@
         "replicaCount": { "type": "integer", "minimum": 0 },
         "image": { "$ref": "#/definitions/image" },
         "resources": { "$ref": "#/definitions/resources" },
+        "autoHttps": { "type": "boolean" },
         "service": {
           "type": "object",
           "additionalProperties": true,

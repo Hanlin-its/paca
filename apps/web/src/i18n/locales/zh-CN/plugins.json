@@ -7,6 +7,7 @@
 			"installed": "已安装",
 			"updateAvailable": "有可用更新",
 			"source": "来源",
+			"official": "Paca 官方插件",
 			"upgrading": "正在升级...",
 			"upgradeTo": "升级到 {{version}}",
 			"uninstalling": "正在卸载...",
@@ -28,6 +29,10 @@
 				"notFound": "此插件在插件市场中已不可用。",
 				"nameTaken": "已安装同名插件。",
 				"generic": "出现错误，请重试。"
+			},
+			"legacyPermissions": {
+				"badge": "使用旧权限",
+				"description": "此插件仍在使用旧的 requirePermissions 权限模型。它仍可正常运行，但在作者发布使用 requireActions 的版本之前，无法重新安装或升级。"
 			}
 		}
 	},

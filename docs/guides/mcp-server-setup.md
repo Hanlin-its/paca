@@ -155,8 +155,8 @@ The Paca MCP server provides **81 tools** across **16 categories**:
 - ✅ **Task Management** (6 tools): Full task lifecycle management
 - 🏃 **Sprint Management** (6 tools): Complete sprint workflow
 - 📄 **Document Management** (5 tools): Document CRUD operations
-- 👥 **Project Members** (5 tools): Team and role management
-- 🎭 **Project Roles** (4 tools): Custom role definitions
+- 👥 **Project Members** (5 tools): Team and role assignment (`add_project_member`, `update_project_member_role` take `roleIds`; `get_my_project_permissions` lists the IAM actions you hold)
+- 🎭 **Project Roles** (4 tools: `list_project_roles`, `create_project_role`, `update_project_role`, `delete_project_role`): Custom role definitions as IAM policy documents (see [IAM authorization](iam-authorization.md) and [Roles and policies](roles-and-policies.md)). A project role may only name its own project's resources
 - 🏷️ **Task Types** (5 tools): Task type configurations
 - 📊 **Task Statuses** (4 tools): Workflow status management
 - 🎯 **Views** (9 tools): Sprint, backlog, and timeline views
@@ -194,7 +194,8 @@ Agent: (uses MCP tools)
 2. create_task - Creates "Implement authentication" task
 3. create_task - Creates "Set up database" task  
 4. create_task - Creates "Create user API" task
-5. bulk_move_tasks - Moves all tasks to the new sprint
+5. update_task - Sets the sprint for each created task (sprintId)
+6. bulk_move_tasks - Sets each task's manual position within the sprint's view
 ```
 
 ### Example 2: Review and Update Task Status
@@ -256,7 +257,7 @@ npm run inspector
 - **Solution**: Ensure Paca API is running and `PACA_API_URL` is correct
 
 **Issue**: "Unauthorized" error
-- **Solution**: Verify `PACA_API_KEY` is valid and has proper permissions
+- **Solution**: Verify `PACA_API_KEY` is valid and that the user or agent behind it has a role allowing the action (`403` means no attached role allows it; see [IAM authorization](iam-authorization.md#troubleshooting-and-faq))
 
 **Issue**: "npx: command not found" error
 - **Solution**: Ensure Node.js 18+ is installed and npx is in your PATH

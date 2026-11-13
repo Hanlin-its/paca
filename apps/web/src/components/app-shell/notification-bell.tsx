@@ -9,19 +9,16 @@ import {
 	AtSign,
 	Bell,
 	Loader2,
+	MessageCircleQuestion,
 	UserPlus,
 	Volume2,
 	VolumeX,
+	Zap,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-
-import {
-	Avatar,
-	AvatarBadge,
-	AvatarFallback,
-	AvatarImage,
-} from "@/components/ui/avatar";
+import { EntityAvatar } from "@/components/shared/entity-avatar";
+import { AvatarBadge } from "@/components/ui/avatar";
 import {
 	Popover,
 	PopoverContent,
@@ -39,17 +36,35 @@ import {
 	isNotificationSoundMuted,
 	setNotificationSoundMuted,
 } from "@/lib/notification-sound";
-import { resolveNotificationActorAvatarUrl } from "@/lib/provider-logos";
+import { notificationActorAvatar } from "@/lib/provider-logos";
 import { createLoadMoreScrollHandler } from "@/lib/scroll-pagination";
 import { timeAgo } from "@/lib/time-ago";
-import { getInitials } from "@/lib/utils";
 
 function notificationText(n: Notification, t: TFunction<"appShell">): string {
+	if (n.type === "question") {
+		return t("notifications.text.question", {
+			actor: n.actor_full_name,
+			title: n.conversation_title || t("notifications.untitledConversation"),
+		});
+	}
+	if (n.type === "automation") {
+		return t("notifications.text.automation", {
+			message: n.message,
+			taskNumber: n.task_number,
+			taskTitle: n.task_title,
+		});
+	}
 	if (n.type === "assigned") {
 		return t("notifications.text.assigned", {
 			actor: n.actor_full_name,
 			taskNumber: n.task_number,
 			taskTitle: n.task_title,
+		});
+	}
+	if (n.document_id) {
+		return t("notifications.text.mentionedInDoc", {
+			actor: n.actor_full_name,
+			title: n.document_title || t("notifications.untitledDocument"),
 		});
 	}
 	return t("notifications.text.mentioned", {
@@ -103,7 +118,29 @@ export function NotificationBell() {
 	const handleNotificationClick = useCallback(
 		(n: Notification) => {
 			if (!n.read_at) markRead(n.id);
-			if (n.task_id) {
+			if (n.type === "question" && n.conversation_id) {
+				if (n.project_id) {
+					navigate({
+						to: "/projects/$projectId/conversations/$conversationId",
+						params: {
+							projectId: n.project_id,
+							conversationId: n.conversation_id,
+						},
+					});
+				} else {
+					navigate({
+						to: "/conversations/$conversationId",
+						params: { conversationId: n.conversation_id },
+					});
+				}
+			} else if (!n.project_id) {
+				return;
+			} else if (n.document_id) {
+				navigate({
+					to: "/projects/$projectId/docs/$docId",
+					params: { projectId: n.project_id, docId: n.document_id },
+				});
+			} else if (n.task_id) {
 				navigate({
 					to: "/projects/$projectId/tasks/$taskId",
 					params: { projectId: n.project_id, taskId: n.task_id },
@@ -184,7 +221,6 @@ export function NotificationBell() {
 					<div className="max-h-96 overflow-y-auto" onScroll={handleListScroll}>
 						<ul className="divide-y">
 							{notifications.map((n) => {
-								const avatarUrl = resolveNotificationActorAvatarUrl(n);
 								return (
 									<li key={n.id}>
 										<button
@@ -192,22 +228,37 @@ export function NotificationBell() {
 											onClick={() => handleNotificationClick(n)}
 											className={`w-full text-left px-4 py-3 hover:bg-muted/50 transition-colors flex items-start gap-3 ${!n.read_at ? "bg-primary/5" : ""}`}
 										>
-											<Avatar className="mt-0.5 shrink-0">
-												{avatarUrl ? <AvatarImage src={avatarUrl} /> : null}
-												<AvatarFallback className="font-medium">
-													{getInitials(n.actor_full_name)}
-												</AvatarFallback>
-												<AvatarBadge
+											{n.type === "automation" ? (
+												<span
 													aria-hidden="true"
-													className={
-														n.type === "assigned"
-															? undefined
-															: "bg-secondary text-secondary-foreground"
-													}
+													className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-secondary text-secondary-foreground"
 												>
-													{n.type === "assigned" ? <UserPlus /> : <AtSign />}
-												</AvatarBadge>
-											</Avatar>
+													<Zap className="size-4" />
+												</span>
+											) : (
+												<EntityAvatar
+													{...notificationActorAvatar(n)}
+													className="mt-0.5 shrink-0"
+													badge={
+														<AvatarBadge
+															aria-hidden="true"
+															className={
+																n.type === "assigned"
+																	? undefined
+																	: "bg-secondary text-secondary-foreground"
+															}
+														>
+															{n.type === "assigned" ? (
+																<UserPlus />
+															) : n.type === "question" ? (
+																<MessageCircleQuestion />
+															) : (
+																<AtSign />
+															)}
+														</AvatarBadge>
+													}
+												/>
+											)}
 											<div className="min-w-0 flex-1">
 												<p
 													className={`text-sm leading-snug ${!n.read_at ? "font-medium" : ""}`}
@@ -215,7 +266,8 @@ export function NotificationBell() {
 													{notificationText(n, t)}
 												</p>
 												<p className="mt-0.5 truncate text-xs text-muted-foreground">
-													{n.project_name} · {timeAgo(n.created_at, tCommon)}
+													{n.project_name || t("notifications.globalChat")} ·{" "}
+													{timeAgo(n.created_at, tCommon)}
 												</p>
 											</div>
 											{!n.read_at && (

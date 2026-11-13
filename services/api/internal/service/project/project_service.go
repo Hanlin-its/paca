@@ -12,12 +12,13 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Paca-AI/api/internal/bootstrap/defaultroles"
+	accountdom "github.com/Paca-AI/api/internal/domain/account"
 	agentdom "github.com/Paca-AI/api/internal/domain/agent"
 	attachmentdom "github.com/Paca-AI/api/internal/domain/attachment"
 	projectdom "github.com/Paca-AI/api/internal/domain/project"
 	taskdom "github.com/Paca-AI/api/internal/domain/task"
 	"github.com/Paca-AI/api/internal/events"
-	"github.com/Paca-AI/api/internal/platform/authz"
 	"github.com/Paca-AI/api/internal/platform/secret"
 	activitysvc "github.com/Paca-AI/api/internal/service/activity"
 )
@@ -103,17 +104,78 @@ type agentLookup interface {
 
 // Service is the concrete implementation of projectdom.Service.
 type Service struct {
-	repo      projectdom.Repository
-	taskRepo  taskBootstrapper
-	agents    agentLookup
-	avatarSvc attachmentdom.AvatarService
-	encryptor *secret.Encryptor
-	activity  activitysvc.Recorder
+	repo     projectdom.Repository
+	taskRepo taskBootstrapper
+	agents   agentLookup
+	// serviceAccounts resolves a service account being invited into a project.
+	serviceAccounts serviceAccountLookup
+	avatarSvc       attachmentdom.AvatarService
+	encryptor       *secret.Encryptor
+	activity        activitysvc.Recorder
+	// roles is told which roles' attachments changed (see roleGrantsChanged).
+	roles RoleInvalidator
+	// onDelete runs after a project is deleted, to release what other services
+	// hold for it (Git connections). Best effort: the project is gone either way.
+	onDelete func(ctx context.Context, id uuid.UUID)
+}
+
+// RoleInvalidator drops cached role policies; *iam.Authorizer implements it.
+type RoleInvalidator interface {
+	Invalidate(roleIDs ...string)
+}
+
+// WithRoleInvalidator wires in the policy cache invalidation called after
+// role attachments change (a member or agent added to a project).
+func (s *Service) WithRoleInvalidator(inv RoleInvalidator) *Service {
+	s.roles = inv
+	return s
+}
+
+// WithDeleteHook sets a callback run after a project is deleted.
+func (s *Service) WithDeleteHook(fn func(ctx context.Context, id uuid.UUID)) *Service {
+	s.onDelete = fn
+	return s
+}
+
+// roleGrantsChanged tells the policy cache which roles gained an attachment.
+// Called after the transaction that wrote the attachments has committed.
+func (s *Service) roleGrantsChanged(roleIDs []uuid.UUID) {
+	if s.roles == nil || len(roleIDs) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(roleIDs))
+	for _, id := range roleIDs {
+		ids = append(ids, id.String())
+	}
+	s.roles.Invalidate(ids...)
+}
+
+// accessRevoked tells the policy cache that an account lost its project
+// attachments (a removed member) or that a whole project is gone. Which roles it held does not matter to the subscribers (the
+// announcement means "recheck everyone"), so no ids are passed. Called after
+// the removal has committed.
+func (s *Service) accessRevoked() {
+	if s.roles == nil {
+		return
+	}
+	s.roles.Invalidate()
 }
 
 // New returns a configured project service.
 func New(repo projectdom.Repository, taskRepo taskBootstrapper, agents agentLookup) *Service {
 	return &Service{repo: repo, taskRepo: taskRepo, agents: agents, activity: activitysvc.Discard}
+}
+
+// serviceAccountLookup is the part of the service account repository that
+// inviting one into a project needs.
+type serviceAccountLookup interface {
+	FindByID(ctx context.Context, id uuid.UUID) (*accountdom.Account, error)
+}
+
+// WithServiceAccounts enables inviting service accounts into projects.
+func (s *Service) WithServiceAccounts(lookup serviceAccountLookup) *Service {
+	s.serviceAccounts = lookup
+	return s
 }
 
 // WithAvatarService configures avatar upload support.
@@ -203,7 +265,7 @@ func (s *Service) List(ctx context.Context, page, pageSize int) ([]*projectdom.P
 }
 
 // ListAccessible returns only the projects the given user is a member of.
-func (s *Service) ListAccessible(ctx context.Context, userID uuid.UUID, page, pageSize int) ([]*projectdom.Project, int64, error) {
+func (s *Service) ListAccessible(ctx context.Context, accountID uuid.UUID, page, pageSize int) ([]*projectdom.Project, int64, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -211,7 +273,7 @@ func (s *Service) ListAccessible(ctx context.Context, userID uuid.UUID, page, pa
 		pageSize = 20
 	}
 	offset := (page - 1) * pageSize
-	return s.repo.ListAccessible(ctx, userID, offset, pageSize)
+	return s.repo.ListAccessible(ctx, accountID, offset, pageSize)
 }
 
 // GetByID returns the project with the given ID.
@@ -219,9 +281,11 @@ func (s *Service) GetByID(ctx context.Context, id uuid.UUID) (*projectdom.Projec
 	return s.repo.FindByID(ctx, id)
 }
 
-// Create defines and persists a new project, bootstraps the three default
-// project-scoped roles (admin, editor, viewer), and adds the creator as the
-// project admin.
+// Create defines and persists a new project. In the same transaction the
+// project gets its default roles (the embedded templates Admin, Editor,
+// Member and Viewer, instantiated as roles owned by the project, with the
+// project's id in their policies) and the creator becomes a member holding
+// the Admin role inside the project.
 func (s *Service) Create(ctx context.Context, in projectdom.CreateProjectInput) (*projectdom.Project, error) {
 	name := strings.TrimSpace(in.Name)
 	if name == "" {
@@ -242,121 +306,19 @@ func (s *Service) Create(ctx context.Context, in projectdom.CreateProjectInput) 
 		Name:         name,
 		Description:  strings.TrimSpace(in.Description),
 		TaskIDPrefix: prefix,
-		IsPublic:     in.IsPublic,
 		Settings:     cloneSettings(in.Settings),
 		CreatedBy:    in.CreatedBy,
 		CreatedAt:    now,
 	}
 
-	if err := s.repo.Create(ctx, p); err != nil {
+	setup := projectdom.ProjectSetup{Creator: in.CreatedBy, CreatorRole: defaultroles.ProjectAdmin}
+	for _, r := range defaultroles.Instantiate(p.ID) {
+		setup.Roles = append(setup.Roles, projectdom.SetupRole{
+			Name: r.Name, Description: r.Description, Policy: r.Policy, System: r.System,
+		})
+	}
+	if err := s.repo.Create(ctx, p, setup); err != nil {
 		return nil, err
-	}
-
-	// Bootstrap the three default project-scoped roles.
-	defaultRoles := []*projectdom.ProjectRole{
-		{
-			ID:        uuid.New(),
-			ProjectID: &p.ID,
-			RoleName:  "Admin",
-			// Bare wildcard rather than an enumerated list of *All wildcards:
-			// Admin is meant to always have every project permission,
-			// including ones added after this project was created (like the
-			// project.settings.* split in 000054) without needing a matching
-			// migration each time. See 000056_set_admin_role_wildcard_permission.sql
-			// for the backfill onto existing projects' Admin rows.
-			Permissions: map[string]any{
-				string(authz.PermissionAll): true,
-			},
-			CreatedAt: now,
-			UpdatedAt: now,
-		},
-		{
-			ID:        uuid.New(),
-			ProjectID: &p.ID,
-			RoleName:  "Editor",
-			// PermissionProjectsRead is omitted here and on Viewer below —
-			// AuthzPermissionStore.ListProjectPermissions grants it to any
-			// active project member unconditionally now, so listing it per
-			// role would be redundant (see that method's doc comment).
-			//
-			// The three ProjectSettings*Write grants are deliberately absent:
-			// redefining task types/statuses/custom fields is an Admin-level
-			// (project schema) action, not a content-editing one — same
-			// split tasks.write already draws between editing a task and
-			// reconfiguring what statuses/types exist. Editor can still see
-			// them (no dedicated read permission exists for the schema —
-			// TasksRead below already covers viewing it, same as it covers
-			// viewing the tasks that reference it).
-			Permissions: map[string]any{
-				string(authz.PermissionProjectMembersRead):  true,
-				string(authz.PermissionProjectRolesRead):    true,
-				string(authz.PermissionTasksRead):           true,
-				string(authz.PermissionTasksWrite):          true,
-				string(authz.PermissionSprintsRead):         true,
-				string(authz.PermissionSprintsWrite):        true,
-				string(authz.PermissionViewsRead):           true,
-				string(authz.PermissionViewsWrite):          true,
-				string(authz.PermissionDocsRead):            true,
-				string(authz.PermissionDocsWrite):           true,
-				string(authz.PermissionAgentsRead):          true,
-				string(authz.PermissionAgentsWrite):         true,
-				string(authz.PermissionConversationsRead):   true,
-				string(authz.PermissionConversationsWrite):  true,
-				string(authz.PermissionWorkflowsRead):       true,
-				string(authz.PermissionWorkflowsWrite):      true,
-				string(authz.PermissionEnvironmentsRead):    true,
-				string(authz.PermissionEnvironmentsWrite):   true,
-				string(authz.PermissionEnvironmentsConnect): true,
-				string(authz.PermissionAnnotationsRead):     true,
-				string(authz.PermissionAnnotationsWrite):    true,
-				string(authz.PermissionAnnotationsResolve):  true,
-			},
-			CreatedAt: now,
-			UpdatedAt: now,
-		},
-		{
-			ID:        uuid.New(),
-			ProjectID: &p.ID,
-			RoleName:  "Viewer",
-			Permissions: map[string]any{
-				string(authz.PermissionProjectMembersRead): true,
-				string(authz.PermissionProjectRolesRead):   true,
-				string(authz.PermissionTasksRead):          true,
-				string(authz.PermissionSprintsRead):        true,
-				string(authz.PermissionViewsRead):          true,
-				string(authz.PermissionDocsRead):           true,
-				string(authz.PermissionAgentsRead):         true,
-				string(authz.PermissionConversationsRead):  true,
-				string(authz.PermissionWorkflowsRead):      true,
-				string(authz.PermissionEnvironmentsRead):   true,
-				string(authz.PermissionAnnotationsRead):    true,
-			},
-			CreatedAt: now,
-			UpdatedAt: now,
-		},
-	}
-
-	var adminRoleID uuid.UUID
-	for _, r := range defaultRoles {
-		if err := s.repo.CreateRole(ctx, r); err != nil {
-			return nil, err
-		}
-		if r.RoleName == "Admin" {
-			adminRoleID = r.ID
-		}
-	}
-
-	// Add the creator as a project admin.
-	if in.CreatedBy != nil {
-		m := &projectdom.ProjectMember{
-			ID:            uuid.New(),
-			ProjectID:     p.ID,
-			UserID:        *in.CreatedBy,
-			ProjectRoleID: adminRoleID,
-		}
-		if err := s.repo.AddMember(ctx, m); err != nil {
-			return nil, err
-		}
 	}
 
 	// Bootstrap default task types and statuses.
@@ -428,9 +390,6 @@ func (s *Service) Update(ctx context.Context, id uuid.UUID, in projectdom.Update
 		}
 		p.TaskIDPrefix = rawPrefix
 	}
-	if in.IsPublic != nil {
-		p.IsPublic = *in.IsPublic
-	}
 	if in.Settings != nil {
 		p.Settings = cloneSettings(in.Settings)
 	}
@@ -458,22 +417,10 @@ func projectChangedFields(in projectdom.UpdateProjectInput) []string {
 	if strings.TrimSpace(in.TaskIDPrefix) != "" {
 		out = append(out, "task_id_prefix")
 	}
-	if in.IsPublic != nil {
-		out = append(out, "is_public")
-	}
 	if in.Settings != nil {
 		out = append(out, "settings")
 	}
 	return out
-}
-
-// IsProjectPublic returns true when the project exists and has is_public set.
-func (s *Service) IsProjectPublic(ctx context.Context, id uuid.UUID) (bool, error) {
-	p, err := s.repo.FindByID(ctx, id)
-	if err != nil {
-		return false, err
-	}
-	return p.IsPublic, nil
 }
 
 // Delete soft-deletes a project by setting deleted_at.
@@ -482,7 +429,15 @@ func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
 	if err != nil {
 		return err
 	}
-	return s.repo.Delete(ctx, id)
+	if err := s.repo.Delete(ctx, id); err != nil {
+		return err
+	}
+	if s.onDelete != nil {
+		s.onDelete(ctx, id)
+	}
+	// Every member's sockets in the project must leave its rooms.
+	s.accessRevoked()
+	return nil
 }
 
 // InitiateAvatarUpload starts an avatar upload for the project.

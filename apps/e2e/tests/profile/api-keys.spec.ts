@@ -1,4 +1,4 @@
-// spec: features/profile/api-keys.feature
+// spec: features/account/api-keys.feature
 // seed: tests/seed.spec.ts
 //
 // Every scenario runs as a throwaway non-admin user (created through the
@@ -54,12 +54,12 @@ async function listKeys(
 ): Promise<Array<Record<string, unknown> & { id: string; name: string }>> {
 	const response = await api.get(`${API_URL}/users/me/api-keys`);
 	expect(response.ok()).toBeTruthy();
-	return (await response.json()).data;
+	return (await response.json()).data.items;
 }
 
 async function openApiKeysPage(page: Page, username: string): Promise<void> {
 	await signIn(page, username, RESTRICTED_PASSWORD);
-	await page.goto(`${BASE_URL}/profile/api-keys`);
+	await page.goto(`${BASE_URL}/account/api-keys`);
 	await expect(page.getByRole("heading", { name: "API Keys" })).toBeVisible();
 }
 

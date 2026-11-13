@@ -25,27 +25,55 @@ func NewAPIKeyHandler(svc apikeydom.Service) *APIKeyHandler {
 
 // List handles GET /users/me/api-keys.
 func (h *APIKeyHandler) List(w http.ResponseWriter, r *http.Request) {
-	userID, ok := resolveCallerID(w, r)
+	accountID, ok := requireAccountID(w, r)
 	if !ok {
 		return
 	}
 
-	keys, err := h.svc.List(r.Context(), userID)
+	listAPIKeys(w, r, h.svc, accountID)
+}
+
+// listAPIKeys writes one cursor page of an account's active keys; shared by
+// the self-service and service-account key lists.
+func listAPIKeys(w http.ResponseWriter, r *http.Request, svc apikeydom.Service, accountID uuid.UUID) {
+	pageSize, err := parsePageSize(r, 30, 100)
 	if err != nil {
 		presenter.Error(w, r, err)
 		return
 	}
-
-	resp := make([]dto.APIKeyResponse, 0, len(keys))
-	for _, k := range keys {
-		resp = append(resp, dto.APIKeyFromEntity(k))
+	page, err := parseOptionalPage(r)
+	if err != nil {
+		presenter.Error(w, r, err)
+		return
 	}
-	presenter.OK(w, r, resp)
+	cursor := parseCursorParam(r)
+	keys, hasMore, total, err := svc.List(r.Context(), accountID, apikeydom.KeyFilter{Offset: pageOffset(page, pageSize)}, cursor, pageSize)
+	if err != nil {
+		presenter.Error(w, r, err)
+		return
+	}
+	items := make([]dto.APIKeyResponse, 0, len(keys))
+	for _, k := range keys {
+		items = append(items, dto.APIKeyFromEntity(k))
+	}
+	var nextCursor *string
+	if hasMore && len(keys) > 0 {
+		last := keys[len(keys)-1]
+		c := apikeydom.EncodeCursor(last.CreatedAt, last.ID)
+		nextCursor = &c
+	}
+	body := pageBody(items, pageSize, nextCursor, cursor == nil, total)
+	if page > 0 {
+		// Paged by number: the caller navigates by page, not by cursor.
+		body["page"] = page
+		body["next_cursor"] = nil
+	}
+	presenter.OK(w, r, body)
 }
 
 // Create handles POST /users/me/api-keys.
 func (h *APIKeyHandler) Create(w http.ResponseWriter, r *http.Request) {
-	userID, ok := resolveCallerID(w, r)
+	accountID, ok := requireAccountID(w, r)
 	if !ok {
 		return
 	}
@@ -56,7 +84,8 @@ func (h *APIKeyHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	in := apikeydom.CreateInput{
-		UserID:    userID,
+		AccountID: accountID,
+		CreatedBy: &accountID,
 		Name:      req.Name,
 		ExpiresAt: req.ExpiresAt,
 	}
@@ -76,7 +105,7 @@ func (h *APIKeyHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 // Revoke handles DELETE /users/me/api-keys/:keyId.
 func (h *APIKeyHandler) Revoke(w http.ResponseWriter, r *http.Request) {
-	userID, ok := resolveCallerID(w, r)
+	accountID, ok := requireAccountID(w, r)
 	if !ok {
 		return
 	}
@@ -87,25 +116,10 @@ func (h *APIKeyHandler) Revoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.svc.Revoke(r.Context(), userID, keyID); err != nil {
+	if err := h.svc.Revoke(r.Context(), accountID, keyID); err != nil {
 		presenter.Error(w, r, err)
 		return
 	}
 
 	presenter.NoContent(w)
-}
-
-// resolveCallerID extracts the authenticated user's ID from JWT claims.
-func resolveCallerID(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
-	claims := middleware.ClaimsFrom(r)
-	if claims == nil {
-		presenter.Error(w, r, apierr.New(apierr.CodeUnauthenticated, "unauthenticated"))
-		return uuid.Nil, false
-	}
-	id, err := uuid.Parse(claims.Subject)
-	if err != nil {
-		presenter.Error(w, r, apierr.New(apierr.CodeBadRequest, "invalid subject claim"))
-		return uuid.Nil, false
-	}
-	return id, true
 }

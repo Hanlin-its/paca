@@ -1,0 +1,62 @@
+{
+	"sourceVersion": "v0.18.4",
+	"targetVersion": "v0.20.3",
+	"description": "升級至 v0.20.3 後不再使用的繁中鍵；保留原始翻譯供追查。",
+	"translations": {
+		"admin.json": {
+			"globalRoles.deleteDialog.errors.hasUsersWarning": "該角色仍被指派給一個或多個使用者，無法刪除。",
+			"globalRoles.formDialog.errors.forbidden": "你沒有權限執行此操作。",
+			"globalRoles.formDialog.errors.generic": "出現錯誤。",
+			"globalRoles.formDialog.errors.internalError": "伺服器出現錯誤，請重試。",
+			"globalRoles.formDialog.errors.nameInvalid": "角色名稱只能包含大寫字母、數字和下劃線。",
+			"globalRoles.formDialog.errors.nameTaken": "已存在同名角色。",
+			"globalRoles.formDialog.errors.roleNameRequired": "角色名稱不可為空。",
+			"globalRoles.formDialog.errors.roleNotFound": "該角色已不存在，可能已被刪除。",
+			"globalRoles.table.columnPermissions": "權限",
+			"users.table.columnFullName": "姓名",
+			"users.table.columnUsername": "使用者名稱"
+		},
+		"projects.json": {
+			"agents.card.restrictedTooltip": "此 AI Agent 已限制存取 — 請要求專案管理員授予你存取權，才能與其聊天。",
+			"agents.conversationView.agentAccessRestricted": "此 AI Agent 已限制存取。請要求專案管理員授予你存取權後再與其聊天。",
+			"agents.conversationView.environmentAccessRestricted": "此對話的環境已限制存取。請要求專案管理員授予你存取權後再與此 AI Agent 聊天。",
+			"agents.detail.access.alreadyGranted": "此成員已有存取權。",
+			"agents.detail.access.empty": "尚未授予任何成員存取權。",
+			"agents.detail.access.grantAccess": "授予存取權",
+			"agents.detail.access.grantFailed": "授予存取權失敗，請重試。",
+			"agents.detail.access.pickMember": "選擇成員…",
+			"agents.detail.access.restrictDescription": "啟用後，只有下方獲得存取權的成員可以與此 AI Agent 聊天。所有可管理 AI Agent 的人員仍可檢視並設定此 AI Agent。",
+			"agents.detail.access.restrictLabel": "限制存取",
+			"agents.detail.tabs.access": "存取權",
+			"environments.detail.access.alreadyGranted": "此成員已有存取權。",
+			"environments.detail.access.empty": "尚未授予任何成員存取權。",
+			"environments.detail.access.grantAccess": "授予存取權",
+			"environments.detail.access.grantFailed": "授予存取權失敗，請重試。",
+			"environments.detail.access.pickMember": "選擇成員…",
+			"environments.detail.access.restrictDescription": "啟用後，只有下方獲得存取權的成員可以瀏覽此環境、透過 SSH 連線、轉送連接埠或開啟終端機。所有可管理環境的人員仍可檢視並設定此環境。",
+			"environments.detail.access.restrictLabel": "限制存取",
+			"environments.detail.tabs.access": "存取權",
+			"environments.page.restrictedTooltip": "此環境已限制存取 — 請要求專案管理員授予你存取權後再使用。",
+			"roles.deleteDialog.errors.hasMembers": "該角色仍被指派給一個或多個成員，無法刪除。",
+			"roles.formDialog.errors.forbidden": "你沒有權限執行此操作。",
+			"roles.formDialog.errors.generic": "出現錯誤。",
+			"roles.formDialog.errors.internalError": "伺服器出現錯誤，請重試。",
+			"roles.formDialog.errors.nameInvalid": "角色名稱只能使用大寫字母、數字和下劃線。",
+			"roles.formDialog.errors.nameTaken": "已存在同名角色。",
+			"roles.formDialog.errors.notFound": "該角色已不存在，可能已被刪除。",
+			"roles.formDialog.fullAccessBadge": "完整存取權",
+			"settings.general.publicProjectHintPrivate": "僅團隊成員可以存取此專案。",
+			"settings.general.publicProjectHintPublic": "任何擁有連結的人都可以檢視此專案。匿名使用者擁有唯讀權限。",
+			"settings.general.publicProjectLabel": "公開專案",
+			"settings.roles.noPermissionsAssigned": "未指派權限",
+			"settings.roles.table.permissions": "權限",
+			"team.addMemberDialog.rolePlaceholder": "選擇角色…"
+		},
+		"shared.json": {
+			"home.createDialog.publicProject.label": "公開專案",
+			"home.createDialog.publicProject.privateHint": "僅團隊成員可以存取此專案。",
+			"home.createDialog.publicProject.publicHint": "任何擁有連結的人都可以檢視此專案。匿名使用者擁有唯讀權限。",
+			"home.projectCard.public": "公開"
+		}
+	}
+}

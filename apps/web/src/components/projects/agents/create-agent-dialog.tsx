@@ -58,7 +58,6 @@ import {
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useCanAssignGlobalRole } from "@/hooks/use-can-assign-global-role";
-import type { GlobalRole } from "@/lib/admin-api";
 import {
 	type ACPProvider,
 	type AcpBridgeToken,
@@ -72,15 +71,22 @@ import {
 	generateAgentMCPKey,
 	generateGlobalAcpBridgeToken,
 	generateGlobalAgentMCPKey,
-	globalAgentsQueryOptions,
+	globalAgentsKey,
 	llmModelsQueryOptions,
 	verifyEnvironmentCLILogin,
 } from "@/lib/agent-api";
+import { invalidateAgentDirectory } from "@/lib/agent-directory";
 import { ApiErrorCode, getApiErrorCode } from "@/lib/api-error";
-import { environmentsQueryOptions } from "@/lib/environment-api";
+import { copyToClipboard } from "@/lib/clipboard";
+import {
+	environmentConfigQueryOptions,
+	environmentQueryOptions,
+} from "@/lib/environment-api";
+import type { Role } from "@/lib/role-api";
 import { splitShellCommand } from "@/lib/shell-command";
 import { cn } from "@/lib/utils";
 import { AcpBridgeSetup, CommandBox } from "./acp-bridge-setup";
+import { AcpModelEffortFields } from "./acp-model-effort-fields";
 import { ProjectRolePicker } from "./project-role-picker";
 import { useSetAgentGlobalRole } from "./use-set-agent-global-role";
 
@@ -170,10 +176,6 @@ export function CreateAgentDialog({
 	// Environments are project-scoped only — a global agent has no project to
 	// default one from, so this query no-ops (via `enabled`) at global scope,
 	// same convention as agent-picker.tsx's useEnvironmentPicker.
-	const { data: environments = [] } = useQuery({
-		...environmentsQueryOptions(projectId ?? ""),
-		enabled: !!projectId,
-	});
 
 	const canAssignRole = useCanAssignGlobalRole();
 	// The agent held by a global wizard that has reached its role step, which
@@ -197,13 +199,13 @@ export function CreateAgentDialog({
 	const [description, setDescription] = useState("");
 	const [presetId, setPresetId] = useState("");
 	// The project role of a project agent, chosen in step 3.
-	const [roleId, setRoleId] = useState("");
-	// The global role picked in a global agent's step 3: a role, `null` for "no
-	// role", or `undefined` while nothing is picked (the agent keeps the role it
-	// was created with).
-	const [pickedRole, setPickedRole] = useState<GlobalRole | null | undefined>(
-		undefined,
-	);
+	const [roleIds, setRoleIds] = useState<string[]>([]);
+	// The workspace roles picked in a global agent's step 3 (none picked is a
+	// valid choice: no role), or `undefined` while nothing is touched (the agent
+	// keeps the roles it was created with).
+	const [picked, setPicked] = useState<
+		{ ids: string[]; roles: Role[] } | undefined
+	>(undefined);
 	const [agentType, setAgentType] = useState<AgentType>("llm");
 	const [providerSelect, setProviderSelect] = useState("anthropic");
 	const [customProvider, setCustomProvider] = useState("");
@@ -215,12 +217,18 @@ export function CreateAgentDialog({
 	);
 	const [acpProvider, setAcpProvider] = useState<ACPProvider>("claude-code");
 	const [acpCommand, setAcpCommand] = useState("");
+	const [acpModel, setAcpModel] = useState("");
+	const [acpEffort, setAcpEffort] = useState("");
 	const [cliProvider, setCliProvider] = useState<CLIProvider>("claude-code");
 	const [cliModel, setCliModel] = useState("");
 	const [copiedCliLoginCommand, setCopiedCliLoginCommand] = useState(false);
 	const [systemPrompt, setSystemPrompt] = useState("");
 	const [showApiKey, setShowApiKey] = useState(false);
 	const [dockerEnabled, setDockerEnabled] = useState(false);
+	// Older APIs predate docker_in_sandbox and always allowed it, so only an
+	// explicit false hides the toggle.
+	const { data: deploymentConfig } = useQuery(environmentConfigQueryOptions());
+	const dockerInSandbox = deploymentConfig?.docker_in_sandbox !== false;
 	const [defaultEnvironmentId, setDefaultEnvironmentIdState] = useState("");
 	const [defaultFolderId, setDefaultFolderId] = useState("");
 	// Changing the default environment clears any previously-picked default
@@ -234,9 +242,10 @@ export function CreateAgentDialog({
 		}
 		setDefaultEnvironmentIdState(id);
 	};
-	const selectedEnvironment = environments.find(
-		(env) => env.id === defaultEnvironmentId,
-	);
+	const { data: selectedEnvironment } = useQuery({
+		...environmentQueryOptions(projectId ?? "", defaultEnvironmentId),
+		enabled: !!projectId && !!defaultEnvironmentId,
+	});
 
 	// Derived final values sent to the API
 	const llmProvider =
@@ -249,8 +258,8 @@ export function CreateAgentDialog({
 		setHandle("");
 		setDescription("");
 		setPresetId("");
-		setRoleId("");
-		setPickedRole(undefined);
+		setRoleIds([]);
+		setPicked(undefined);
 		setCreated(null);
 		createMutation.reset();
 		clearRoleError();
@@ -263,6 +272,8 @@ export function CreateAgentDialog({
 		setLlmBaseUrl(llmModels.anthropic?.base_url ?? "");
 		setAcpProvider("claude-code");
 		setAcpCommand("");
+		setAcpModel("");
+		setAcpEffort("");
 		setCliProvider("claude-code");
 		setCliModel("");
 		setCopiedCliLoginCommand(false);
@@ -274,12 +285,13 @@ export function CreateAgentDialog({
 	};
 
 	const invalidateAgentLists = () => {
+		invalidateAgentDirectory(projectId ?? null);
 		if (projectId) {
 			qc.invalidateQueries({
 				queryKey: ["projects", projectId, "agents"],
 			});
 		} else {
-			qc.invalidateQueries({ queryKey: globalAgentsQueryOptions.queryKey });
+			qc.invalidateQueries({ queryKey: globalAgentsKey });
 			qc.invalidateQueries({ queryKey: ["global-agents", "chattable"] });
 		}
 	};
@@ -395,6 +407,8 @@ export function CreateAgentDialog({
 							}
 						: {
 								acp_provider: acpProvider,
+								...(acpModel.trim() ? { acp_model: acpModel.trim() } : {}),
+								...(acpEffort ? { acp_effort: acpEffort } : {}),
 								...(acpProvider === "custom"
 									? { acp_command: acpCommandParts }
 									: {}),
@@ -408,7 +422,7 @@ export function CreateAgentDialog({
 						handle: handle.trim(),
 						description: description.trim(),
 						agent_type: agentType,
-						project_role_id: roleId,
+						role_ids: roleIds,
 						...typeFields,
 					})
 				: await createGlobalAgent({
@@ -457,9 +471,9 @@ export function CreateAgentDialog({
 		},
 	});
 
-	// The role step's request, made once the agent exists: another role, or none.
+	// The role step's request, made once the agent exists: other roles, or none.
 	const {
-		setRole,
+		setRoles,
 		isPending: roleIsPending,
 		error: roleError,
 		clearError: clearRoleError,
@@ -470,15 +484,18 @@ export function CreateAgentDialog({
 	});
 
 	// What the role step shows as chosen, and what pressing its button would do.
-	const currentRoleId = created?.agent.global_role_id ?? null;
-	const chosenRoleId =
-		pickedRole === undefined ? currentRoleId : (pickedRole?.id ?? null);
+	const currentRoleIds = (created?.agent.roles ?? []).map((r) => r.id);
+	const chosenRoleIds = picked?.ids ?? currentRoleIds;
 	const roleChange =
-		chosenRoleId === currentRoleId
+		chosenRoleIds.length === currentRoleIds.length &&
+		chosenRoleIds.every((id) => currentRoleIds.includes(id))
 			? null
-			: chosenRoleId === null
+			: chosenRoleIds.length === 0
 				? "remove"
 				: "assign";
+	const addsFullAccess = !!picked?.roles.some(
+		(r) => !currentRoleIds.includes(r.id) && isFullAccessRole(r),
+	);
 
 	// Lets the user confirm their terminal login actually worked before
 	// finishing agent creation — the environment-scoped sibling of
@@ -513,13 +530,13 @@ export function CreateAgentDialog({
 		agentType === "llm"
 			? !!(llmProvider && llmModel && llmBaseUrl.trim() && llmApiKey.trim())
 			: agentType === "provider_cli"
-				? !!(cliProvider && defaultEnvironmentId)
+				? !!(cliProvider && defaultEnvironmentId && defaultFolderId)
 				: !!(
 						acpProvider &&
 						(acpProvider !== "custom" || acpCommandParts.length > 0)
 					);
 	// A project agent must have a project role, which is part of its create request.
-	const roleStepValid = !projectId || !!roleId;
+	const roleStepValid = !projectId || roleIds.length > 0;
 	const canSubmit = !!(
 		step1Valid &&
 		step2Valid &&
@@ -535,7 +552,7 @@ export function CreateAgentDialog({
 			finish(created);
 			return;
 		}
-		setRole(created.agent.id, pickedRole ?? null);
+		setRoles(created.agent.id, chosenRoleIds);
 	};
 
 	// Shown on the step whose button creates the agent. The fields these
@@ -827,6 +844,9 @@ export function CreateAgentDialog({
 											<SelectItem value="goose">
 												{t("agents.createDialog.acpProviderGoose")}
 											</SelectItem>
+											<SelectItem value="opencode">
+												{t("agents.createDialog.acpProviderOpenCode")}
+											</SelectItem>
 											<SelectSeparator />
 											<SelectItem value="custom">
 												{t("agents.createDialog.acpProviderCustom")}
@@ -852,6 +872,13 @@ export function CreateAgentDialog({
 										</p>
 									</div>
 								)}
+								<AcpModelEffortFields
+									idPrefix="create-agent"
+									model={acpModel}
+									effort={acpEffort}
+									onModelChange={setAcpModel}
+									onEffortChange={setAcpEffort}
+								/>
 								<p className="text-xs text-muted-foreground rounded-md bg-muted/40 px-3 py-2">
 									{t("agents.createDialog.acpGuidance")}
 								</p>
@@ -952,7 +979,6 @@ export function CreateAgentDialog({
 										</Label>
 										<DefaultEnvironmentSelect
 											projectId={projectId}
-											environments={environments}
 											value={defaultEnvironmentId}
 											onChange={(id) => {
 												setDefaultEnvironmentId(id);
@@ -968,13 +994,15 @@ export function CreateAgentDialog({
 									{selectedEnvironment && (
 										<div className="space-y-1.5">
 											<Label>
-												{t("agents.detail.overview.defaultFolderLabel")}
+												{t("agents.detail.overview.defaultFolderLabel")}{" "}
+												<span className="text-destructive">*</span>
 											</Label>
 											<DefaultFolderSelect
 												projectId={projectId}
 												environment={selectedEnvironment}
 												value={defaultFolderId}
 												onChange={setDefaultFolderId}
+												required
 												className="w-full"
 											/>
 										</div>
@@ -999,22 +1027,18 @@ export function CreateAgentDialog({
 											command={cliLoginCommand(cliProvider)}
 											copied={copiedCliLoginCommand}
 											onCopy={() => {
-												navigator.clipboard
-													.writeText(cliLoginCommand(cliProvider))
-													.then(() => {
+												// On failure leave copiedCliLoginCommand untouched so
+												// the button doesn't falsely claim success.
+												void copyToClipboard(cliLoginCommand(cliProvider)).then(
+													(ok) => {
+														if (!ok) return;
 														setCopiedCliLoginCommand(true);
 														setTimeout(
 															() => setCopiedCliLoginCommand(false),
 															2000,
 														);
-													})
-													.catch(() => {
-														// Clipboard write can fail (permission denied,
-														// insecure context) — leave copiedCliLoginCommand
-														// untouched so the button doesn't falsely claim
-														// success for a command the user may need to copy
-														// manually.
-													});
+													},
+												);
 											}}
 										/>
 									</div>
@@ -1234,7 +1258,6 @@ export function CreateAgentDialog({
 											</Label>
 											<DefaultEnvironmentSelect
 												projectId={projectId}
-												environments={environments}
 												value={defaultEnvironmentId}
 												onChange={setDefaultEnvironmentId}
 												className="w-full"
@@ -1265,7 +1288,7 @@ export function CreateAgentDialog({
 									    sandbox — once a static default environment is picked, that
 									    environment's own Docker setting (set at creation) governs
 									    instead, so this toggle no longer means anything. */}
-									{!defaultEnvironmentId && (
+									{!defaultEnvironmentId && dockerInSandbox && (
 										<div className="flex items-center justify-between gap-3">
 											<div>
 												<p className="text-sm font-medium">
@@ -1334,8 +1357,8 @@ export function CreateAgentDialog({
 									<ProjectRolePicker
 										projectId={projectId}
 										label={t("agents.createDialog.projectRoleLabel")}
-										value={roleId || null}
-										onChange={(role) => setRoleId(role.id)}
+										values={roleIds}
+										onChange={(ids) => setRoleIds(ids)}
 										disabled={createMutation.isPending}
 									/>
 								</div>
@@ -1348,25 +1371,15 @@ export function CreateAgentDialog({
 								</p>
 								<RolePicker
 									label={t("agents.detail.globalRole.title")}
-									value={chosenRoleId}
-									onChange={(role) => {
-										setPickedRole(role);
+									values={chosenRoleIds}
+									onChange={(ids, roles) => {
+										setPicked({ ids, roles });
 										clearRoleError();
 									}}
-									none={{
-										label: t("agents.detail.globalRole.none"),
-										hint: t("agents.detail.globalRole.noneHint"),
-										onSelect: () => {
-											setPickedRole(null);
-											clearRoleError();
-										},
-									}}
-									currentRoleId={currentRoleId}
+									currentRoleIds={currentRoleIds}
 									disabled={roleIsPending}
 								/>
-								{roleChange === "assign" &&
-								pickedRole &&
-								isFullAccessRole(pickedRole) ? (
+								{roleChange === "assign" && addsFullAccess ? (
 									<InlineNotice tone="warning">
 										{t("agents.detail.globalRole.fullAccessWarning")}
 									</InlineNotice>
@@ -1522,7 +1535,7 @@ export function AcpSetupDialog({
 								});
 							} else {
 								qc.invalidateQueries({
-									queryKey: globalAgentsQueryOptions.queryKey,
+									queryKey: globalAgentsKey,
 								});
 							}
 							onTokenGenerated();

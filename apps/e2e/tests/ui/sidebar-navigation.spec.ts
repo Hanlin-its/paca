@@ -1,7 +1,7 @@
 // spec: features/ui/sidebar.feature
 // seed: tests/seed.spec.ts
 
-import { ensureLoginForm } from '../helpers/e2e-api';
+import { ensureLoginForm } from "../helpers/e2e-api";
 import { expect, type Locator, type Page, test } from "@playwright/test";
 import {
 	authRequest,
@@ -64,10 +64,10 @@ test.describe("Sidebar Navigation", () => {
 			await expect(page.getByText("Global Roles")).toBeVisible();
 
 			// Click the sidebar trigger button to collapse the sidebar
-			await page.getByLabel("Toggle Sidebar").click();
+			await sidebarTrigger(page).click();
 
 			// Click the sidebar trigger button again to expand the sidebar
-			await page.getByLabel("Toggle Sidebar").click();
+			await sidebarTrigger(page).click();
 
 			// Verify the sidebar is in expanded state and navigation items show labels alongside icons when expanded
 			await expect(page.getByText("Home")).toBeVisible();
@@ -274,7 +274,7 @@ test.describe("Sidebar Navigation - Mobile Behavior", () => {
 	const signInAsAdminMobile = async (page: Page) => {
 		// Set mobile viewport (iPhone 8 size)
 		await page.setViewportSize({ width: 375, height: 667 });
-		await page.goto("http://localhost/");
+		await page.goto("/");
 		await ensureLoginForm(page);
 		await page.getByRole("textbox", { name: "Username" }).fill("admin");
 		await page
@@ -353,7 +353,7 @@ test.describe("Sidebar Navigation - Mobile Behavior", () => {
 			await page.setViewportSize(viewport);
 			// Wait for layout to stabilize after viewport change
 			await page.waitForTimeout(100);
-			await page.goto("http://localhost/");
+			await page.goto("/");
 
 			// Check if we need to sign in or if we're already authenticated
 			const usernameField = page.getByRole("textbox", { name: "Username" });
@@ -491,7 +491,9 @@ test.describe("Sidebar Navigation - Desktop collapse and rail", () => {
 	test("Clicking the sidebar rail collapses and expands the sidebar", async ({
 		page,
 	}) => {
-		await sidebarRail(page).click();
+		// The resize handle overlays the rail while expanded, so only the trigger
+		// collapses it; the rail is clickable once the handle is gone.
+		await sidebarTrigger(page).click();
 		await expect(desktopSidebar(page)).toHaveAttribute(
 			"data-state",
 			"collapsed",
@@ -597,7 +599,7 @@ test.describe("Sidebar Navigation - Administration visibility by permission", ()
 		// Admin permissions are absent; the role only lets the user create projects.
 		await authRequest(request);
 		const username = await createMember(request, playwright, {
-			"projects.create": true,
+			"projects:create": true,
 		});
 
 		await signInAsMemberAndOpenSidebar(page, username);
@@ -622,7 +624,7 @@ test.describe("Sidebar Navigation - Administration visibility by permission", ()
 	}) => {
 		await authRequest(request);
 		const username = await createMember(request, playwright, {
-			"users.read": true,
+			"users:read": true,
 		});
 
 		await signInAsMemberAndOpenSidebar(page, username);

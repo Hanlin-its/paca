@@ -1,10 +1,11 @@
 import {
 	type QueryKey,
+	useInfiniteQuery,
 	useMutation,
-	useQuery,
 	useQueryClient,
 } from "@tanstack/react-query";
 import {
+	Cog,
 	GitBranch,
 	Loader2,
 	MessageSquare,
@@ -15,8 +16,26 @@ import {
 	Send,
 	Trash2,
 } from "lucide-react";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import {
+	type CSSProperties,
+	type ReactNode,
+	useEffect,
+	useLayoutEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import { useTranslation } from "react-i18next";
+import {
+	ACTIVITY_WIDTH_DEFAULT,
+	ACTIVITY_WIDTH_KEY_STEP,
+	ACTIVITY_WIDTH_MIN,
+	clampActivityWidth,
+	maxActivityWidth,
+	readStoredActivityWidth,
+	storeActivityWidth,
+} from "@/components/shared/activity-pane-width";
+import { AskQuestionCard } from "@/components/shared/ask-question-card";
 import {
 	blocksToText,
 	CommentDisplay,
@@ -24,7 +43,8 @@ import {
 	type CommentEditorHandle,
 } from "@/components/shared/comment-blocknote";
 import { ContentDiffDialog } from "@/components/shared/content-diff";
-import { EntityAvatarContent } from "@/components/shared/entity-avatar";
+import { EntityAvatar } from "@/components/shared/entity-avatar";
+import { LoadMoreSentinel } from "@/components/shared/load-more-sentinel";
 import { Button } from "@/components/ui/button";
 import {
 	DropdownMenu,
@@ -33,6 +53,9 @@ import {
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { useActorAvatar } from "@/hooks/use-actor-avatar";
+import { extractAskQuestion } from "@/lib/ask-question";
+import { searchMentionableMembers } from "@/lib/mention-api";
 import { timeAgo } from "@/lib/time-ago";
 import { cn } from "@/lib/utils";
 
@@ -49,11 +72,20 @@ export interface ActivityEntry {
 	updated_at: string;
 }
 
+/** One page of an entity's timeline: newest first, with the cursor for the
+ *  next (older) page, if any. */
+export interface ActivityPage<T> {
+	items: T[];
+	next_cursor?: string | null;
+}
+
 export interface ActivityPaneConfig<T extends ActivityEntry> {
 	projectId: string;
 	entityId: string;
 	queryKey: QueryKey;
-	queryFn: () => Promise<T[]>;
+	/** Loads one page of the timeline; the pane shows the newest page first and
+	 *  pages in older entries on demand. */
+	fetchPage: (cursor?: string) => Promise<ActivityPage<T>>;
 	addComment?: (blocks: unknown[]) => Promise<unknown>;
 	updateComment?: (commentId: string, blocks: unknown[]) => Promise<unknown>;
 	deleteComment?: (commentId: string) => Promise<void>;
@@ -64,7 +96,6 @@ export interface ActivityPaneConfig<T extends ActivityEntry> {
 	isRevertable?: (entry: T) => boolean;
 	describeActivity: (entry: T) => ReactNode;
 	getCommentBlocks: (content: T["content"]) => unknown[] | null;
-	sortAscending?: boolean;
 	nameMaps?: Record<string, Record<string, string>>;
 	currentUserId?: string;
 }
@@ -85,7 +116,7 @@ function readStoredActivityFilter(): ActivityFilter {
 export function ActivityPane<T extends ActivityEntry>({
 	projectId,
 	queryKey,
-	queryFn,
+	fetchPage,
 	addComment,
 	updateComment,
 	deleteComment,
@@ -94,7 +125,6 @@ export function ActivityPane<T extends ActivityEntry>({
 	isRevertable,
 	describeActivity,
 	getCommentBlocks,
-	sortAscending = false,
 	currentUserId,
 }: ActivityPaneConfig<T>) {
 	const { t } = useTranslation("shared");
@@ -105,20 +135,84 @@ export function ActivityPane<T extends ActivityEntry>({
 	const [filter, setFilter] = useState<ActivityFilter>(
 		readStoredActivityFilter,
 	);
+	const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
+	const [width, setWidth] = useState(() =>
+		readStoredActivityWidth(window.innerWidth),
+	);
+	const widthRef = useRef(width);
+	const dragRef = useRef<{ startX: number; startWidth: number } | null>(null);
+	const maxWidth = maxActivityWidth(viewportWidth);
 	const qc = useQueryClient();
 
-	const { data: activities = [] } = useQuery({
+	function applyWidth(next: number) {
+		const clamped = clampActivityWidth(next, window.innerWidth);
+		widthRef.current = clamped;
+		setWidth(clamped);
+	}
+
+	function endDrag() {
+		if (!dragRef.current) return;
+		dragRef.current = null;
+		storeActivityWidth(widthRef.current);
+	}
+
+	// Keep the in-memory width (and aria values) in step with the window so a
+	// stale, larger value never lingers after the window shrinks.
+	useEffect(() => {
+		function onResize() {
+			setViewportWidth(window.innerWidth);
+			const clamped = clampActivityWidth(widthRef.current, window.innerWidth);
+			if (clamped !== widthRef.current) {
+				widthRef.current = clamped;
+				setWidth(clamped);
+			}
+		}
+		window.addEventListener("resize", onResize);
+		return () => window.removeEventListener("resize", onResize);
+	}, []);
+
+	const {
+		data,
+		hasNextPage,
+		isFetchingNextPage,
+		isFetchNextPageError,
+		fetchNextPage,
+	} = useInfiniteQuery({
 		queryKey,
-		queryFn,
+		queryFn: ({ pageParam }: { pageParam: string | undefined }) =>
+			fetchPage(pageParam),
+		initialPageParam: undefined as string | undefined,
+		getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
 	});
 
-	const sorted = useMemo(() => {
-		if (!sortAscending) return activities;
-		return [...activities].sort(
-			(a, b) =>
-				new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
-		);
-	}, [activities, sortAscending]);
+	// Pages arrive newest first; the pane reads oldest to newest.
+	const sorted = useMemo(
+		() =>
+			(data?.pages.flatMap((p) => p.items) ?? []).sort(
+				(a, b) =>
+					new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+			),
+		[data],
+	);
+
+	// An agent's multiple-choice comment counts as answered once anyone else
+	// has commented after it.
+	const answeredAskIds = useMemo(() => {
+		const answered = new Set<string>();
+		sorted.forEach((entry, i) => {
+			if (entry.activity_type !== "comment") return;
+			if (!extractAskQuestion(getCommentBlocks(entry.content))) return;
+			const replied = sorted
+				.slice(i + 1)
+				.some(
+					(later) =>
+						later.activity_type === "comment" &&
+						later.actor_id !== entry.actor_id,
+				);
+			if (replied) answered.add(entry.id);
+		});
+		return answered;
+	}, [sorted, getCommentBlocks]);
 
 	const hasNonCommentActivity = useMemo(
 		() => sorted.some((entry) => entry.activity_type !== "comment"),
@@ -139,17 +233,38 @@ export function ActivityPane<T extends ActivityEntry>({
 		}
 	};
 
-	// biome-ignore lint/correctness/useExhaustiveDependencies: activities is needed to scroll when new items are added
+	const getViewport = () =>
+		scrollAreaRef.current?.querySelector(
+			'[data-slot="scroll-area-viewport"]',
+		) as HTMLElement | null;
+
+	// Stick to the bottom when the newest entry changes (first load, a new
+	// comment), but leave the reader where they are when older entries are
+	// paged in above.
+	const newestId = sorted[sorted.length - 1]?.id;
+	// biome-ignore lint/correctness/useExhaustiveDependencies: only a change of the newest entry should scroll
 	useEffect(() => {
 		requestAnimationFrame(() => {
-			const viewport = scrollAreaRef.current?.querySelector(
-				'[data-slot="scroll-area-viewport"]',
-			) as HTMLElement;
-			if (viewport) {
-				viewport.scrollTop = viewport.scrollHeight;
-			}
+			const viewport = getViewport();
+			if (viewport) viewport.scrollTop = viewport.scrollHeight;
 		});
-	}, [sorted]);
+	}, [newestId]);
+
+	// Keep the visible entries in place when older ones are prepended.
+	const heightBeforeOlder = useRef<number | null>(null);
+	const loadOlder = () => {
+		heightBeforeOlder.current = getViewport()?.scrollHeight ?? null;
+		void fetchNextPage();
+	};
+	const oldestId = sorted[0]?.id;
+	// biome-ignore lint/correctness/useExhaustiveDependencies: runs when the oldest entry changes
+	useLayoutEffect(() => {
+		const viewport = getViewport();
+		if (viewport && heightBeforeOlder.current !== null) {
+			viewport.scrollTop += viewport.scrollHeight - heightBeforeOlder.current;
+		}
+		heightBeforeOlder.current = null;
+	}, [oldestId]);
 
 	const addMutation = useMutation({
 		mutationFn: (blocks: unknown[]) => {
@@ -163,6 +278,40 @@ export function ActivityPane<T extends ActivityEntry>({
 			qc.invalidateQueries({ queryKey });
 		},
 	});
+
+	// Posts the chosen answer as a reply that @-mentions the asking agent, so
+	// the comment-mention trigger wakes it up with the answer.
+	const answerAsk = async (entry: T, answer: string) => {
+		if (!addComment) return;
+		const members = await searchMentionableMembers(
+			projectId,
+			entry.actor_username,
+		).catch(() => []);
+		const agent = members.find((m) => m.username === entry.actor_username);
+		const content: unknown[] = [];
+		if (agent) {
+			content.push(
+				{
+					type: "teamMention",
+					props: { id: agent.id, name: agent.name, avatar: "" },
+				},
+				{ type: "text", text: " ", styles: {} },
+			);
+		}
+		content.push({ type: "text", text: answer, styles: {} });
+		await addMutation.mutateAsync([
+			{
+				type: "paragraph",
+				props: {
+					textColor: "default",
+					backgroundColor: "default",
+					textAlignment: "left",
+				},
+				content,
+				children: [],
+			},
+		]);
+	};
 
 	const updateMutation = useMutation({
 		mutationFn: ({
@@ -210,7 +359,54 @@ export function ActivityPane<T extends ActivityEntry>({
 			: [];
 
 	return (
-		<div className="flex w-full lg:w-80 lg:shrink-0 flex-col h-full lg:overflow-hidden border-t lg:border-t-0 lg:border-l border-border/25 bg-muted/10">
+		<div
+			className="relative flex w-full lg:w-(--activity-pane-width) lg:max-w-[50vw] lg:shrink-0 flex-col h-full lg:overflow-hidden border-t lg:border-t-0 lg:border-l border-border/25 bg-muted/10"
+			style={{ "--activity-pane-width": `${width}px` } as CSSProperties}
+		>
+			{/* biome-ignore lint/a11y/useSemanticElements: draggable splitter */}
+			<div
+				role="separator"
+				aria-orientation="vertical"
+				aria-label={t("activityPane.resize")}
+				aria-valuemin={ACTIVITY_WIDTH_MIN}
+				aria-valuemax={maxWidth}
+				aria-valuenow={width}
+				tabIndex={0}
+				data-testid="activity-pane-resize-handle"
+				className="absolute inset-y-0 left-0 z-10 hidden w-1.5 cursor-col-resize touch-none select-none transition-colors hover:bg-primary/30 focus-visible:bg-primary/40 focus-visible:outline-none active:bg-primary/40 lg:block"
+				onPointerDown={(e) => {
+					if (e.button !== 0) return;
+					e.currentTarget.setPointerCapture(e.pointerId);
+					dragRef.current = { startX: e.clientX, startWidth: widthRef.current };
+				}}
+				onPointerMove={(e) => {
+					const drag = dragRef.current;
+					if (drag) applyWidth(drag.startWidth + (drag.startX - e.clientX));
+				}}
+				onPointerUp={endDrag}
+				onPointerCancel={endDrag}
+				onLostPointerCapture={endDrag}
+				onDoubleClick={() => {
+					applyWidth(ACTIVITY_WIDTH_DEFAULT);
+					storeActivityWidth(widthRef.current);
+				}}
+				onKeyDown={(e) => {
+					let next: number;
+					if (e.key === "ArrowLeft")
+						next = widthRef.current + ACTIVITY_WIDTH_KEY_STEP;
+					else if (e.key === "ArrowRight")
+						next = widthRef.current - ACTIVITY_WIDTH_KEY_STEP;
+					else if (e.key === "Home") next = ACTIVITY_WIDTH_MIN;
+					else if (e.key === "End") next = Number.POSITIVE_INFINITY;
+					else return;
+					e.preventDefault();
+					applyWidth(next);
+				}}
+				onKeyUp={(e) => {
+					if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key))
+						storeActivityWidth(widthRef.current);
+				}}
+			/>
 			<div className="flex shrink-0 flex-col gap-2 border-b border-border/25 px-5 py-3 bg-muted/20">
 				<div className="flex items-center gap-2.5">
 					<MessageSquare className="size-3.5 text-muted-foreground/70" />
@@ -220,6 +416,7 @@ export function ActivityPane<T extends ActivityEntry>({
 					{visible.length > 0 && (
 						<span className="ml-auto rounded-full bg-muted/60 px-2 py-0.5 text-xs font-bold text-muted-foreground/70 tabular-nums">
 							{visible.length}
+							{hasNextPage ? "+" : ""}
 						</span>
 					)}
 				</div>
@@ -263,6 +460,13 @@ export function ActivityPane<T extends ActivityEntry>({
 				className="lg:flex-1 lg:min-h-0 px-4 py-4"
 			>
 				<div className="space-y-3">
+					<LoadMoreSentinel
+						compact
+						hasMore={!!hasNextPage}
+						isLoadingMore={isFetchingNextPage}
+						isError={isFetchNextPageError}
+						onLoadMore={loadOlder}
+					/>
 					{sorted.length === 0 && (
 						<div className="flex flex-col items-center py-8 text-muted-foreground/40">
 							<MessageSquare className="size-6 mb-2" />
@@ -286,6 +490,7 @@ export function ActivityPane<T extends ActivityEntry>({
 					)}
 					{visible.map((entry) => (
 						<ActivityItemInner
+							projectId={projectId}
 							key={entry.id}
 							entry={entry}
 							describeActivity={describeActivity}
@@ -298,6 +503,8 @@ export function ActivityPane<T extends ActivityEntry>({
 							queryKey={queryKey}
 							currentUserId={currentUserId}
 							editingCommentId={editingCommentId}
+							askAnswered={answeredAskIds.has(entry.id)}
+							onAnswerAsk={addComment ? answerAsk : undefined}
 							onStartEdit={(commentId) => {
 								setEditingCommentId(commentId);
 								editorRef.current?.focus();
@@ -373,6 +580,7 @@ export function ActivityPane<T extends ActivityEntry>({
 }
 
 interface ActivityItemInnerProps<T extends ActivityEntry> {
+	projectId: string;
 	entry: T;
 	describeActivity: (entry: T) => ReactNode;
 	getCommentBlocks: (content: T["content"]) => unknown[] | null;
@@ -387,9 +595,12 @@ interface ActivityItemInnerProps<T extends ActivityEntry> {
 	currentUserId?: string;
 	editingCommentId: string | null;
 	onStartEdit: (commentId: string) => void;
+	askAnswered: boolean;
+	onAnswerAsk?: (entry: T, answer: string) => Promise<void>;
 }
 
 function ActivityItemInner<T extends ActivityEntry>({
+	projectId,
 	entry,
 	describeActivity,
 	getCommentBlocks,
@@ -402,11 +613,15 @@ function ActivityItemInner<T extends ActivityEntry>({
 	currentUserId,
 	editingCommentId,
 	onStartEdit,
+	askAnswered,
+	onAnswerAsk,
 }: ActivityItemInnerProps<T>) {
 	const { t } = useTranslation("shared");
 	const { t: tCommon } = useTranslation("common");
 	const qc = useQueryClient();
-	const commentBlocks = getCommentBlocks(entry.content);
+	const rawCommentBlocks = getCommentBlocks(entry.content);
+	const askComment = extractAskQuestion(rawCommentBlocks);
+	const commentBlocks = askComment ? askComment.rest : rawCommentBlocks;
 	const [diffOpen, setDiffOpen] = useState(false);
 	const [revertPending, setRevertPending] = useState(false);
 	const [revertError, setRevertError] = useState<string | null>(null);
@@ -414,7 +629,7 @@ function ActivityItemInner<T extends ActivityEntry>({
 	const isComment = entry.activity_type === "comment";
 	const displayName =
 		entry.actor_name || entry.actor_username || t("activityPane.systemActor");
-	const initial = displayName.slice(0, 1).toUpperCase();
+	const resolveActor = useActorAvatar(projectId);
 
 	const isOwnComment =
 		isComment &&
@@ -457,18 +672,16 @@ function ActivityItemInner<T extends ActivityEntry>({
 
 	return (
 		<div className="flex gap-3">
-			<div
-				className={cn(
-					"flex size-6 shrink-0 items-center justify-center rounded-full text-xs font-bold mt-0.5 ring-1",
-					isComment
-						? "bg-linear-to-br from-primary/20 to-primary/10 text-primary ring-primary/15"
-						: "bg-muted/40 text-muted-foreground/80 ring-border/20",
-				)}
-			>
-				<EntityAvatarContent avatarUrl={entry.actor_avatar_thumb_url}>
-					{initial}
-				</EntityAvatarContent>
-			</div>
+			<EntityAvatar
+				{...resolveActor({
+					id: entry.actor_id,
+					name: entry.actor_name || entry.actor_username,
+					avatarUrl: entry.actor_avatar_thumb_url,
+				})}
+				fallback={<Cog className="size-3" />}
+				size="sm"
+				className="mt-0.5 shrink-0"
+			/>
 			<div className="flex-1 min-w-0">
 				{isComment ? (
 					<div className="group rounded-xl rounded-tl-lg border border-border/25 bg-card/70 px-3.5 py-2.5">
@@ -515,9 +728,19 @@ function ActivityItemInner<T extends ActivityEntry>({
 								<CommentDisplay blocks={commentBlocks} />
 							</div>
 						) : (
-							<p className="text-sm text-foreground leading-relaxed">
-								{blocksToText(commentBlocks ?? [])}
-							</p>
+							!askComment && (
+								<p className="text-sm text-foreground leading-relaxed">
+									{blocksToText(commentBlocks ?? [])}
+								</p>
+							)
+						)}
+						{askComment && (
+							<AskQuestionCard
+								ask={askComment.ask}
+								className="mt-2"
+								disabled={askAnswered || !onAnswerAsk}
+								onAnswer={(answer) => onAnswerAsk?.(entry, answer)}
+							/>
 						)}
 					</div>
 				) : (

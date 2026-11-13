@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -17,7 +18,7 @@ import (
 	docdom "github.com/Paca-AI/api/internal/domain/doc"
 	projectdom "github.com/Paca-AI/api/internal/domain/project"
 	userdom "github.com/Paca-AI/api/internal/domain/user"
-	"github.com/Paca-AI/api/internal/platform/authz"
+	"github.com/Paca-AI/api/internal/platform/authz/iam"
 	jwttoken "github.com/Paca-AI/api/internal/platform/token"
 	activitysvc "github.com/Paca-AI/api/internal/service/activity"
 	authsvc "github.com/Paca-AI/api/internal/service/auth"
@@ -49,7 +50,30 @@ func newFakeDocRepoIT() *fakeDocRepoIT {
 	}
 }
 
-func (r *fakeDocRepoIT) ListFolders(_ context.Context, projectID uuid.UUID) ([]*docdom.DocFolder, error) {
+// ListFolders returns the project's direct children of parentID (root when
+// nil) in one page; the fake does not page.
+func (r *fakeDocRepoIT) ListFolders(_ context.Context, projectID uuid.UUID, parentID *uuid.UUID, _ docdom.FolderFilter, _ *string, _ int) ([]*docdom.DocFolder, bool, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []*docdom.DocFolder
+	for _, f := range r.folders {
+		if f.ProjectID != projectID {
+			continue
+		}
+		if (parentID == nil) != (f.ParentID == nil) || (parentID != nil && *f.ParentID != *parentID) {
+			continue
+		}
+		cp := *f
+		out = append(out, &cp)
+	}
+	return out, false, nil
+}
+
+func (r *fakeDocRepoIT) FolderPath(context.Context, uuid.UUID, uuid.UUID) ([]*docdom.DocFolder, error) {
+	return nil, nil
+}
+
+func (r *fakeDocRepoIT) ListAllFolders(_ context.Context, projectID uuid.UUID) ([]*docdom.DocFolder, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	var out []*docdom.DocFolder
@@ -92,6 +116,21 @@ func (r *fakeDocRepoIT) UpdateFolder(_ context.Context, f *docdom.DocFolder) err
 	return nil
 }
 
+func (r *fakeDocRepoIT) UpdateFolderAtomic(ctx context.Context, id uuid.UUID, decide func(*docdom.DocFolder, func(uuid.UUID) (*docdom.DocFolder, error)) error) (*docdom.DocFolder, error) {
+	cur, err := r.FindFolderByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := decide(cur, func(fid uuid.UUID) (*docdom.DocFolder, error) { return r.FindFolderByID(ctx, fid) }); err != nil {
+		return nil, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := *cur
+	r.folders[id] = &st
+	return cur, nil
+}
+
 func (r *fakeDocRepoIT) DeleteFolder(_ context.Context, id uuid.UUID) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -100,10 +139,8 @@ func (r *fakeDocRepoIT) DeleteFolder(_ context.Context, id uuid.UUID) error {
 }
 
 // ListDocuments ignores cursor/limit — no test in this file exercises
-// pagination, so it always returns the full matching set (equivalent to
-// always passing limit=nil), matching the real repository's own
-// no-pagination-requested behavior.
-func (r *fakeDocRepoIT) ListDocuments(_ context.Context, projectID uuid.UUID, folderID *uuid.UUID, search *string, _ *string, _ *int) ([]*docdom.Document, bool, error) {
+// pagination, so it returns every matching document.
+func (r *fakeDocRepoIT) ListDocuments(_ context.Context, projectID uuid.UUID, filter docdom.DocumentFilter, _ *string, _ int) ([]*docdom.Document, bool, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	var out []*docdom.Document
@@ -111,20 +148,24 @@ func (r *fakeDocRepoIT) ListDocuments(_ context.Context, projectID uuid.UUID, fo
 		if d.ProjectID != projectID || d.DeletedAt != nil {
 			continue
 		}
-		if folderID != nil {
-			if d.FolderID == nil || *d.FolderID != *folderID {
-				continue
-			}
+		if filter.FolderID != nil && (d.FolderID == nil || *d.FolderID != *filter.FolderID) {
+			continue
 		}
-		if search != nil && *search != "" {
-			if !strings.Contains(strings.ToLower(d.Title), strings.ToLower(*search)) {
-				continue
-			}
+		if filter.RootOnly && filter.FolderID == nil && d.FolderID != nil {
+			continue
+		}
+		if filter.Search != "" && !strings.Contains(strings.ToLower(d.Title), strings.ToLower(filter.Search)) {
+			continue
 		}
 		cp := *d
 		out = append(out, &cp)
 	}
 	return out, false, nil
+}
+
+func (r *fakeDocRepoIT) ListAllDocuments(ctx context.Context, projectID uuid.UUID) ([]*docdom.Document, error) {
+	docs, _, err := r.ListDocuments(ctx, projectID, docdom.DocumentFilter{}, nil, 0)
+	return docs, err
 }
 
 func (r *fakeDocRepoIT) SearchDocuments(context.Context, uuid.UUID, string, int) ([]*docdom.Document, error) {
@@ -161,6 +202,21 @@ func (r *fakeDocRepoIT) UpdateDocument(_ context.Context, d *docdom.Document) er
 	return nil
 }
 
+func (r *fakeDocRepoIT) UpdateDocumentAtomic(ctx context.Context, id uuid.UUID, decide func(*docdom.Document) error) (*docdom.Document, error) {
+	cur, err := r.FindDocumentByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := decide(cur); err != nil {
+		return nil, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := *cur
+	r.docs[id] = &st
+	return cur, nil
+}
+
 func (r *fakeDocRepoIT) DeleteDocument(_ context.Context, id uuid.UUID) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -173,7 +229,7 @@ func (r *fakeDocRepoIT) DeleteDocument(_ context.Context, id uuid.UUID) error {
 	return nil
 }
 
-func (r *fakeDocRepoIT) ListSnapshots(_ context.Context, documentID uuid.UUID) ([]*docdom.DocSnapshot, error) {
+func (r *fakeDocRepoIT) ListSnapshots(_ context.Context, documentID uuid.UUID, cursorAfter *string, limit int) ([]*docdom.DocSnapshot, bool, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	var out []*docdom.DocSnapshot
@@ -183,7 +239,24 @@ func (r *fakeDocRepoIT) ListSnapshots(_ context.Context, documentID uuid.UUID) (
 			out = append(out, &cp)
 		}
 	}
-	return out, nil
+	// Newest first, as the real repository returns them.
+	sort.Slice(out, func(i, j int) bool { return out[i].SnapshotNumber > out[j].SnapshotNumber })
+	if cursorAfter != nil {
+		n, err := docdom.DecodeSnapshotCursor(*cursorAfter)
+		if err != nil {
+			return nil, false, err
+		}
+		i := 0
+		for i < len(out) && out[i].SnapshotNumber >= n {
+			i++
+		}
+		out = out[i:]
+	}
+	hasMore := limit > 0 && len(out) > limit
+	if hasMore {
+		out = out[:limit]
+	}
+	return out, hasMore, nil
 }
 
 func (r *fakeDocRepoIT) FindSnapshotByID(_ context.Context, id uuid.UUID) (*docdom.DocSnapshot, error) {
@@ -249,10 +322,7 @@ func (r *fakeDocRepoIT) DeleteRecentSnapshotsExcept(_ context.Context, documentI
 // resolves, since that identity is never itself a project member.
 type fakeDocMemberLookup struct{}
 
-func (f *fakeDocMemberLookup) FindMemberByActor(_ context.Context, _, actorID uuid.UUID, agentID *uuid.UUID) (*projectdom.ProjectMember, error) {
-	if agentID != nil {
-		return &projectdom.ProjectMember{ID: *agentID}, nil
-	}
+func (f *fakeDocMemberLookup) FindMember(_ context.Context, _, actorID uuid.UUID) (*projectdom.ProjectMember, error) {
 	if actorID == userdom.SystemActorUserID {
 		return nil, projectdom.ErrMemberNotFound
 	}
@@ -284,19 +354,17 @@ func buildDocTestRouter(docRepo *fakeDocRepoIT, store *projectPermStore) http.Ha
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
 	return router.New(router.Deps{
-		TokenManager:         tm,
-		Authorizer:           authz.NewAuthorizer(store),
-		ProjectVisibilitySvc: projectService,
-		Health:               handler.NewHealthHandler(),
-		Auth:                 handler.NewAuthHandler(authService, testCookieCfg),
-		User:                 handler.NewUserHandler(userService),
-		GlobalRole:           handler.NewGlobalRoleHandler(&fakeGlobalRoleService{}),
-		Project:              handler.NewProjectHandler(projectService, authz.NewAuthorizer(store)),
-		Task:                 handler.NewTaskHandler(taskService, viewService, activityService),
-		Sprint:               handler.NewSprintHandler(sprintService, viewService),
-		View:                 handler.NewViewHandler(viewService),
-		Document:             handler.NewDocumentHandler(docService, docActivityService),
-		Log:                  log,
+		TokenManager: tm,
+		IAM:          newIAM(store),
+		Health:       handler.NewHealthHandler(),
+		Auth:         handler.NewAuthHandler(authService, testCookieCfg),
+		User:         handler.NewUserHandler(userService),
+		Project:      handler.NewProjectHandler(projectService, newIAM(store)),
+		Task:         handler.NewTaskHandler(taskService, viewService, activityService),
+		Sprint:       handler.NewSprintHandler(sprintService, viewService),
+		View:         handler.NewViewHandler(viewService),
+		Document:     handler.NewDocumentHandler(docService, docActivityService),
+		Log:          log,
 	})
 }
 
@@ -348,8 +416,8 @@ func TestIntegrationDocFolders_CRUD(t *testing.T) {
 	docRepo := newFakeDocRepoIT()
 	projectID := uuid.New()
 	store := &projectPermStore{
-		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionDocsRead, authz.PermissionDocsWrite},
+		projectPerms: map[uuid.UUID][]iam.Action{
+			projectID: {iam.ActionDocsRead, iam.ActionDocsWrite},
 		},
 	}
 	r := buildDocTestRouter(docRepo, store)
@@ -399,8 +467,8 @@ func TestIntegrationDocFolders_InvalidNameReturns400(t *testing.T) {
 	docRepo := newFakeDocRepoIT()
 	projectID := uuid.New()
 	store := &projectPermStore{
-		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionDocsWrite},
+		projectPerms: map[uuid.UUID][]iam.Action{
+			projectID: {iam.ActionDocsWrite},
 		},
 	}
 	r := buildDocTestRouter(docRepo, store)
@@ -420,8 +488,8 @@ func TestIntegrationDocFolders_DeleteNotFoundReturns404(t *testing.T) {
 	docRepo := newFakeDocRepoIT()
 	projectID := uuid.New()
 	store := &projectPermStore{
-		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionDocsWrite},
+		projectPerms: map[uuid.UUID][]iam.Action{
+			projectID: {iam.ActionDocsWrite},
 		},
 	}
 	r := buildDocTestRouter(docRepo, store)
@@ -441,8 +509,8 @@ func TestIntegrationDocFolders_NoPermissionReturns403(t *testing.T) {
 	docRepo := newFakeDocRepoIT()
 	projectID := uuid.New()
 	store := &projectPermStore{
-		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionDocsRead}, // read-only, no write
+		projectPerms: map[uuid.UUID][]iam.Action{
+			projectID: {iam.ActionDocsRead}, // read-only, no write
 		},
 	}
 	r := buildDocTestRouter(docRepo, store)
@@ -463,8 +531,8 @@ func TestIntegrationDocuments_CRUD(t *testing.T) {
 	docRepo := newFakeDocRepoIT()
 	projectID := uuid.New()
 	store := &projectPermStore{
-		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionDocsRead, authz.PermissionDocsWrite},
+		projectPerms: map[uuid.UUID][]iam.Action{
+			projectID: {iam.ActionDocsRead, iam.ActionDocsWrite},
 		},
 	}
 	r := buildDocTestRouter(docRepo, store)
@@ -521,8 +589,8 @@ func TestIntegrationDocuments_GetNotFoundReturns404(t *testing.T) {
 	docRepo := newFakeDocRepoIT()
 	projectID := uuid.New()
 	store := &projectPermStore{
-		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionDocsRead},
+		projectPerms: map[uuid.UUID][]iam.Action{
+			projectID: {iam.ActionDocsRead},
 		},
 	}
 	r := buildDocTestRouter(docRepo, store)
@@ -542,8 +610,8 @@ func TestIntegrationDocuments_EmptyTitleCreatesUntitled(t *testing.T) {
 	docRepo := newFakeDocRepoIT()
 	projectID := uuid.New()
 	store := &projectPermStore{
-		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionDocsWrite},
+		projectPerms: map[uuid.UUID][]iam.Action{
+			projectID: {iam.ActionDocsWrite},
 		},
 	}
 	r := buildDocTestRouter(docRepo, store)
@@ -571,8 +639,8 @@ func TestIntegrationDocuments_UpdateWithEmptyTitleReturns400(t *testing.T) {
 	docRepo := newFakeDocRepoIT()
 	projectID := uuid.New()
 	store := &projectPermStore{
-		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionDocsRead, authz.PermissionDocsWrite},
+		projectPerms: map[uuid.UUID][]iam.Action{
+			projectID: {iam.ActionDocsRead, iam.ActionDocsWrite},
 		},
 	}
 	r := buildDocTestRouter(docRepo, store)
@@ -598,8 +666,8 @@ func TestIntegrationDocuments_FilterByFolder(t *testing.T) {
 	docRepo := newFakeDocRepoIT()
 	projectID := uuid.New()
 	store := &projectPermStore{
-		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionDocsRead, authz.PermissionDocsWrite},
+		projectPerms: map[uuid.UUID][]iam.Action{
+			projectID: {iam.ActionDocsRead, iam.ActionDocsWrite},
 		},
 	}
 	r := buildDocTestRouter(docRepo, store)
@@ -645,8 +713,8 @@ func TestIntegrationDocuments_Snapshots(t *testing.T) {
 	docRepo := newFakeDocRepoIT()
 	projectID := uuid.New()
 	store := &projectPermStore{
-		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionDocsRead, authz.PermissionDocsWrite},
+		projectPerms: map[uuid.UUID][]iam.Action{
+			projectID: {iam.ActionDocsRead, iam.ActionDocsWrite},
 		},
 	}
 	r := buildDocTestRouter(docRepo, store)
@@ -717,8 +785,8 @@ func TestIntegrationDocuments_SnapshotNotFoundReturns404(t *testing.T) {
 	docRepo := newFakeDocRepoIT()
 	projectID := uuid.New()
 	store := &projectPermStore{
-		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionDocsRead, authz.PermissionDocsWrite},
+		projectPerms: map[uuid.UUID][]iam.Action{
+			projectID: {iam.ActionDocsRead, iam.ActionDocsWrite},
 		},
 	}
 	r := buildDocTestRouter(docRepo, store)
@@ -751,8 +819,8 @@ func TestIntegrationDocuments_Comments_CRUD(t *testing.T) {
 	projectID := uuid.New()
 	userID := uuid.NewString()
 	store := &projectPermStore{
-		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionDocsRead, authz.PermissionDocsWrite},
+		projectPerms: map[uuid.UUID][]iam.Action{
+			projectID: {iam.ActionDocsRead, iam.ActionDocsWrite},
 		},
 	}
 	r := buildDocTestRouter(docRepo, store)
@@ -809,8 +877,8 @@ func TestIntegrationDocuments_AddEmptyCommentReturns400(t *testing.T) {
 	docRepo := newFakeDocRepoIT()
 	projectID := uuid.New()
 	store := &projectPermStore{
-		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionDocsRead, authz.PermissionDocsWrite},
+		projectPerms: map[uuid.UUID][]iam.Action{
+			projectID: {iam.ActionDocsRead, iam.ActionDocsWrite},
 		},
 	}
 	r := buildDocTestRouter(docRepo, store)
@@ -842,8 +910,8 @@ func TestIntegrationDocuments_AddStringCommentReturns400(t *testing.T) {
 	docRepo := newFakeDocRepoIT()
 	projectID := uuid.New()
 	store := &projectPermStore{
-		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionDocsRead, authz.PermissionDocsWrite},
+		projectPerms: map[uuid.UUID][]iam.Action{
+			projectID: {iam.ActionDocsRead, iam.ActionDocsWrite},
 		},
 	}
 	r := buildDocTestRouter(docRepo, store)
@@ -890,8 +958,8 @@ func TestIntegrationDocuments_ForbiddenReturns403(t *testing.T) {
 	docRepo := newFakeDocRepoIT()
 	projectID := uuid.New()
 	store := &projectPermStore{
-		projectPerms: map[uuid.UUID][]authz.Permission{
-			projectID: {authz.PermissionDocsRead}, // read-only
+		projectPerms: map[uuid.UUID][]iam.Action{
+			projectID: {iam.ActionDocsRead}, // read-only
 		},
 	}
 	r := buildDocTestRouter(docRepo, store)
@@ -917,12 +985,12 @@ func TestIntegrationDocuments_CrossProjectAccessReturns404(t *testing.T) {
 	victimProjectID := uuid.New()
 	attackerProjectID := uuid.New()
 	store := &projectPermStore{
-		projectPerms: map[uuid.UUID][]authz.Permission{
+		projectPerms: map[uuid.UUID][]iam.Action{
 			// The attacker legitimately holds docs.read/docs.write in their
 			// own project — that alone must not grant access to another
 			// project's documents by UUID.
-			victimProjectID:   {authz.PermissionDocsRead, authz.PermissionDocsWrite},
-			attackerProjectID: {authz.PermissionDocsRead, authz.PermissionDocsWrite},
+			victimProjectID:   {iam.ActionDocsRead, iam.ActionDocsWrite},
+			attackerProjectID: {iam.ActionDocsRead, iam.ActionDocsWrite},
 		},
 	}
 	r := buildDocTestRouter(docRepo, store)

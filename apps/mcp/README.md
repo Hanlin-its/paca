@@ -217,24 +217,24 @@ When `PACA_AGENT_ID` is not set:
 }
 ```
 
-**Note**: Without `PACA_PROJECT_ID`, project-scoped tool calls (like `list_tasks`, `create_task`) must pass a `projectId` argument explicitly — the tool is listed either way, but the call still needs a project to act on, and still needs the caller's role in that project to grant the underlying permission (e.g. `tasks.read`).
+**Note**: Without `PACA_PROJECT_ID`, project-scoped tool calls (like `list_tasks`, `create_task`) must pass a `projectId` argument explicitly — the tool is listed either way, but the call still needs a project to act on, and still needs a role attached to the caller in that project that allows the underlying action (e.g. `tasks:read`).
 
 ### Configuring Permissions
 
 Permissions live entirely on the Paca API side, so configuring them is the same regardless of the MCP server:
 
 **For Agents:**
-1. **Add Agent as Project Member**: Add the agent to the desired projects with appropriate roles
-2. **Configure Role Permissions**: Ensure the assigned roles have the necessary permissions
+1. **Add the agent to the project** with one or more roles (`add_project_member` / the Team page). A project agent holds only the roles attached inside its project; a global agent holds platform roles attached by an administrator.
+2. **Check the roles' policies**: the attached roles must allow the actions the tools need (for example `tasks:write` for `create_task`).
 
 **Important**: When using agent mode, `PACA_API_KEY` must be that agent's own key (see "How to Get the Agent's API Key" above) — the key itself is what identifies the agent to the server, so `PACA_AGENT_ID` alone is not a claim the server will trust from any other key.
 
 **For Users:**
-1. **Assign Global Roles**: Grant users global permissions through their global roles
-2. **Add to Projects**: Add users to projects with appropriate project roles
-3. **Configure Project Roles**: Ensure project roles have the necessary permissions
+1. **Attach platform roles**: an administrator attaches one or more roles to the user (Administration, Users). A platform role applies across the workspace.
+2. **Add to projects**: add the user to projects with one or more roles (`roleIds`).
+3. **Check the policies**: roles are IAM policy documents (default deny, an explicit `Deny` wins). See [IAM authorization](../../docs/guides/iam-authorization.md) and [Roles and policies](../../docs/guides/roles-and-policies.md).
 
-If a tool call fails with "Permission denied: ...", the role in question is missing the permission the underlying API endpoint requires — grant it and retry, no MCP server restart needed.
+If a tool call fails with `403` / "Permission denied: ...", none of the caller's roles allows the action the underlying endpoint requires. Use `get_my_project_permissions` to list the actions you hold in a project, adjust the role, and retry; no MCP server restart is needed.
 
 ### Example Configuration
 
@@ -258,8 +258,11 @@ If a tool call fails with "Permission denied: ...", the role in question is miss
 
 The MCP server provides **81 tools** across **16 categories** for comprehensive project management.
 
+
+> **Paged lists.** List tools (`list_projects`, `list_sprints`, `list_project_members`, `list_project_roles`, `list_task_links`, `list_task_attachments`, `list_task_activities`, `list_doc_activities`, `list_docs`, `get_automation` without `automationId`, `list_tasks`, `search_tasks`) return one page per call and never read a list to the end on their own. When more results exist, the reply ends with a line giving a `cursor`; call the same tool again with that `cursor` (and optionally `pageSize`, 1-100) for the next page. `get_task` loads the first 20 items of each of its lists (subtasks, attachments, activities, links) and says how to read the rest.
+
 ### 📁 Project Management (5 tools)
-- `list_projects` - List all accessible projects
+- `list_projects` - List accessible projects (paged)
 - `get_project` - Get details of a specific project
 - `create_project` - Create a new project
 - `update_project` - Update an existing project
@@ -274,7 +277,7 @@ The MCP server provides **81 tools** across **16 categories** for comprehensive 
 - `delete_task` - Delete a task
 
 ### 🏃 Sprint Management (6 tools)
-- `list_sprints` - List all sprints in a project
+- `list_sprints` - List the sprints in a project (paged)
 - `get_sprint` - Get details of a specific sprint
 - `create_sprint` - Create a new sprint
 - `update_sprint` - Update an existing sprint
@@ -289,17 +292,17 @@ The MCP server provides **81 tools** across **16 categories** for comprehensive 
 - `delete_document` - Delete a document
 
 ### 👥 Project Members (5 tools)
-- `list_project_members` - List all members of a project
+- `list_project_members` - List the members of a project (paged)
 - `add_project_member` - Add a member to a project
-- `get_my_project_permissions` - Get the current user's permissions
-- `update_project_member_role` - Update a member's role
+- `get_my_project_permissions` - List the IAM actions (e.g. `tasks:write`) the caller may perform in a project
+- `update_project_member_role` - Replace the set of roles (`roleIds`) a member holds in the project
 - `remove_project_member` - Remove a member from a project
 
 ### 🎭 Project Roles (4 tools)
-- `list_project_roles` - List all roles in a project
-- `create_project_role` - Create a new project role
-- `update_project_role` - Update an existing project role
-- `delete_project_role` - Delete a project role
+- `list_project_roles` - List the roles available in a project (its own roles plus attachable workspace roles)
+- `create_project_role` - Create a project role from an IAM `policy` document (`name`, `description`, `policy`)
+- `update_project_role` - Update a project role's name, description or policy
+- `delete_project_role` - Delete a project role (it is detached from its holders)
 
 ### 🏷️ Task Types (5 tools)
 - `list_task_types` - List all task types in a project
@@ -322,8 +325,8 @@ The MCP server provides **81 tools** across **16 categories** for comprehensive 
 - `update_view` - Update an existing view
 - `delete_view` - Delete a view
 - `list_task_positions` - List task positions in a view
-- `bulk_move_tasks` - Bulk move tasks in a view
-- `move_task` - Move a task within a view
+- `bulk_move_tasks` - Set several tasks' positions within a view
+- `move_task` - Set a task's position within a view
 
 ### 🔧 Custom Fields (5 tools)
 - `list_custom_fields` - List all custom field definitions
@@ -347,17 +350,30 @@ The MCP server provides **81 tools** across **16 categories** for comprehensive 
 - `list_doc_snapshots` - List all snapshots of a document
 - `get_doc_snapshot` - Get a specific document snapshot
 
-### 🔗 GitHub Integration (7 tools)
-- `get_github_integration` - Get GitHub integration status
-- `set_github_token` - Set GitHub token for a project
-- `delete_github_token` - Delete GitHub token
-- `list_github_repositories` - List available GitHub repositories
-- `list_linked_github_repos` - List linked repositories
-- `link_github_repository` - Link a GitHub repository
-- `unlink_github_repository` - Unlink a GitHub repository
+### 🔗 Git (27 tools)
+- `list_repositories` - List the repositories linked to a project
+- `clone_repository` - Clone a linked repository into the workspace
+- `push_branch` - Push a branch of a linked repository
+- `workspace_inspect` - Survey the working directory and the checkouts in it
+- `workspace_prepare` - Prepare (reuse or clone, fetch, branch) a checkout
+- `git_commit` - Commit changes in a checkout
+- `git_push` - Push a branch of a linked repository
+- `change_request_get_context` - Pull/merge request with files, review threads and CI in one call
+- `change_request_get_diff` - Unified diff, whole or per file
+- `review_list_threads` - Review threads with comments and resolved state
+- `issue_list` / `issue_get` / `comment_list` - List issues, read an issue, and read comments on an issue or pull request
+- `checks_get` / `checks_get_logs` - CI results and the tail of a failing log
+- `repo_get_file` / `repo_search_code` - Read a file or search code without a clone
+- `change_request_open` / `change_request_update` - Open or edit a pull/merge request
+- `comment_post` / `review_reply_thread` / `review_resolve_thread` - Comment and work threads
+- `review_submit` - Review with a verdict and inline comments
+- `labels_add` / `reviewers_request` / `assignees_set` - Metadata
+- `checks_rerun` - Re-run failed CI (capped)
+- `change_request_merge` - Merge (needs `git:merge` and the expected head SHA)
+
 
 ### 💬 Task Activities (4 tools)
-- `list_task_activities` - List all activities for a task
+- `list_task_activities` - List activities for a task (newest first, one page per call)
 - `add_task_comment` - Add a comment to a task
 - `update_task_comment` - Update a task comment
 - `delete_task_comment` - Delete a task comment

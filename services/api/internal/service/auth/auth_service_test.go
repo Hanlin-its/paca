@@ -2,6 +2,7 @@ package auth_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -10,6 +11,8 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	domainauth "github.com/Paca-AI/api/internal/domain/auth"
+	mfadom "github.com/Paca-AI/api/internal/domain/mfa"
+	roledom "github.com/Paca-AI/api/internal/domain/role"
 	userdom "github.com/Paca-AI/api/internal/domain/user"
 	jwttoken "github.com/Paca-AI/api/internal/platform/token"
 	authsvc "github.com/Paca-AI/api/internal/service/auth"
@@ -46,6 +49,9 @@ func (r *stubUserRepo) List(_ context.Context, _, _ int, _ userdom.ListFilter) (
 	return nil, 0, nil
 }
 func (r *stubUserRepo) CountUsers(_ context.Context) (int64, error) { return 0, nil }
+func (r *stubUserRepo) ListAfter(context.Context, int, *string, userdom.ListFilter) ([]*userdom.User, bool, error) {
+	return nil, false, nil
+}
 func (r *stubUserRepo) CountUsersMustChangePassword(_ context.Context) (int64, error) {
 	return 0, nil
 }
@@ -107,14 +113,14 @@ func TestLogin_Success(t *testing.T) {
 	u := &userdom.User{
 		ID:           uuid.New(),
 		Username:     "alice",
-		Role:         userdom.RoleUser,
+		Roles:        userRoles("USER"),
 		PasswordHash: hashedPassword(t, "secret123"),
 	}
 	svc := newAuthSvc(&stubUserRepo{
 		findByUsername: func(_ context.Context, _ string) (*userdom.User, error) { return u, nil },
 	}, &stubRefreshStore{})
 
-	pair, err := svc.Login(context.Background(), "alice", "secret123", true)
+	pair, err := svc.Login(context.Background(), domainauth.LoginInput{Username: "alice", Password: "secret123", RememberMe: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -125,7 +131,7 @@ func TestLogin_Success(t *testing.T) {
 
 func TestLogin_UserNotFound(t *testing.T) {
 	svc := newAuthSvc(&stubUserRepo{}, &stubRefreshStore{})
-	_, err := svc.Login(context.Background(), "ghost", "pass1234", true)
+	_, err := svc.Login(context.Background(), domainauth.LoginInput{Username: "ghost", Password: "pass1234", RememberMe: true})
 	if !errors.Is(err, domainauth.ErrInvalidCredentials) {
 		t.Fatalf("expected ErrInvalidCredentials, got %v", err)
 	}
@@ -135,14 +141,14 @@ func TestLogin_WrongPassword(t *testing.T) {
 	u := &userdom.User{
 		ID:           uuid.New(),
 		Username:     "alice",
-		Role:         userdom.RoleUser,
+		Roles:        userRoles("USER"),
 		PasswordHash: hashedPassword(t, "correct12"),
 	}
 	svc := newAuthSvc(&stubUserRepo{
 		findByUsername: func(_ context.Context, _ string) (*userdom.User, error) { return u, nil },
 	}, &stubRefreshStore{})
 
-	_, err := svc.Login(context.Background(), "alice", "wrongpass", true)
+	_, err := svc.Login(context.Background(), domainauth.LoginInput{Username: "alice", Password: "wrongpass", RememberMe: true})
 	if !errors.Is(err, domainauth.ErrInvalidCredentials) {
 		t.Fatalf("expected ErrInvalidCredentials, got %v", err)
 	}
@@ -152,7 +158,7 @@ func TestLogin_IssuesAnnotationPair(t *testing.T) {
 	u := &userdom.User{
 		ID:           uuid.New(),
 		Username:     "alice",
-		Role:         userdom.RoleUser,
+		Roles:        userRoles("USER"),
 		PasswordHash: hashedPassword(t, "secret123"),
 	}
 	tm := jwttoken.New("test-secret", 15*time.Minute, 7*24*time.Hour)
@@ -160,7 +166,7 @@ func TestLogin_IssuesAnnotationPair(t *testing.T) {
 		findByUsername: func(_ context.Context, _ string) (*userdom.User, error) { return u, nil },
 	}, tm, &stubRefreshStore{}, 7*24*time.Hour, 24*time.Hour)
 
-	pair, err := svc.Login(context.Background(), "alice", "secret123", true)
+	pair, err := svc.Login(context.Background(), domainauth.LoginInput{Username: "alice", Password: "secret123", RememberMe: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -204,7 +210,7 @@ func TestLogin_RepoError(t *testing.T) {
 		findByUsername: func(_ context.Context, _ string) (*userdom.User, error) { return nil, repoErr },
 	}, &stubRefreshStore{})
 
-	_, err := svc.Login(context.Background(), "alice", "pass1234", true)
+	_, err := svc.Login(context.Background(), domainauth.LoginInput{Username: "alice", Password: "pass1234", RememberMe: true})
 	if !errors.Is(err, repoErr) {
 		t.Fatalf("expected repo error, got %v", err)
 	}
@@ -219,7 +225,7 @@ func TestRefresh_Success(t *testing.T) {
 	u := &userdom.User{
 		ID:       userID,
 		Username: "alice",
-		Role:     userdom.RoleUser,
+		Roles:    userRoles("USER"),
 	}
 	tm := jwttoken.New("test-secret", 15*time.Minute, 7*24*time.Hour)
 	repo := &stubUserRepo{
@@ -230,7 +236,7 @@ func TestRefresh_Success(t *testing.T) {
 		recordFirstUse:  func(_ context.Context, _ string, _ time.Duration) (*time.Time, error) { return nil, nil },
 	}, 7*24*time.Hour, 24*time.Hour)
 
-	refresh, err := tm.IssueRefresh(userID.String(), "alice", userdom.RoleUser, "fam1")
+	refresh, err := tm.IssueRefresh(userID.String(), "alice", "USER", "fam1")
 	if err != nil {
 		t.Fatalf("IssueRefresh: %v", err)
 	}
@@ -249,7 +255,7 @@ func TestRefresh_Success(t *testing.T) {
 // fresh, valid domainauth.ScopeAnnotation pair, not just the main one.
 func TestRefresh_ReissuesAnnotationPair(t *testing.T) {
 	userID := uuid.New()
-	u := &userdom.User{ID: userID, Username: "alice", Role: userdom.RoleUser}
+	u := &userdom.User{ID: userID, Username: "alice", Roles: userRoles("USER")}
 	tm := jwttoken.New("test-secret", 15*time.Minute, 7*24*time.Hour)
 	repo := &stubUserRepo{
 		findByID: func(_ context.Context, _ uuid.UUID) (*userdom.User, error) { return u, nil },
@@ -259,7 +265,7 @@ func TestRefresh_ReissuesAnnotationPair(t *testing.T) {
 		recordFirstUse:  func(_ context.Context, _ string, _ time.Duration) (*time.Time, error) { return nil, nil },
 	}, 7*24*time.Hour, 24*time.Hour)
 
-	refresh, err := tm.IssueRefresh(userID.String(), "alice", userdom.RoleUser, "fam1")
+	refresh, err := tm.IssueRefresh(userID.String(), "alice", "USER", "fam1")
 	if err != nil {
 		t.Fatalf("IssueRefresh: %v", err)
 	}
@@ -303,7 +309,7 @@ func TestRefresh_ReissuesAnnotationPair(t *testing.T) {
 // refresh is misleading staleness that should not outlive the session.
 func TestRefresh_ReflectsRoleChange(t *testing.T) {
 	userID := uuid.New()
-	u := &userdom.User{ID: userID, Username: "alice", Role: userdom.RoleAdmin}
+	u := &userdom.User{ID: userID, Username: "alice", Roles: userRoles("ADMIN")}
 	tm := jwttoken.New("test-secret", 15*time.Minute, 7*24*time.Hour)
 	repo := &stubUserRepo{
 		// Simulates an admin demoting this user to USER in between the
@@ -316,12 +322,12 @@ func TestRefresh_ReflectsRoleChange(t *testing.T) {
 	}, 7*24*time.Hour, 24*time.Hour)
 
 	// Issue the refresh token while the user is still ADMIN...
-	refresh, err := tm.IssueRefresh(userID.String(), "alice", userdom.RoleAdmin, "fam1")
+	refresh, err := tm.IssueRefresh(userID.String(), "alice", "ADMIN", "fam1")
 	if err != nil {
 		t.Fatalf("IssueRefresh: %v", err)
 	}
 	// ...then demote them before it's ever redeemed.
-	u.Role = userdom.RoleUser
+	u.Roles = userRoles("USER")
 
 	pair, err := svc.Refresh(context.Background(), refresh)
 	if err != nil {
@@ -332,24 +338,24 @@ func TestRefresh_ReflectsRoleChange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verify access token: %v", err)
 	}
-	if accessClaims.Role != userdom.RoleUser {
-		t.Errorf("access token Role = %q, want %q (the demotion must take effect immediately, not just after re-login)", accessClaims.Role, userdom.RoleUser)
+	if accessClaims.Role != "USER" {
+		t.Errorf("access token Role = %q, want %q (the demotion must take effect immediately, not just after re-login)", accessClaims.Role, "USER")
 	}
 
 	refreshClaims, err := tm.Verify(pair.RefreshToken)
 	if err != nil {
 		t.Fatalf("verify refresh token: %v", err)
 	}
-	if refreshClaims.Role != userdom.RoleUser {
-		t.Errorf("rotated refresh token Role = %q, want %q", refreshClaims.Role, userdom.RoleUser)
+	if refreshClaims.Role != "USER" {
+		t.Errorf("rotated refresh token Role = %q, want %q", refreshClaims.Role, "USER")
 	}
 
 	annotationAccessClaims, err := tm.Verify(pair.AnnotationAccessToken)
 	if err != nil {
 		t.Fatalf("verify annotation access token: %v", err)
 	}
-	if annotationAccessClaims.Role != userdom.RoleUser {
-		t.Errorf("annotation access token Role = %q, want %q", annotationAccessClaims.Role, userdom.RoleUser)
+	if annotationAccessClaims.Role != "USER" {
+		t.Errorf("annotation access token Role = %q, want %q", annotationAccessClaims.Role, "USER")
 	}
 }
 
@@ -357,7 +363,7 @@ func TestRefresh_ReflectsRoleChange(t *testing.T) {
 // sibling for the ScopeAnnotation rotation path, which had the identical bug.
 func TestRefreshAnnotation_ReflectsRoleChange(t *testing.T) {
 	userID := uuid.New()
-	u := &userdom.User{ID: userID, Username: "alice", Role: userdom.RoleAdmin}
+	u := &userdom.User{ID: userID, Username: "alice", Roles: userRoles("ADMIN")}
 	tm := jwttoken.New("test-secret", 15*time.Minute, 7*24*time.Hour)
 	repo := &stubUserRepo{
 		findByID: func(_ context.Context, _ uuid.UUID) (*userdom.User, error) { return u, nil },
@@ -367,11 +373,11 @@ func TestRefreshAnnotation_ReflectsRoleChange(t *testing.T) {
 		recordFirstUse:  func(_ context.Context, _ string, _ time.Duration) (*time.Time, error) { return nil, nil },
 	}, 7*24*time.Hour, 24*time.Hour)
 
-	annotationRefresh, err := tm.IssueAnnotationRefreshWithTTL(userID.String(), "alice", userdom.RoleAdmin, "fam1", true, 7*24*time.Hour)
+	annotationRefresh, err := tm.IssueAnnotationRefreshWithTTL(userID.String(), "alice", "ADMIN", "fam1", true, 7*24*time.Hour)
 	if err != nil {
 		t.Fatalf("IssueAnnotationRefreshWithTTL: %v", err)
 	}
-	u.Role = userdom.RoleUser
+	u.Roles = userRoles("USER")
 
 	pair, err := svc.RefreshAnnotation(context.Background(), annotationRefresh)
 	if err != nil {
@@ -382,8 +388,8 @@ func TestRefreshAnnotation_ReflectsRoleChange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verify annotation access token: %v", err)
 	}
-	if accessClaims.Role != userdom.RoleUser {
-		t.Errorf("annotation access token Role = %q, want %q", accessClaims.Role, userdom.RoleUser)
+	if accessClaims.Role != "USER" {
+		t.Errorf("annotation access token Role = %q, want %q", accessClaims.Role, "USER")
 	}
 }
 
@@ -392,7 +398,7 @@ func TestRefresh_WrongKind(t *testing.T) {
 	svc := authsvc.New(&stubUserRepo{}, tm, &stubRefreshStore{}, 7*24*time.Hour, 24*time.Hour)
 
 	// Pass an access token where a refresh token is expected.
-	access, _ := tm.IssueAccess("sub", "alice", userdom.RoleUser, "fam1", false)
+	access, _ := tm.IssueAccess("sub", "alice", "USER", "fam1", false)
 	_, err := svc.Refresh(context.Background(), access)
 	if !errors.Is(err, domainauth.ErrTokenInvalid) {
 		t.Fatalf("expected ErrTokenInvalid, got %v", err)
@@ -408,7 +414,7 @@ func TestRefresh_RejectsAnnotationScopedToken(t *testing.T) {
 	tm := jwttoken.New("test-secret", 15*time.Minute, 7*24*time.Hour)
 	svc := authsvc.New(&stubUserRepo{}, tm, &stubRefreshStore{}, 7*24*time.Hour, 24*time.Hour)
 
-	annotationRefresh, err := tm.IssueAnnotationRefreshWithTTL("sub", "alice", userdom.RoleUser, "fam1", true, 7*24*time.Hour)
+	annotationRefresh, err := tm.IssueAnnotationRefreshWithTTL("sub", "alice", "USER", "fam1", true, 7*24*time.Hour)
 	if err != nil {
 		t.Fatalf("IssueAnnotationRefreshWithTTL: %v", err)
 	}
@@ -426,7 +432,7 @@ func TestRefresh_FamilyRevoked(t *testing.T) {
 	}
 	svc := authsvc.New(&stubUserRepo{}, tm, store, 7*24*time.Hour, 24*time.Hour)
 
-	refresh, _ := tm.IssueRefresh("sub", "alice", userdom.RoleUser, "fam1")
+	refresh, _ := tm.IssueRefresh("sub", "alice", "USER", "fam1")
 	_, err := svc.Refresh(context.Background(), refresh)
 	if !errors.Is(err, domainauth.ErrSessionInvalidated) {
 		t.Fatalf("expected ErrSessionInvalidated, got %v", err)
@@ -450,7 +456,7 @@ func TestRefresh_ReuseWithinGrace_RejectsWithoutRevokingFamily(t *testing.T) {
 	}
 	svc := authsvc.New(&stubUserRepo{}, tm, store, 7*24*time.Hour, 24*time.Hour)
 
-	refresh, _ := tm.IssueRefresh("sub", "alice", userdom.RoleUser, "fam1")
+	refresh, _ := tm.IssueRefresh("sub", "alice", "USER", "fam1")
 	_, err := svc.Refresh(context.Background(), refresh)
 	if !errors.Is(err, domainauth.ErrTokenInvalid) {
 		t.Fatalf("expected ErrTokenInvalid, got %v", err)
@@ -477,7 +483,7 @@ func TestRefresh_ReuseOutsideGrace_RevokesFamily(t *testing.T) {
 	}
 	svc := authsvc.New(&stubUserRepo{}, tm, store, 7*24*time.Hour, 24*time.Hour)
 
-	refresh, _ := tm.IssueRefresh("sub", "alice", userdom.RoleUser, "fam1")
+	refresh, _ := tm.IssueRefresh("sub", "alice", "USER", "fam1")
 	_, err := svc.Refresh(context.Background(), refresh)
 	if !errors.Is(err, domainauth.ErrSessionInvalidated) {
 		t.Fatalf("expected ErrSessionInvalidated, got %v", err)
@@ -503,7 +509,7 @@ func TestRefresh_ReuseOutsideGrace_RevokeFamilyFailure(t *testing.T) {
 	}
 	svc := authsvc.New(&stubUserRepo{}, tm, store, 7*24*time.Hour, 24*time.Hour)
 
-	refresh, _ := tm.IssueRefresh("sub", "alice", userdom.RoleUser, "fam1")
+	refresh, _ := tm.IssueRefresh("sub", "alice", "USER", "fam1")
 	_, err := svc.Refresh(context.Background(), refresh)
 	if err == nil {
 		t.Fatal("expected error when family revocation fails")
@@ -519,7 +525,7 @@ func TestRefresh_ReuseOutsideGrace_RevokeFamilyFailure(t *testing.T) {
 
 func TestRefreshAnnotation_Success(t *testing.T) {
 	userID := uuid.New()
-	u := &userdom.User{ID: userID, Username: "alice", Role: userdom.RoleUser}
+	u := &userdom.User{ID: userID, Username: "alice", Roles: userRoles("USER")}
 	tm := jwttoken.New("test-secret", 15*time.Minute, 7*24*time.Hour)
 	repo := &stubUserRepo{
 		findByID: func(_ context.Context, _ uuid.UUID) (*userdom.User, error) { return u, nil },
@@ -529,7 +535,7 @@ func TestRefreshAnnotation_Success(t *testing.T) {
 		recordFirstUse:  func(_ context.Context, _ string, _ time.Duration) (*time.Time, error) { return nil, nil },
 	}, 7*24*time.Hour, 24*time.Hour)
 
-	refresh, err := tm.IssueAnnotationRefreshWithTTL(userID.String(), "alice", userdom.RoleUser, "fam1", true, 7*24*time.Hour)
+	refresh, err := tm.IssueAnnotationRefreshWithTTL(userID.String(), "alice", "USER", "fam1", true, 7*24*time.Hour)
 	if err != nil {
 		t.Fatalf("IssueAnnotationRefreshWithTTL: %v", err)
 	}
@@ -566,7 +572,7 @@ func TestRefreshAnnotation_RejectsMainScopedToken(t *testing.T) {
 	tm := jwttoken.New("test-secret", 15*time.Minute, 7*24*time.Hour)
 	svc := authsvc.New(&stubUserRepo{}, tm, &stubRefreshStore{}, 7*24*time.Hour, 24*time.Hour)
 
-	mainRefresh, err := tm.IssueRefreshWithTTL("sub", "alice", userdom.RoleUser, "fam1", true, 7*24*time.Hour)
+	mainRefresh, err := tm.IssueRefreshWithTTL("sub", "alice", "USER", "fam1", true, 7*24*time.Hour)
 	if err != nil {
 		t.Fatalf("IssueRefreshWithTTL: %v", err)
 	}
@@ -588,7 +594,7 @@ func TestRefreshAnnotation_FamilyRevoked(t *testing.T) {
 	}
 	svc := authsvc.New(&stubUserRepo{}, tm, store, 7*24*time.Hour, 24*time.Hour)
 
-	refresh, _ := tm.IssueAnnotationRefreshWithTTL("sub", "alice", userdom.RoleUser, "fam1", true, 7*24*time.Hour)
+	refresh, _ := tm.IssueAnnotationRefreshWithTTL("sub", "alice", "USER", "fam1", true, 7*24*time.Hour)
 	_, err := svc.RefreshAnnotation(context.Background(), refresh)
 	if !errors.Is(err, domainauth.ErrSessionInvalidated) {
 		t.Fatalf("expected ErrSessionInvalidated, got %v", err)
@@ -637,7 +643,7 @@ func TestLogin_RememberMe_True_UsesLongTTL(t *testing.T) {
 	u := &userdom.User{
 		ID:           uuid.New(),
 		Username:     "alice",
-		Role:         userdom.RoleUser,
+		Roles:        userRoles("USER"),
 		PasswordHash: hashedPassword(t, "secret123"),
 	}
 	tm := jwttoken.New("test-secret", 15*time.Minute, refreshTTL)
@@ -645,7 +651,7 @@ func TestLogin_RememberMe_True_UsesLongTTL(t *testing.T) {
 		findByUsername: func(_ context.Context, _ string) (*userdom.User, error) { return u, nil },
 	}, tm, &stubRefreshStore{}, refreshTTL, sessionTTL)
 
-	pair, err := svc.Login(context.Background(), "alice", "secret123", true)
+	pair, err := svc.Login(context.Background(), domainauth.LoginInput{Username: "alice", Password: "secret123", RememberMe: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -670,7 +676,7 @@ func TestLogin_RememberMe_False_UsesSessionTTL(t *testing.T) {
 	u := &userdom.User{
 		ID:           uuid.New(),
 		Username:     "alice",
-		Role:         userdom.RoleUser,
+		Roles:        userRoles("USER"),
 		PasswordHash: hashedPassword(t, "secret123"),
 	}
 	tm := jwttoken.New("test-secret", 15*time.Minute, refreshTTL)
@@ -678,7 +684,7 @@ func TestLogin_RememberMe_False_UsesSessionTTL(t *testing.T) {
 		findByUsername: func(_ context.Context, _ string) (*userdom.User, error) { return u, nil },
 	}, tm, &stubRefreshStore{}, refreshTTL, sessionTTL)
 
-	pair, err := svc.Login(context.Background(), "alice", "secret123", false)
+	pair, err := svc.Login(context.Background(), domainauth.LoginInput{Username: "alice", Password: "secret123", RememberMe: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -705,14 +711,14 @@ func TestRefresh_RememberMe_True_PreservesLongTTL(t *testing.T) {
 	const sessionTTL = 24 * time.Hour
 
 	userID := uuid.New()
-	stubUser := &userdom.User{ID: userID, Username: "alice", Role: userdom.RoleUser}
+	stubUser := &userdom.User{ID: userID, Username: "alice", Roles: userRoles("USER")}
 	tm := jwttoken.New("test-secret", 15*time.Minute, refreshTTL)
 	svc := authsvc.New(&stubUserRepo{
 		findByID: func(_ context.Context, _ uuid.UUID) (*userdom.User, error) { return stubUser, nil },
 	}, tm, &stubRefreshStore{}, refreshTTL, sessionTTL)
 
 	// Issue a persistent-session refresh token.
-	origRefresh, err := tm.IssueRefreshWithTTL(userID.String(), "alice", userdom.RoleUser, "fam1", true, refreshTTL)
+	origRefresh, err := tm.IssueRefreshWithTTL(userID.String(), "alice", "USER", "fam1", true, refreshTTL)
 	if err != nil {
 		t.Fatalf("IssueRefreshWithTTL: %v", err)
 	}
@@ -740,14 +746,14 @@ func TestRefresh_RememberMe_False_PreservesSessionTTL(t *testing.T) {
 	const sessionTTL = 24 * time.Hour
 
 	userID := uuid.New()
-	stubUser := &userdom.User{ID: userID, Username: "alice", Role: userdom.RoleUser}
+	stubUser := &userdom.User{ID: userID, Username: "alice", Roles: userRoles("USER")}
 	tm := jwttoken.New("test-secret", 15*time.Minute, refreshTTL)
 	svc := authsvc.New(&stubUserRepo{
 		findByID: func(_ context.Context, _ uuid.UUID) (*userdom.User, error) { return stubUser, nil },
 	}, tm, &stubRefreshStore{}, refreshTTL, sessionTTL)
 
 	// Issue a session-only refresh token.
-	origRefresh, err := tm.IssueRefreshWithTTL(userID.String(), "alice", userdom.RoleUser, "fam1", false, sessionTTL)
+	origRefresh, err := tm.IssueRefreshWithTTL(userID.String(), "alice", "USER", "fam1", false, sessionTTL)
 	if err != nil {
 		t.Fatalf("IssueRefreshWithTTL: %v", err)
 	}
@@ -767,5 +773,302 @@ func TestRefresh_RememberMe_False_PreservesSessionTTL(t *testing.T) {
 	}
 	if claims.RememberMe {
 		t.Error("expected RememberMe=false to be preserved through rotation")
+	}
+}
+
+// userRoles builds the platform role summaries of a test user.
+func userRoles(names ...string) []roledom.Summary {
+	out := make([]roledom.Summary, 0, len(names))
+	for _, n := range names {
+		out = append(out, roledom.Summary{ID: uuid.New(), Name: n})
+	}
+	return out
+}
+
+type stubGate struct{ err error }
+
+func (g stubGate) CheckLogin(context.Context, *userdom.User, string, string) error { return g.err }
+
+func TestLogin_GateRejectsAfterCorrectPassword(t *testing.T) {
+	u := &userdom.User{ID: uuid.New(), Username: "alice", Roles: userRoles("ADMIN"), PasswordHash: hashedPassword(t, "secret123")}
+	repo := &stubUserRepo{findByUsername: func(context.Context, string) (*userdom.User, error) { return u, nil }}
+	gateErr := errors.New("gate: nope")
+
+	svc := newAuthSvc(repo, &stubRefreshStore{}).WithLoginGate(stubGate{err: gateErr})
+	if _, err := svc.Login(context.Background(), domainauth.LoginInput{Username: "alice", Password: "secret123"}); !errors.Is(err, gateErr) {
+		t.Fatalf("want gate error, got %v", err)
+	}
+	// A wrong password must never reach the gate: its errors would reveal
+	// how the account is protected to someone who doesn't know the password.
+	if _, err := svc.Login(context.Background(), domainauth.LoginInput{Username: "alice", Password: "wrongpass"}); !errors.Is(err, domainauth.ErrInvalidCredentials) {
+		t.Fatalf("want ErrInvalidCredentials, got %v", err)
+	}
+	svc = newAuthSvc(repo, &stubRefreshStore{}).WithLoginGate(stubGate{})
+	if _, err := svc.Login(context.Background(), domainauth.LoginInput{Username: "alice", Password: "secret123"}); err != nil {
+		t.Fatalf("passing gate: %v", err)
+	}
+}
+
+type otpGate struct{}
+
+func (otpGate) CheckLogin(_ context.Context, _ *userdom.User, otp, _ string) error {
+	switch otp {
+	case "":
+		return mfadom.ErrRequired
+	case "123456":
+		return nil
+	}
+	return mfadom.ErrInvalidCode
+}
+
+func TestLogin_MFAChallengeThenComplete(t *testing.T) {
+	u := &userdom.User{ID: uuid.New(), Username: "alice", Roles: userRoles("ADMIN"), PasswordHash: hashedPassword(t, "secret123")}
+	repo := &stubUserRepo{
+		findByUsername: func(context.Context, string) (*userdom.User, error) { return u, nil },
+		findByID:       func(context.Context, uuid.UUID) (*userdom.User, error) { return u, nil },
+	}
+	svc := newAuthSvc(repo, &stubRefreshStore{}).WithLoginGate(otpGate{})
+	ctx := context.Background()
+
+	step1, err := svc.Login(ctx, domainauth.LoginInput{Username: "alice", Password: "secret123", RememberMe: true})
+	if err != nil || step1.MFAChallenge == "" || step1.AccessToken != "" || step1.RefreshToken != "" {
+		t.Fatalf("step 1 must yield only a challenge: %+v, %v", step1, err)
+	}
+
+	if _, err := svc.CompleteMFALogin(ctx, step1.MFAChallenge, "000000", "1.1.1.1"); !errors.Is(err, mfadom.ErrInvalidCode) {
+		t.Fatalf("wrong code: got %v", err)
+	}
+	pair, err := svc.CompleteMFALogin(ctx, step1.MFAChallenge, "123456", "1.1.1.1")
+	if err != nil || pair.AccessToken == "" || pair.RefreshTTL != 7*24*time.Hour {
+		t.Fatalf("right code must start a persistent session: %+v, %v", pair, err)
+	}
+}
+
+// passkeyGate owes a second factor and, like the real gate, can answer with a
+// passkey as well as a code.
+type passkeyGate struct {
+	otpGate
+	methods []string
+	begun   string
+}
+
+func (g *passkeyGate) Methods(context.Context, *userdom.User) ([]string, error) {
+	return g.methods, nil
+}
+
+func (g *passkeyGate) BeginPasskeyLogin(_ context.Context, _ *userdom.User, id string) (json.RawMessage, error) {
+	g.begun = id
+	return json.RawMessage(`{"publicKey":{}}`), nil
+}
+
+func (g *passkeyGate) VerifyPasskeyLogin(_ context.Context, _ *userdom.User, id string, resp []byte, _ string) error {
+	if id != g.begun || string(resp) != `{"id":"ok"}` {
+		return mfadom.ErrInvalidCode
+	}
+	return nil
+}
+
+func TestLogin_ChallengeListsMethodsAndPasskeyCompletes(t *testing.T) {
+	u := &userdom.User{ID: uuid.New(), Username: "alice", Roles: userRoles("USER"), PasswordHash: hashedPassword(t, "secret123")}
+	repo := &stubUserRepo{
+		findByUsername: func(context.Context, string) (*userdom.User, error) { return u, nil },
+		findByID:       func(context.Context, uuid.UUID) (*userdom.User, error) { return u, nil },
+	}
+	gate := &passkeyGate{methods: []string{"totp", "passkey"}}
+	svc := newAuthSvc(repo, &stubRefreshStore{}).WithLoginGate(gate)
+	ctx := context.Background()
+
+	step1, err := svc.Login(ctx, domainauth.LoginInput{Username: "alice", Password: "secret123"})
+	if err != nil || step1.MFAChallenge == "" {
+		t.Fatalf("step 1: %+v, %v", step1, err)
+	}
+	if got := step1.MFAMethods; len(got) != 2 || got[0] != "totp" || got[1] != "passkey" {
+		t.Fatalf("methods = %v, want [totp passkey]", got)
+	}
+
+	if _, err := svc.BeginPasskeyLogin(ctx, step1.MFAChallenge); err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if _, err := svc.CompletePasskeyLogin(ctx, step1.MFAChallenge, []byte(`{"id":"bad"}`), "1.1.1.1"); !errors.Is(err, mfadom.ErrInvalidCode) {
+		t.Fatalf("bad assertion: got %v", err)
+	}
+	pair, err := svc.CompletePasskeyLogin(ctx, step1.MFAChallenge, []byte(`{"id":"ok"}`), "1.1.1.1")
+	if err != nil || pair.AccessToken == "" {
+		t.Fatalf("good assertion must start a session: %+v, %v", pair, err)
+	}
+	// A plain gate (no passkey support) offers no methods and no passkey step.
+	plain := newAuthSvc(repo, &stubRefreshStore{}).WithLoginGate(otpGate{})
+	step, _ := plain.Login(ctx, domainauth.LoginInput{Username: "alice", Password: "secret123"})
+	if len(step.MFAMethods) != 0 {
+		t.Fatalf("plain gate methods = %v", step.MFAMethods)
+	}
+	if _, err := plain.BeginPasskeyLogin(ctx, step.MFAChallenge); !errors.Is(err, mfadom.ErrPasskeyUnavailable) {
+		t.Fatalf("plain gate: got %v", err)
+	}
+}
+
+func TestCompleteMFALogin_RejectsOtherTokens(t *testing.T) {
+	u := &userdom.User{ID: uuid.New(), Username: "alice", Roles: userRoles("USER"), PasswordHash: hashedPassword(t, "secret123")}
+	repo := &stubUserRepo{
+		findByUsername: func(context.Context, string) (*userdom.User, error) { return u, nil },
+		findByID:       func(context.Context, uuid.UUID) (*userdom.User, error) { return u, nil },
+	}
+	svc := newAuthSvc(repo, &stubRefreshStore{}).WithLoginGate(otpGate{})
+	ctx := context.Background()
+
+	// A real session token must not stand in for a challenge.
+	sess, _ := svc.IssueSession(u, false)
+	for _, tok := range []string{sess.AccessToken, sess.RefreshToken, "garbage"} {
+		if _, err := svc.CompleteMFALogin(ctx, tok, "123456", "1.1.1.1"); !errors.Is(err, domainauth.ErrTokenInvalid) {
+			t.Fatalf("token %.12s…: got %v, want ErrTokenInvalid", tok, err)
+		}
+	}
+	// And a challenge must not authenticate as a session or refresh.
+	step1, _ := svc.Login(ctx, domainauth.LoginInput{Username: "alice", Password: "secret123"})
+	if _, err := svc.Refresh(ctx, step1.MFAChallenge); err == nil {
+		t.Fatal("a challenge token was accepted as a refresh token")
+	}
+}
+
+// memThrottle is an in-memory LoginThrottle: lock after max failures.
+type memThrottle struct {
+	max    int
+	fails  map[string]int
+	locked map[string]bool
+}
+
+func newMemThrottle(max int) *memThrottle {
+	return &memThrottle{max: max, fails: map[string]int{}, locked: map[string]bool{}}
+}
+func (m *memThrottle) Check(_ context.Context, k, ip string) (time.Duration, error) {
+	k = k + "|" + ip
+	if m.locked[k] {
+		return 10 * time.Minute, nil
+	}
+	return 0, nil
+}
+func (m *memThrottle) Fail(_ context.Context, k, ip string) (time.Duration, error) {
+	k = k + "|" + ip
+	m.fails[k]++
+	if m.fails[k] >= m.max {
+		m.locked[k], m.fails[k] = true, 0
+		return 15 * time.Minute, nil
+	}
+	return 0, nil
+}
+func (m *memThrottle) Reset(_ context.Context, k, ip string) error {
+	m.fails[k+"|"+ip] = 0
+	return nil
+}
+func (m *memThrottle) Trust(context.Context, string, string) error { return nil }
+
+func TestLogin_LocksAfterRepeatedWrongPasswords(t *testing.T) {
+	u := &userdom.User{ID: uuid.New(), Username: "alice", Roles: userRoles("USER"), PasswordHash: hashedPassword(t, "correct12")}
+	svc := newAuthSvc(&stubUserRepo{
+		findByUsername: func(_ context.Context, name string) (*userdom.User, error) {
+			if name != "alice" {
+				return nil, userdom.ErrNotFound
+			}
+			return u, nil
+		},
+	}, &stubRefreshStore{}).WithLoginThrottle(newMemThrottle(3))
+	ctx := context.Background()
+	bad := domainauth.LoginInput{Username: "Alice ", Password: "wrongpass"}
+
+	for i := 0; i < 2; i++ {
+		if _, err := svc.Login(ctx, bad); !errors.Is(err, domainauth.ErrInvalidCredentials) {
+			t.Fatalf("attempt %d: %v", i, err)
+		}
+	}
+	// The third failure trips the lock and reports the wait.
+	_, err := svc.Login(ctx, bad)
+	var le *mfadom.LockedError
+	if !errors.Is(err, mfadom.ErrLocked) || !errors.As(err, &le) || le.RetryAfter <= 0 {
+		t.Fatalf("expected lockout with wait, got %v", err)
+	}
+	// Even the right password is refused while locked.
+	_, err = svc.Login(ctx, domainauth.LoginInput{Username: "alice", Password: "correct12"})
+	if !errors.Is(err, mfadom.ErrLocked) {
+		t.Fatalf("locked account signed in: %v", err)
+	}
+}
+
+func TestLogin_LockoutAppliesToUnknownNamesToo(t *testing.T) {
+	svc := newAuthSvc(&stubUserRepo{}, &stubRefreshStore{}).WithLoginThrottle(newMemThrottle(2))
+	in := domainauth.LoginInput{Username: "ghost", Password: "whatever1"}
+	_, _ = svc.Login(context.Background(), in)
+	if _, err := svc.Login(context.Background(), in); !errors.Is(err, mfadom.ErrLocked) {
+		t.Fatalf("unknown names must lock like real ones: %v", err)
+	}
+}
+
+func TestLogin_SuccessClearsFailures(t *testing.T) {
+	u := &userdom.User{ID: uuid.New(), Username: "alice", Roles: userRoles("USER"), PasswordHash: hashedPassword(t, "correct12")}
+	th := newMemThrottle(3)
+	svc := newAuthSvc(&stubUserRepo{
+		findByUsername: func(_ context.Context, _ string) (*userdom.User, error) { return u, nil },
+	}, &stubRefreshStore{}).WithLoginThrottle(th)
+	ctx := context.Background()
+	const ip = "203.0.113.7"
+	_, _ = svc.Login(ctx, domainauth.LoginInput{Username: "alice", Password: "bad", ClientIP: ip})
+	// The failure must really have been recorded, or the check below is moot.
+	if th.fails["alice|"+ip] != 1 {
+		t.Fatalf("failure not recorded: %v", th.fails)
+	}
+	if _, err := svc.Login(ctx, domainauth.LoginInput{Username: "alice", Password: "correct12", ClientIP: ip}); err != nil {
+		t.Fatal(err)
+	}
+	if th.fails["alice|"+ip] != 0 {
+		t.Fatal("failures not cleared")
+	}
+}
+
+func TestCompleteMFALogin_ChallengeIsSingleUse(t *testing.T) {
+	u := &userdom.User{ID: uuid.New(), Username: "alice", Roles: userRoles("ADMIN"), PasswordHash: hashedPassword(t, "secret123")}
+	repo := &stubUserRepo{
+		findByUsername: func(context.Context, string) (*userdom.User, error) { return u, nil },
+		findByID:       func(context.Context, uuid.UUID) (*userdom.User, error) { return u, nil },
+	}
+	seen := map[string]bool{}
+	store := &stubRefreshStore{recordFirstUse: func(_ context.Context, jti string, _ time.Duration) (*time.Time, error) {
+		if seen[jti] {
+			now := time.Now()
+			return &now, nil
+		}
+		seen[jti] = true
+		return nil, nil
+	}}
+	svc := newAuthSvc(repo, store).WithLoginGate(otpGate{})
+	ctx := context.Background()
+
+	step1, err := svc.Login(ctx, domainauth.LoginInput{Username: "alice", Password: "secret123"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CompleteMFALogin(ctx, step1.MFAChallenge, "123456", "1.1.1.1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CompleteMFALogin(ctx, step1.MFAChallenge, "123456", "1.1.1.1"); !errors.Is(err, domainauth.ErrTokenInvalid) {
+		t.Fatalf("reused challenge: got %v", err)
+	}
+}
+
+func TestLogin_LockoutIsPerClientAddress(t *testing.T) {
+	u := &userdom.User{ID: uuid.New(), Username: "alice", Roles: userRoles("USER"), PasswordHash: hashedPassword(t, "correct12")}
+	svc := newAuthSvc(&stubUserRepo{
+		findByUsername: func(context.Context, string) (*userdom.User, error) { return u, nil },
+	}, &stubRefreshStore{}).WithLoginThrottle(newMemThrottle(2))
+	ctx := context.Background()
+
+	// An attacker at one address burns through the cap.
+	bad := domainauth.LoginInput{Username: "alice", Password: "wrongpass", ClientIP: "198.51.100.1"}
+	_, _ = svc.Login(ctx, bad)
+	_, _ = svc.Login(ctx, bad)
+	if _, err := svc.Login(ctx, domainauth.LoginInput{Username: "alice", Password: "correct12", ClientIP: "198.51.100.1"}); !errors.Is(err, mfadom.ErrLocked) {
+		t.Fatalf("attacker's own address must be locked: %v", err)
+	}
+	// The real user, elsewhere, is not affected.
+	if _, err := svc.Login(ctx, domainauth.LoginInput{Username: "alice", Password: "correct12", ClientIP: "203.0.113.7"}); err != nil {
+		t.Fatalf("another address must still sign in: %v", err)
 	}
 }

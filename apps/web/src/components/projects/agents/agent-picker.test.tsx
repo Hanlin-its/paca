@@ -1,8 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
-import { describe, expect, it } from "vitest";
-import type { Environment, EnvironmentFolder } from "@/lib/environment-api";
+import { describe, expect, it, vi } from "vitest";
+import type { Environment } from "@/lib/environment-api";
 import {
 	AgentPickerContext,
 	AgentPickerInline,
@@ -38,12 +39,6 @@ function renderWithQueryClient(ui: ReactNode) {
 // than through useEnvironmentPicker's own queries, since both components
 // only ever read that state via context.
 
-const folder: EnvironmentFolder = {
-	id: "folder-1",
-	path: "/repo",
-	created_at: "2024-01-01T00:00:00.000Z",
-};
-
 const environment: Environment = {
 	id: "env-1",
 	project_id: "project-1",
@@ -60,20 +55,17 @@ const environment: Environment = {
 	idle_timeout_minutes: 30,
 	last_active_at: "2024-01-01T00:00:00.000Z",
 	ports_pending_restart: false,
-	access_mode: "open",
-	access_granted: true,
 	created_at: "2024-01-01T00:00:00.000Z",
 	updated_at: "2024-01-01T00:00:00.000Z",
-	folders: [folder],
 };
 
 const baseState: EnvironmentPickerState = {
 	projectId: "project-1",
-	environments: [environment],
+	hasEnvironments: true,
+	environment,
 	environmentsLoading: false,
 	environmentId: "",
 	onEnvironmentChange: () => {},
-	folders: [folder],
 	folderId: "",
 	onFolderChange: () => {},
 };
@@ -156,5 +148,34 @@ describe("AgentPickerInline", () => {
 			</AgentPickerContext.Provider>,
 		);
 		expect(screen.getByText("Auto")).toBeInTheDocument();
+	});
+
+	it("keeps distinct name endings visible and full names accessible when selecting an agent", async () => {
+		const user = userEvent.setup();
+		const onAgentChange = vi.fn();
+		const names = ["backend-refactor-agent-v2", "backend-refactor-agent-v3"];
+		renderWithQueryClient(
+			<AgentPickerContext.Provider
+				value={{
+					...agentPickerState,
+					agents: names.map((name, i) => ({ id: `agent-${i + 1}`, name })),
+					agentId: "agent-1",
+					onAgentChange,
+				}}
+			>
+				<AgentPickerInline />
+			</AgentPickerContext.Provider>,
+		);
+
+		const trigger = screen.getByRole("button", { name: names[0] });
+		expect(within(trigger).getByTitle(names[0])).toBeInTheDocument();
+		expect(within(trigger).getByText("agent-v2")).toBeVisible();
+		await user.click(trigger);
+
+		const option = screen.getByRole("button", { name: names[1] });
+		expect(within(option).getByTitle(names[1])).toBeInTheDocument();
+		expect(within(option).getByText("agent-v3")).toBeVisible();
+		await user.click(option);
+		expect(onAgentChange).toHaveBeenCalledWith("agent-2");
 	});
 });

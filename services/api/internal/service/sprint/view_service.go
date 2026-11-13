@@ -55,10 +55,21 @@ func (s *ViewService) publish(ctx context.Context, topic string, payload map[str
 	if s.publisher == nil {
 		return
 	}
-	_ = s.publisher.Publish(ctx, events.ChannelRealtime, map[string]any{
-		"type":    topic,
-		"payload": payload,
-	})
+	e := events.Event{Topic: topic, Payload: payload, EntityType: events.EntityView}
+	if id, err := uuid.Parse(stringField(payload, "project_id")); err == nil {
+		e.ProjectID = id
+	}
+	// A reorder names no single view; its authorization falls back to the
+	// project.
+	if id, err := uuid.Parse(stringField(payload, "view_id")); err == nil {
+		e.EntityID = &id
+	}
+	events.PublishRealtime(ctx, s.publisher, e)
+}
+
+func stringField(m map[string]any, key string) string {
+	v, _ := m[key].(string)
+	return v
 }
 
 // record fans a view's create/update/delete out to realtime and the activity
@@ -167,7 +178,7 @@ func (s *ViewService) CreateView(ctx context.Context, in sprintdom.CreateViewInp
 		ProjectID:   in.ProjectID,
 		Name:        name,
 		ViewType:    vt,
-		Config:      in.Config,
+		Config:      normalizeViewConfig(in.Config),
 		Position:    in.Position,
 		ViewContext: in.ViewContext,
 		CreatedAt:   now,
@@ -184,39 +195,37 @@ func (s *ViewService) CreateView(ctx context.Context, in sprintdom.CreateViewInp
 // UpdateView updates the mutable fields of an existing view,
 // verifying it belongs to projectID.
 func (s *ViewService) UpdateView(ctx context.Context, projectID, id uuid.UUID, in sprintdom.UpdateViewInput) (*sprintdom.SprintView, error) {
-	v, err := s.repo.FindViewByID(ctx, id)
+	v, err := s.repo.UpdateViewAtomic(ctx, id, func(v *sprintdom.SprintView) error {
+		if v.ProjectID != projectID {
+			return sprintdom.ErrViewNotFound
+		}
+
+		if in.Name != nil {
+			name := strings.TrimSpace(*in.Name)
+			if name == "" {
+				return sprintdom.ErrViewNameInvalid
+			}
+			v.Name = name
+		}
+		if in.ViewType != nil {
+			if !sprintdom.ValidViewTypes[*in.ViewType] {
+				return sprintdom.ErrViewTypeInvalid
+			}
+			v.ViewType = *in.ViewType
+		}
+		if in.Config != nil {
+			v.Config = normalizeViewConfig(*in.Config)
+		}
+		if in.Position != nil {
+			v.Position = *in.Position
+		}
+		if !hasPluginConfig(v.ViewType, &v.Config) {
+			return sprintdom.ErrViewPluginConfigRequired
+		}
+		v.UpdatedAt = time.Now()
+		return nil
+	})
 	if err != nil {
-		return nil, err
-	}
-	if v.ProjectID != projectID {
-		return nil, sprintdom.ErrViewNotFound
-	}
-
-	if in.Name != nil {
-		name := strings.TrimSpace(*in.Name)
-		if name == "" {
-			return nil, sprintdom.ErrViewNameInvalid
-		}
-		v.Name = name
-	}
-	if in.ViewType != nil {
-		if !sprintdom.ValidViewTypes[*in.ViewType] {
-			return nil, sprintdom.ErrViewTypeInvalid
-		}
-		v.ViewType = *in.ViewType
-	}
-	if in.Config != nil {
-		v.Config = *in.Config
-	}
-	if in.Position != nil {
-		v.Position = *in.Position
-	}
-	if !hasPluginConfig(v.ViewType, &v.Config) {
-		return nil, sprintdom.ErrViewPluginConfigRequired
-	}
-	v.UpdatedAt = time.Now()
-
-	if err := s.repo.UpdateView(ctx, v); err != nil {
 		return nil, err
 	}
 	s.record(ctx, events.TopicViewUpdated, v)
@@ -407,7 +416,7 @@ func (s *ViewService) ReorderProjectViews(ctx context.Context, projectID uuid.UU
 // This is narrow (requires a concurrent shared-config edit mid-edit) and
 // self-healing (ClearUserViewConfig/"use team default" recovers it in one
 // click, which didn't exist before this override model).
-func (s *ViewService) SetUserViewConfig(ctx context.Context, projectID, viewID, userID uuid.UUID, cfg sprintdom.ViewConfig) (*sprintdom.SprintView, error) {
+func (s *ViewService) SetUserViewConfig(ctx context.Context, projectID, viewID, accountID uuid.UUID, cfg sprintdom.ViewConfig) (*sprintdom.SprintView, error) {
 	v, err := s.repo.FindViewByID(ctx, viewID)
 	if err != nil {
 		return nil, err
@@ -419,15 +428,15 @@ func (s *ViewService) SetUserViewConfig(ctx context.Context, projectID, viewID, 
 	if !hasPluginConfig(v.ViewType, &cfg) {
 		return nil, sprintdom.ErrViewPluginConfigRequired
 	}
-	sparse := diffViewConfig(v.Config, cfg)
+	sparse := diffViewConfig(v.Config, normalizeViewConfig(cfg))
 	sharedConfig := v.Config
 	if isZeroViewConfig(sparse) {
-		if err := s.repo.DeleteUserViewConfig(ctx, viewID, userID); err != nil {
+		if err := s.repo.DeleteUserViewConfig(ctx, viewID, accountID); err != nil {
 			return nil, err
 		}
 		v.HasPersonalConfig = false
 	} else {
-		if err := s.repo.UpsertUserViewConfig(ctx, viewID, userID, sparse); err != nil {
+		if err := s.repo.UpsertUserViewConfig(ctx, viewID, accountID, sparse); err != nil {
 			return nil, err
 		}
 		v.HasPersonalConfig = true
@@ -441,7 +450,7 @@ func (s *ViewService) SetUserViewConfig(ctx context.Context, projectID, viewID, 
 // view, verifying it belongs to projectID, and returns the view now carrying
 // the shared default (HasPersonalConfig is false). Deleting a nonexistent
 // override is a harmless no-op, matching UpsertUserViewConfig's idempotence.
-func (s *ViewService) ClearUserViewConfig(ctx context.Context, projectID, viewID, userID uuid.UUID) (*sprintdom.SprintView, error) {
+func (s *ViewService) ClearUserViewConfig(ctx context.Context, projectID, viewID, accountID uuid.UUID) (*sprintdom.SprintView, error) {
 	v, err := s.repo.FindViewByID(ctx, viewID)
 	if err != nil {
 		return nil, err
@@ -449,7 +458,7 @@ func (s *ViewService) ClearUserViewConfig(ctx context.Context, projectID, viewID
 	if v.ProjectID != projectID {
 		return nil, sprintdom.ErrViewNotFound
 	}
-	if err := s.repo.DeleteUserViewConfig(ctx, viewID, userID); err != nil {
+	if err := s.repo.DeleteUserViewConfig(ctx, viewID, accountID); err != nil {
 		return nil, err
 	}
 	return v, nil
@@ -461,8 +470,8 @@ func (s *ViewService) ClearUserViewConfig(ctx context.Context, projectID, viewID
 // empty view list is a no-op. The passed views are mutated in place; callers
 // pass per-request copies (cache hits deserialize fresh objects), so the shared
 // cache is never affected.
-func (s *ViewService) OverlayUserConfigs(ctx context.Context, userID uuid.UUID, views []*sprintdom.SprintView) error {
-	if userID == uuid.Nil || len(views) == 0 {
+func (s *ViewService) OverlayUserConfigs(ctx context.Context, accountID uuid.UUID, views []*sprintdom.SprintView) error {
+	if accountID == uuid.Nil || len(views) == 0 {
 		return nil
 	}
 	ids := make([]uuid.UUID, 0, len(views))
@@ -471,7 +480,7 @@ func (s *ViewService) OverlayUserConfigs(ctx context.Context, userID uuid.UUID, 
 			ids = append(ids, v.ID)
 		}
 	}
-	overrides, err := s.repo.GetUserViewConfigs(ctx, userID, ids)
+	overrides, err := s.repo.GetUserViewConfigs(ctx, accountID, ids)
 	if err != nil {
 		return err
 	}
@@ -490,6 +499,17 @@ func (s *ViewService) OverlayUserConfigs(ctx context.Context, userID uuid.UUID, 
 		}
 	}
 	return nil
+}
+
+// normalizeViewConfig clears values outside their allowed set so a typo is not
+// persisted; unknown subtask modes fall back to the default (empty).
+func normalizeViewConfig(cfg sprintdom.ViewConfig) sprintdom.ViewConfig {
+	switch cfg.SubtaskMode {
+	case "", "collapsed", "expanded", "hidden":
+	default:
+		cfg.SubtaskMode = ""
+	}
+	return cfg
 }
 
 // mergeViewConfig returns the effective config for a view: each field of
@@ -537,6 +557,9 @@ func mergeViewConfig(shared, override sprintdom.ViewConfig) sprintdom.ViewConfig
 	if override.InitialPageSize != 0 {
 		out.InitialPageSize = override.InitialPageSize
 	}
+	if override.SubtaskMode != "" {
+		out.SubtaskMode = override.SubtaskMode
+	}
 	// out.PluginID / out.PluginComponent intentionally left at shared's value.
 	return out
 }
@@ -577,6 +600,9 @@ func diffViewConfig(shared, desired sprintdom.ViewConfig) sprintdom.ViewConfig {
 	}
 	if desired.InitialPageSize != shared.InitialPageSize {
 		out.InitialPageSize = desired.InitialPageSize
+	}
+	if desired.SubtaskMode != shared.SubtaskMode {
+		out.SubtaskMode = desired.SubtaskMode
 	}
 	return out
 }

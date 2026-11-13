@@ -2,22 +2,32 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render } from "@testing-library/react";
 import type { ReactElement } from "react";
 
+import { myPermissionsQueryOptions } from "@/lib/admin-api";
+import { actionsToPolicy } from "@/lib/policy";
 import {
-	type GlobalRole,
-	globalRolesQueryOptions,
-	myPermissionsQueryOptions,
-} from "@/lib/admin-api";
+	platformRolesInfiniteQueryOptions,
+	type Role,
+	rolesByIdsQueryOptions,
+} from "@/lib/role-api";
 
+/** A workspace role granting the actions in `permissions` (those set to true). */
 export function makeRole(
 	id: string,
 	name: string,
 	permissions: Record<string, boolean> = {},
 	{ isDefault = false }: { isDefault?: boolean } = {},
-): GlobalRole {
+): Role {
 	return {
 		id,
 		name,
-		permissions,
+		description: "",
+		policy: actionsToPolicy(
+			Object.keys(permissions).filter((k) => permissions[k]),
+			"platform",
+		),
+		project_id: null,
+		is_system: false,
+		attachment_count: 0,
 		is_default: isDefault,
 		created_at: "2026-01-01T00:00:00.000Z",
 		updated_at: "2026-01-01T00:00:00.000Z",
@@ -28,7 +38,10 @@ interface RenderWithQueriesOptions {
 	/** The signed-in person's global permissions (what usePermissions reads). */
 	permissions?: string[];
 	/** The global roles list; `null` leaves it unloaded so a test can drive it. */
-	roles?: GlobalRole[] | null;
+	roles?: Role[] | null;
+	/** Id sets a component looks roles up by (e.g. the roles an account holds);
+	 *  each is seeded from `roles` so the lookup resolves without a request. */
+	heldRoleIds?: string[][];
 }
 
 /**
@@ -39,7 +52,11 @@ interface RenderWithQueriesOptions {
  */
 export function renderWithQueries(
 	ui: ReactElement,
-	{ permissions = [], roles = [] }: RenderWithQueriesOptions = {},
+	{
+		permissions = [],
+		roles = [],
+		heldRoleIds = [],
+	}: RenderWithQueriesOptions = {},
 ) {
 	const client = new QueryClient({
 		defaultOptions: {
@@ -48,7 +65,27 @@ export function renderWithQueries(
 		},
 	});
 	client.setQueryData(myPermissionsQueryOptions.queryKey, permissions);
-	if (roles) client.setQueryData(globalRolesQueryOptions.queryKey, roles);
+	if (roles) {
+		client.setQueryData(platformRolesInfiniteQueryOptions("").queryKey, {
+			pages: [
+				{
+					items: roles,
+					page_size: 30,
+					next_cursor: null,
+					total_count: roles.length,
+				},
+			],
+			pageParams: [undefined],
+		});
+		// Roles looked up by id (the ones an account holds) are seeded for each
+		// id set the test says a component will ask for.
+		for (const ids of heldRoleIds) {
+			client.setQueryData(
+				rolesByIdsQueryOptions(undefined, ids).queryKey,
+				roles.filter((r) => ids.includes(r.id)),
+			);
+		}
+	}
 
 	const wrap = (node: ReactElement) => (
 		<QueryClientProvider client={client}>{node}</QueryClientProvider>

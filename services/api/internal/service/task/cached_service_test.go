@@ -225,8 +225,8 @@ func (s *stubTaskSvc) DeleteCustomFieldDefinition(ctx context.Context, projectID
 
 // --- TaskLinkService stubs --------------------------------------------------
 
-func (s *stubTaskSvc) ListTaskLinks(_ context.Context, _, _ uuid.UUID) ([]*taskdom.TaskLink, error) {
-	return []*taskdom.TaskLink{}, nil
+func (s *stubTaskSvc) ListTaskLinks(_ context.Context, _, _ uuid.UUID, _ *string, _ int) ([]*taskdom.TaskLink, bool, int, error) {
+	return []*taskdom.TaskLink{}, false, 0, nil
 }
 
 func (s *stubTaskSvc) CreateTaskLink(_ context.Context, in taskdom.CreateTaskLinkInput) (*taskdom.TaskLink, error) {
@@ -662,4 +662,8 @@ func TestCachedTask_SumTaskField_DelegatesToUnderlying(t *testing.T) {
 	if calls != 1 {
 		t.Errorf("expected underlying SumTaskField called once, got %d", calls)
 	}
+}
+
+func (s *stubTaskSvc) ListGroupColumns(_ context.Context, _ uuid.UUID, _ taskdom.TaskFilter, _ string) ([]taskdom.GroupColumn, error) {
+	return nil, nil
 }

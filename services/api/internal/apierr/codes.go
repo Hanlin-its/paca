@@ -17,30 +17,51 @@ const (
 	// CodeUnauthenticated represents an unauthenticated request.
 	CodeUnauthenticated Code = "AUTH_UNAUTHENTICATED"
 
+	// CodeMFARequired means the account has MFA enabled and the login carried
+	// no second factor; retry with "otp" set.
+	CodeMFARequired Code = "AUTH_MFA_REQUIRED"
+	// CodeMFAInvalidCode means the TOTP or recovery code was wrong or reused.
+	CodeMFAInvalidCode Code = "AUTH_MFA_INVALID_CODE"
+	// CodeMFASetupRequired means policy requires MFA for this account and it
+	// has not enrolled; it must enroll before it can sign in.
+	CodeMFASetupRequired Code = "AUTH_MFA_SETUP_REQUIRED"
+	// CodeIPNotAllowed means the login came from outside an IP allow-list.
+	CodeIPNotAllowed Code = "AUTH_IP_NOT_ALLOWED"
+	// CodeMFAAlreadyEnabled means enrollment was started on an enrolled account.
+	CodeMFAAlreadyEnabled Code = "MFA_ALREADY_ENABLED"
+	// CodeMFANotEnabled means the operation needs MFA to be enabled.
+	CodeMFANotEnabled Code = "MFA_NOT_ENABLED"
+	// CodeMFAUnavailable means the server cannot store TOTP secrets
+	// (ENCRYPTION_KEY unset).
+	CodeMFAUnavailable Code = "MFA_UNAVAILABLE"
+	// CodePasskeyInvalid means a passkey registration did not verify.
+	CodePasskeyInvalid Code = "PASSKEY_INVALID"
+	// CodePasskeyLimit means the account already has the most passkeys allowed.
+	CodePasskeyLimit Code = "PASSKEY_LIMIT"
+	// CodePasskeyNotFound means the account has no passkey with that id.
+	CodePasskeyNotFound Code = "PASSKEY_NOT_FOUND"
+	// CodeInvalidCIDR means an allow-list entry is not an IP or CIDR.
+	CodeInvalidCIDR Code = "INVALID_CIDR"
+	// CodeSelfLockout means the saved allow-list would exclude the admin saving it.
+	CodeSelfLockout Code = "SELF_LOCKOUT"
+
+	// CodeServiceAccountNotFound represents a service account that was not found.
+	CodeServiceAccountNotFound Code = "SERVICE_ACCOUNT_NOT_FOUND"
+	// CodeServiceAccountNameInvalid indicates a service account name is empty or too long.
+	CodeServiceAccountNameInvalid Code = "SERVICE_ACCOUNT_NAME_INVALID"
+	// CodeServiceAccountDescriptionTooLong indicates a service account description is too long.
+	CodeServiceAccountDescriptionTooLong Code = "SERVICE_ACCOUNT_DESCRIPTION_TOO_LONG"
+
 	// CodeUserNotFound represents a user that was not found.
 	CodeUserNotFound Code = "USER_NOT_FOUND"
+	// CodeUserInvalidCursor indicates a client-supplied pagination cursor failed to decode.
+	CodeUserInvalidCursor Code = "USER_INVALID_CURSOR"
 	// CodeUsernameTaken represents a username that is already taken.
 	CodeUsernameTaken Code = "USER_USERNAME_TAKEN"
 	// CodeEmailTaken represents an email that is already taken.
 	CodeEmailTaken Code = "USER_EMAIL_TAKEN"
 	// CodeForbidden represents a forbidden action.
 	CodeForbidden Code = "FORBIDDEN"
-	// CodeGlobalRoleNotFound represents a global role that was not found.
-	CodeGlobalRoleNotFound Code = "GLOBAL_ROLE_NOT_FOUND"
-	// CodeGlobalRoleNameTaken represents a duplicate global role name.
-	CodeGlobalRoleNameTaken Code = "GLOBAL_ROLE_NAME_TAKEN"
-	// CodeGlobalRoleNameInvalid represents an invalid global role name.
-	CodeGlobalRoleNameInvalid Code = "GLOBAL_ROLE_NAME_INVALID"
-
-	// CodeGlobalRoleHasUsers indicates the role cannot be deleted because it
-	// still has assigned users.
-	CodeGlobalRoleHasUsers Code = "GLOBAL_ROLE_HAS_ASSIGNED_USERS"
-	// CodeGlobalRoleIsDefault indicates the role cannot be deleted because it
-	// is the default role new users and agents start with.
-	CodeGlobalRoleIsDefault Code = "GLOBAL_ROLE_IS_DEFAULT"
-	// CodeGlobalRoleNoDefault indicates no global role is marked as the
-	// default, so a new user has no role to start with.
-	CodeGlobalRoleNoDefault Code = "GLOBAL_ROLE_NO_DEFAULT"
 	// CodeBadRequest represents a bad request.
 	CodeBadRequest Code = "BAD_REQUEST"
 	// CodeTooManyRequests indicates the client exceeded a rate limit.
@@ -74,15 +95,6 @@ const (
 	CodeProjectNameInvalid Code = "PROJECT_NAME_INVALID"
 	// CodeProjectPrefixInvalid indicates the task ID prefix is not valid.
 	CodeProjectPrefixInvalid Code = "PROJECT_PREFIX_INVALID"
-
-	// CodeProjectRoleNotFound indicates the requested project role does not exist.
-	CodeProjectRoleNotFound Code = "PROJECT_ROLE_NOT_FOUND"
-	// CodeProjectRoleNameTaken indicates the role name is already in use within the project.
-	CodeProjectRoleNameTaken Code = "PROJECT_ROLE_NAME_TAKEN"
-	// CodeProjectRoleNameInvalid indicates an invalid or empty role name.
-	CodeProjectRoleNameInvalid Code = "PROJECT_ROLE_NAME_INVALID"
-	// CodeProjectRoleHasMembers indicates the role cannot be deleted because members still use it.
-	CodeProjectRoleHasMembers Code = "PROJECT_ROLE_HAS_MEMBERS"
 
 	// CodeProjectMemberNotFound indicates the membership record was not found.
 	CodeProjectMemberNotFound Code = "PROJECT_MEMBER_NOT_FOUND"
@@ -186,9 +198,8 @@ const (
 	CodeActivityNotAComment Code = "ACTIVITY_NOT_A_COMMENT"
 	// CodeCommentContentInvalid indicates an empty or invalid comment content.
 	CodeCommentContentInvalid Code = "ACTIVITY_COMMENT_CONTENT_INVALID"
-	// CodeCommentActorUnidentified indicates the caller authenticated with the
-	// shared agent API key but did not supply an X-Agent-ID header, so there is
-	// no project member identity to attribute the comment to.
+	// CodeCommentActorUnidentified indicates the caller is the built-in system
+	// actor, so there is no project member identity to attribute the comment to.
 	CodeCommentActorUnidentified Code = "ACTIVITY_COMMENT_ACTOR_UNIDENTIFIED"
 
 	// --- Task link errors ------------------------------------------------
@@ -216,6 +227,8 @@ const (
 	CodeDocFolderNotInProject Code = "DOC_FOLDER_NOT_IN_PROJECT"
 	// CodeDocFolderSelfParent indicates a folder cannot be set as its own parent.
 	CodeDocFolderSelfParent Code = "DOC_FOLDER_SELF_PARENT"
+	// CodeDocFolderCycle indicates a move would put a folder inside its own subtree.
+	CodeDocFolderCycle Code = "DOC_FOLDER_CYCLE"
 	// CodeDocSnapshotNotFound indicates the requested snapshot does not exist.
 	CodeDocSnapshotNotFound Code = "DOC_SNAPSHOT_NOT_FOUND"
 	// CodeDocActivityNotFound indicates the requested doc activity does not exist.
@@ -226,9 +239,9 @@ const (
 	CodeDocActivityNotAComment Code = "DOC_ACTIVITY_NOT_A_COMMENT"
 	// CodeDocCommentContentInvalid indicates an empty or invalid comment content.
 	CodeDocCommentContentInvalid Code = "DOC_COMMENT_CONTENT_INVALID"
-	// CodeDocCommentActorUnidentified indicates the caller authenticated with
-	// the shared agent API key but did not supply an X-Agent-ID header, so
-	// there is no project member identity to attribute the comment to.
+	// CodeDocCommentActorUnidentified indicates the caller is the built-in
+	// system actor, so there is no project member identity to attribute the
+	// comment to.
 	CodeDocCommentActorUnidentified Code = "DOC_COMMENT_ACTOR_UNIDENTIFIED"
 
 	// CodeNotificationNotFound indicates the requested notification does not exist
@@ -310,8 +323,12 @@ const (
 	CodeAgentTypeInvalid Code = "AGENT_TYPE_INVALID"
 	// CodeAgentACPProviderInvalid indicates acp_provider is not one of the supported values.
 	CodeAgentACPProviderInvalid Code = "AGENT_ACP_PROVIDER_INVALID"
+	// CodeAgentFieldNotSupportedForType indicates an LLM-only field was set on an ACP or provider_cli agent.
+	CodeAgentFieldNotSupportedForType Code = "AGENT_FIELD_NOT_SUPPORTED_FOR_TYPE"
 	// CodeAgentACPCommandRequired indicates acp_command is required for the given acp_provider.
 	CodeAgentACPCommandRequired Code = "AGENT_ACP_COMMAND_REQUIRED"
+	// CodeAgentACPModelInvalid indicates acp_model or acp_effort is too long or has control characters.
+	CodeAgentACPModelInvalid Code = "AGENT_ACP_MODEL_INVALID"
 	// CodeAgentMCPServerNotFound indicates the requested MCP server does not exist.
 	CodeAgentMCPServerNotFound Code = "AGENT_MCP_SERVER_NOT_FOUND"
 	// CodeAgentSkillNotFound indicates the requested skill does not exist.
@@ -396,16 +413,34 @@ const (
 	// CodeAgentNotProviderCLI indicates VerifyCLILogin (or another provider_cli-only
 	// operation) was called on an agent whose agent_type isn't provider_cli.
 	CodeAgentNotProviderCLI Code = "AGENT_NOT_PROVIDER_CLI"
-	// CodeAgentAccessModeInvalid indicates access_mode is not "open" or "restricted".
-	CodeAgentAccessModeInvalid Code = "AGENT_ACCESS_MODE_INVALID"
-	// CodeAgentAccessGrantExists indicates the target member already has an
-	// access grant for this agent.
-	CodeAgentAccessGrantExists Code = "AGENT_ACCESS_GRANT_EXISTS"
-	// CodeAgentAccessRestricted indicates the agent is access_mode=restricted
-	// and the caller holds no grant for it — a usage action (starting/
-	// driving a conversation) was attempted, not a configuration one, which
-	// stays gated purely on agents.write regardless of access_mode.
-	CodeAgentAccessRestricted Code = "AGENT_ACCESS_RESTRICTED"
+
+	// --- Git integration errors (see docs/ai-agent/git-agent-workflow.md) ---
+
+	// CodeGitNotFound indicates the repository, identity or webhook endpoint does not exist.
+	CodeGitNotFound Code = "GIT_NOT_FOUND"
+	// CodeGitAlreadyLinked indicates the project already linked this repository.
+	CodeGitAlreadyLinked Code = "GIT_ALREADY_LINKED"
+	// CodeGitNoIdentity indicates no bot identity is set up that can act on the repository.
+	CodeGitNoIdentity Code = "GIT_NO_IDENTITY"
+	// CodeGitProviderUnavailable indicates the provider plugin is not installed, enabled or answering.
+	CodeGitProviderUnavailable Code = "GIT_PROVIDER_UNAVAILABLE"
+	// CodeGitRepositoryNotVisible indicates none of the connections offered can see the repository.
+	CodeGitRepositoryNotVisible Code = "GIT_REPOSITORY_NOT_VISIBLE"
+	// CodeGitAccessNotGranted indicates the identity cannot see the repository because it has not been
+	// granted access to the repository's owner (for example the GitHub App is not installed there).
+	CodeGitAccessNotGranted Code = "GIT_ACCESS_NOT_GRANTED"
+	// CodeGitIdentityExists indicates the agent already has its own identity for the provider.
+	CodeGitIdentityExists Code = "GIT_IDENTITY_EXISTS"
+	// CodeGitIdentityRequired indicates several connections could serve the request and the caller must choose one.
+	CodeGitIdentityRequired Code = "GIT_IDENTITY_REQUIRED"
+	// CodeGitSetupInvalid indicates the identity-setup state is unknown, expired, already used or someone else's.
+	CodeGitSetupInvalid Code = "GIT_SETUP_INVALID"
+	// CodeGitPublicURLRequired indicates PUBLIC_URL is not configured, so webhook and redirect URLs cannot be built.
+	CodeGitPublicURLRequired Code = "GIT_PUBLIC_URL_REQUIRED"
+	// CodeGitDescriptionTooLong indicates a repository description is longer than allowed.
+	CodeGitDescriptionTooLong Code = "GIT_DESCRIPTION_TOO_LONG"
+	// CodeGitProviderRejected indicates the platform refused the request (the identity lacks access, a conflict).
+	CodeGitProviderRejected Code = "GIT_PROVIDER_REJECTED"
 
 	// --- Environment errors (static environments — see
 	// docs/ai-agent/environment-management.md) --------------------------------
@@ -447,17 +482,20 @@ const (
 	CodeEnvironmentPortForwardContainerPortInvalid Code = "ENVIRONMENT_PORT_FORWARD_CONTAINER_PORT_INVALID"
 	// CodeEnvironmentPortForwardContainerPortTaken indicates a port forward for this container port already exists on this environment.
 	CodeEnvironmentPortForwardContainerPortTaken Code = "ENVIRONMENT_PORT_FORWARD_CONTAINER_PORT_TAKEN"
-	// CodeEnvironmentAccessModeInvalid indicates access_mode is not "open" or "restricted".
-	CodeEnvironmentAccessModeInvalid Code = "ENVIRONMENT_ACCESS_MODE_INVALID"
-	// CodeEnvironmentAccessGrantExists indicates the target member already
-	// has an access grant for this environment.
-	CodeEnvironmentAccessGrantExists Code = "ENVIRONMENT_ACCESS_GRANT_EXISTS"
-	// CodeEnvironmentAccessRestricted indicates the environment is
-	// access_mode=restricted and the caller holds no grant for it — a usage
-	// action (browse, SSH keys, port forwards, terminal) was attempted, not
-	// a configuration one, which stays gated purely on environments.write
-	// regardless of access_mode.
-	CodeEnvironmentAccessRestricted Code = "ENVIRONMENT_ACCESS_RESTRICTED"
+
+	// --- Project export errors -------------------------------------------------
+
+	// CodeProjectExportNotFound indicates the requested project export does not exist.
+	CodeProjectExportNotFound Code = "PROJECT_EXPORT_NOT_FOUND"
+	// CodeProjectExportInProgress indicates an export is already queued or
+	// running for the project, so a new one cannot be requested yet.
+	CodeProjectExportInProgress Code = "PROJECT_EXPORT_IN_PROGRESS"
+	// CodeProjectExportNotReady indicates the export has no downloadable file
+	// (still running, or it failed).
+	CodeProjectExportNotReady Code = "PROJECT_EXPORT_NOT_READY"
+	// CodeProjectExportExpired indicates the export's file is past its
+	// retention window and has been (or is about to be) removed.
+	CodeProjectExportExpired Code = "PROJECT_EXPORT_EXPIRED"
 
 	// --- Automation errors -----------------------------------------------------
 
@@ -502,6 +540,8 @@ const (
 	CodeAutomationActivateNoAction Code = "AUTOMATION_ACTIVATE_NO_ACTION"
 	// CodeAutomationWebhookTokenInvalid indicates a webhook trigger POST presented a missing, wrong, or revoked token.
 	CodeAutomationWebhookTokenInvalid Code = "AUTOMATION_WEBHOOK_TOKEN_INVALID"
+	// CodeAutomationUpdateTaskSelfParent indicates an update_task node would set the triggered task as its own parent.
+	CodeAutomationUpdateTaskSelfParent Code = "AUTOMATION_UPDATE_TASK_SELF_PARENT"
 
 	// CodeAnnotationNotFound indicates the requested page annotation does not exist.
 	CodeAnnotationNotFound Code = "ANNOTATION_NOT_FOUND"
@@ -517,6 +557,32 @@ const (
 	CodeAnnotationScreenshotMismatch Code = "ANNOTATION_SCREENSHOT_MISMATCH"
 	// CodePortForwardNotFound indicates no port forward matches the requested host port for a project the caller belongs to.
 	CodePortForwardNotFound Code = "PORT_FORWARD_NOT_FOUND"
+
+	// CodeRoleNotFound indicates the requested role does not exist (in the addressed scope).
+	CodeRoleNotFound Code = "ROLE_NOT_FOUND"
+	// CodeRoleNameTaken indicates another role in the same scope already has the name.
+	CodeRoleNameTaken Code = "ROLE_NAME_TAKEN"
+	// CodeRoleNameInvalid indicates an empty or over-long role name.
+	CodeRoleNameInvalid Code = "ROLE_NAME_INVALID"
+	// CodeRolePolicyInvalid indicates the policy document is not a valid IAM
+	// policy; the response carries the problems as issues (path + message).
+	CodeRolePolicyInvalid Code = "ROLE_POLICY_INVALID"
+	// CodeRoleIsSystem indicates an attempt to edit or delete a system role.
+	CodeRoleIsSystem Code = "ROLE_IS_SYSTEM"
+	// CodeRoleIsDefault indicates an attempt to delete the default role.
+	CodeRoleIsDefault Code = "ROLE_IS_DEFAULT"
+	// CodeRoleLastAdmin indicates the change would leave no platform-wide
+	// full-access ("*" on "*") attachment.
+	CodeRoleLastAdmin Code = "ROLE_LAST_FULL_ACCESS"
+	// CodeRoleNotAttachable indicates a role id is unknown or cannot be
+	// attached in the requested scope.
+	CodeRoleNotAttachable Code = "ROLE_NOT_ATTACHABLE"
+	// CodeRoleNoDefault indicates no platform role is marked as the default,
+	// so a new account has no role to start with.
+	CodeRoleNoDefault Code = "ROLE_NO_DEFAULT"
+	// CodeRoleRequired indicates a request that adds a project member or an
+	// agent to a project named no role (role_ids is empty).
+	CodeRoleRequired Code = "ROLE_REQUIRED"
 )
 
 // Error carries a machine-readable Code alongside a human-readable Message.
@@ -533,6 +599,15 @@ type Error struct {
 	// displaying Message directly. Nil when the code has nothing structured
 	// to add beyond Message.
 	Details map[string]string
+	// Issues lists the individual problems of a request whose body failed
+	// validation (each located by a path). Nil for every other error.
+	Issues []Issue
+}
+
+// Issue is one located validation problem, e.g. Path "statements[0].actions[1]".
+type Issue struct {
+	Path    string `json:"path"`
+	Message string `json:"message"`
 }
 
 func (e *Error) Error() string { return e.Message }
@@ -546,4 +621,10 @@ func New(code Code, message string) *Error {
 // the given code and message.
 func NewWithDetails(code Code, message string, details map[string]string) *Error {
 	return &Error{Code: code, Message: message, Details: details}
+}
+
+// NewWithIssues returns a new *Error carrying the individual validation
+// problems alongside the given code and message.
+func NewWithIssues(code Code, message string, issues []Issue) *Error {
+	return &Error{Code: code, Message: message, Issues: issues}
 }

@@ -1,4 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+	useInfiniteQuery,
+	useMutation,
+	useQuery,
+	useQueryClient,
+} from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import {
 	ArrowLeft,
@@ -9,7 +14,7 @@ import {
 	Workflow,
 	X,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AutomationCanvas } from "@/components/projects/automation/automation-canvas";
 import { AutomationNodeConfigPanel } from "@/components/projects/automation/automation-node-config-panel";
@@ -45,14 +50,18 @@ import {
 	updateAutomation,
 	updateAutomationNode,
 } from "@/lib/automation-api";
-import { sprintsQueryOptions } from "@/lib/interaction-api";
+import {
+	pluginConfigRows,
+	pluginMatchLabel,
+} from "@/lib/automation-plugin-config";
+import { useMemberDirectory } from "@/lib/member-directory";
 import {
 	customFieldsQueryOptions,
-	projectMembersQueryOptions,
 	taskStatusesQueryOptions,
 	taskTypesQueryOptions,
 } from "@/lib/project-api";
 import { useCurrentContextStore } from "@/lib/shortcuts/current-context-store";
+import { useSprintDirectory } from "@/lib/sprint-directory";
 import { cn } from "@/lib/utils";
 
 function extractErrorMessage(err: unknown, fallback: string): string {
@@ -89,7 +98,7 @@ function AutomationBuilderPage() {
 	const { projectId, automationId } = Route.useParams();
 	const qc = useQueryClient();
 	const { hasProjectPermission } = useProjectPermissions(projectId);
-	const canManage = hasProjectPermission("workflows.write");
+	const canManage = hasProjectPermission("workflows:write");
 
 	const { data: graph } = useQuery(
 		automationQueryOptions(projectId, automationId),
@@ -111,16 +120,23 @@ function AutomationBuilderPage() {
 		};
 	}, [graph, automationId, projectId]);
 	const { data: statuses = [] } = useQuery(taskStatusesQueryOptions(projectId));
-	const { data: members = [] } = useQuery(
-		projectMembersQueryOptions(projectId),
-	);
+	// Node summaries name members by id, looked up on demand.
+	const getMember = useMemberDirectory(projectId);
 	const { data: customFields = [] } = useQuery(
 		customFieldsQueryOptions(projectId),
 	);
 	const { data: taskTypes = [] } = useQuery(taskTypesQueryOptions(projectId));
-	const { data: sprints = [] } = useQuery(sprintsQueryOptions(projectId));
-	const { data: runs = [] } = useQuery(
-		automationRunsQueryOptions(projectId, automationId),
+	const getSprint = useSprintDirectory(projectId);
+	const {
+		data: runPages,
+		fetchNextPage: fetchMoreRuns,
+		hasNextPage: hasMoreRuns,
+		isFetchingNextPage: isFetchingMoreRuns,
+		isFetchNextPageError: isMoreRunsError,
+	} = useInfiniteQuery(automationRunsQueryOptions(projectId, automationId));
+	const runs = useMemo(
+		() => runPages?.pages.flatMap((p) => p.items) ?? [],
+		[runPages],
 	);
 	const { data: pluginTypes } = useQuery(
 		pluginNodeTypesQueryOptions(projectId),
@@ -255,11 +271,56 @@ function AutomationBuilderPage() {
 		return false;
 	}
 
+	function describePluginNode(node: AutomationNode): string | undefined {
+		// A condition's configured values show on its match output instead
+		// (conditionMatchLabel), not repeated in the body.
+		if (node.kind === "condition") return undefined;
+		const rows = pluginConfigRows(
+			configSchemaForType(node.kind, node.type),
+			node.config,
+		);
+		if (!rows) return undefined;
+		if (rows.length === 0) {
+			return t("automation.nodeConfig.description.notConfigured");
+		}
+		return rows.map(pluginFieldText).join("\n");
+	}
+
+	function pluginFieldText(r: { title: string; value: string }): string {
+		return t("automation.nodeConfig.description.pluginField", {
+			field: r.title,
+			value: r.value,
+		});
+	}
+
+	// The label on a plugin condition's single "match" output — the expected
+	// value itself ("Merged") rather than a generic "Matched", so the graph
+	// reads without opening the node. Schema defaults are not filled in, so an
+	// unconfigured condition falls back to "Matched".
+	function conditionMatchLabel(node: AutomationNode): string | undefined {
+		return pluginMatchLabel(
+			pluginConfigRows(configSchemaForType(node.kind, node.type), node.config, {
+				useDefaults: false,
+			}),
+			pluginFieldText,
+		);
+	}
+
 	function describeNode(node: AutomationNode): string | undefined {
+		const pluginSummary = describePluginNode(node);
+		if (pluginSummary !== undefined) return pluginSummary;
 		if (node.kind === "trigger") {
 			const cfg = node.config as TriggerConfig;
 			switch (node.type) {
 				case "status_changed":
+					return cfg.status_id
+						? statuses.find((s) => s.id === cfg.status_id)?.name
+						: t("automation.nodeConfig.trigger.anyStatus");
+				case "field_changed":
+					return cfg.field
+						? t(`automation.nodeConfig.trigger.changedFields.${cfg.field}`)
+						: t("automation.nodeConfig.description.notConfigured");
+				case "child_changed":
 					return cfg.status_id
 						? statuses.find((s) => s.id === cfg.status_id)?.name
 						: t("automation.nodeConfig.trigger.anyStatus");
@@ -315,7 +376,7 @@ function AutomationBuilderPage() {
 					if (!cfg.member_id) {
 						return t("automation.nodeConfig.description.unassigned");
 					}
-					const member = members.find((m) => m.id === cfg.member_id);
+					const member = getMember(cfg.member_id);
 					return member?.full_name || member?.username;
 				}
 				case "update_task": {
@@ -356,9 +417,7 @@ function AutomationBuilderPage() {
 						taskTypes.find((tt) => tt.id === fields.task_type_id)?.name,
 					);
 					if (fields.assignee_ids?.length) {
-						const member = members.find(
-							(m) => m.id === fields.assignee_ids?.[0],
-						);
+						const member = getMember(fields.assignee_ids?.[0]);
 						pushField("assignee_ids", member?.full_name || member?.username);
 					}
 					if (fields.importance !== undefined) {
@@ -372,12 +431,12 @@ function AutomationBuilderPage() {
 					}
 					pushField(
 						"reporter_id",
-						members.find((m) => m.id === fields.reporter_id)?.full_name ||
-							members.find((m) => m.id === fields.reporter_id)?.username,
+						getMember(fields.reporter_id)?.full_name ||
+							getMember(fields.reporter_id)?.username,
 					);
 					pushField(
 						"sprint_id",
-						sprints.find((s) => s.id === fields.sprint_id)?.name,
+						fields.sprint_id ? getSprint(fields.sprint_id)?.name : undefined,
 					);
 					pushField("start_date", fields.start_date?.slice(0, 10));
 					pushField("due_date", fields.due_date?.slice(0, 10));
@@ -400,6 +459,34 @@ function AutomationBuilderPage() {
 						host,
 					});
 				}
+				case "add_comment":
+					return cfg.comment?.text
+						? t("automation.nodeConfig.description.commentSummary", {
+								text: cfg.comment.text,
+							})
+						: t("automation.nodeConfig.description.notConfigured");
+				case "notify":
+					return cfg.notify?.message
+						? t("automation.nodeConfig.description.notifySummary", {
+								message: cfg.notify.message,
+							})
+						: t("automation.nodeConfig.description.notConfigured");
+				case "link_task":
+					return cfg.link
+						? t(`automation.nodeConfig.action.linkTypes.${cfg.link.type}`)
+						: t("automation.nodeConfig.description.notConfigured");
+				case "create_task":
+					return cfg.create?.title
+						? t("automation.nodeConfig.description.createTaskSummary", {
+								title: cfg.create.title,
+							})
+						: t("automation.nodeConfig.description.notConfigured");
+				case "wait":
+					return cfg.wait_minutes && cfg.wait_minutes > 0
+						? t("automation.nodeConfig.description.waitMinutes", {
+								minutes: cfg.wait_minutes,
+							})
+						: t("automation.nodeConfig.description.notConfigured");
 				default:
 					return undefined;
 			}
@@ -676,6 +763,7 @@ function AutomationBuilderPage() {
 						edges={graph.edges}
 						nodeLabel={(n) => labelForType(n.kind, n.type)}
 						nodeDescription={describeNode}
+						conditionMatchLabel={conditionMatchLabel}
 						canEdit={canManage}
 						selectedNodeId={selectedNodeId}
 						onSelectNode={setSelectedNodeId}
@@ -710,7 +798,6 @@ function AutomationBuilderPage() {
 							projectId={projectId}
 							automationId={automationId}
 							statuses={statuses}
-							members={members}
 							customFields={customFields}
 							taskTypes={taskTypes}
 							canEdit={canManage}
@@ -733,6 +820,12 @@ function AutomationBuilderPage() {
 					projectId={projectId}
 					automationId={automationId}
 					runs={runs}
+					pagination={{
+						hasMore: !!hasMoreRuns,
+						isLoadingMore: isFetchingMoreRuns,
+						isError: isMoreRunsError,
+						onLoadMore: () => void fetchMoreRuns(),
+					}}
 					nodeLabel={nodeLabel}
 				/>
 			)}

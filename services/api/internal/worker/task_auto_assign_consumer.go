@@ -48,7 +48,7 @@ type taskAutoAssignTaskService interface {
 // projectMemberLister is the minimal project-service surface used to list
 // candidate members for auto-assign.
 type projectMemberLister interface {
-	ListMembers(ctx context.Context, projectID uuid.UUID) ([]*projectdom.ProjectMember, error)
+	ListAllMembers(ctx context.Context, projectID uuid.UUID) ([]*projectdom.ProjectMember, error)
 }
 
 // TaskAutoAssignConsumer reads task.created and task.updated events off
@@ -433,7 +433,7 @@ func (c *TaskAutoAssignConsumer) processTask(ctx context.Context, projectID, tas
 }
 
 // recordActivity persists the resolved assignment as a task.updated
-// activity attributed to no human/agent actor (ActorID/ActorAgentID both
+// activity attributed to no human/agent actor (ActorID is
 // nil — the activity feed renders this as "System", the same fallback used
 // for automation-applied entries), so it renders through the exact same
 // describeTaskChange("assignee", ...) path a human's assignment does. This
@@ -498,7 +498,7 @@ func (c *TaskAutoAssignConsumer) recordSkippedActivity(ctx context.Context, proj
 // once a resolved agent lands in AssigneeIDs through the normal update
 // path).
 func (c *TaskAutoAssignConsumer) assigneeCandidates(ctx context.Context, projectID uuid.UUID, scope string) ([]*projectdom.ProjectMember, error) {
-	members, err := c.memberLister.ListMembers(ctx, projectID)
+	members, err := c.memberLister.ListAllMembers(ctx, projectID)
 	if err != nil {
 		return nil, err
 	}

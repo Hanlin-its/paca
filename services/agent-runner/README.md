@@ -121,7 +121,7 @@ The required ones, to get the service to actually start:
 | `AGENT_RUNNER_ALLOWED_AGENT_IDS` | Comma-separated agent UUIDs, or `*` for every agent — see `internal/config.Gate`'s doc comment |
 
 See [`docs/ai-agent/agent-runner-service.md#environment-variables`](../../docs/ai-agent/agent-runner-service.md#environment-variables)
-for the full table, including optional ones (`PACA_API_KEY`, `PACA_MCP_DEV_SOURCE_DIR`,
+for the full table, including optional ones (`PACA_MCP_DEV_SOURCE_DIR`,
 `PORT_POOL_START`/`PORT_POOL_SIZE`, `WORKER_CONCURRENCY`, `CHAT_SANDBOX_IDLE_TIMEOUT_MINUTES`,
 `HTTP_ADDR`, `LLM_MODELS_PATH`, `LOG_LEVEL`) — kept in one place so the two docs don't drift out of
 sync.
@@ -153,7 +153,7 @@ golangci-lint run --timeout=5m
 - [`docs/ai-agent/agent-runner-service.md`](../../docs/ai-agent/agent-runner-service.md) — full
   architecture: Valkey stream protocol, conversation execution flow, Docker container strategy,
   skills/MCP server injection, pause/resume/stop/heartbeat semantics, HTTP surface.
-- [`docs/ai-agent/repository-plugin-adapter.md`](../../docs/ai-agent/repository-plugin-adapter.md) —
-  the short-lived VCS token fetch protocol `apps/mcp`'s repo tools use.
+- [`docs/ai-agent/git-agent-workflow.md`](../../docs/ai-agent/git-agent-workflow.md) —
+  how agents work with Git platforms: provider SPI, credentials, triggers, tools and workspace protocol.
 - [`docs/architecture/service-boundaries.md`](../../docs/architecture/service-boundaries.md) — where
   this service's responsibilities start and end relative to `services/api`.

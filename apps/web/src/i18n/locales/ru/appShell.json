@@ -30,7 +30,8 @@
 		"team": "Команда",
 		"settings": "Настройки",
 		"changelog": "Что нового",
-		"activity": "Активность"
+		"activity": "Активность",
+		"serviceAccounts": "Сервисные аккаунты"
 	},
 	"projectSwitcher": {
 		"projects": "Проекты",
@@ -73,12 +74,18 @@
 		"unmuteSound": "Включить звук уведомлений",
 		"text": {
 			"assigned": "{{actor}} назначил(а) вам задачу #{{taskNumber}} — {{taskTitle}}",
-			"mentioned": "{{actor}} упомянул(а) вас в #{{taskNumber}} — {{taskTitle}}"
-		}
+			"mentioned": "{{actor}} упомянул(а) вас в #{{taskNumber}} — {{taskTitle}}",
+			"question": "{{actor}} задал(а) вам вопрос в «{{title}}»",
+			"mentionedInDoc": "{{actor}} упомянул(а) вас в документе «{{title}}»",
+			"automation": "Автоматизация: {{message}} (#{{taskNumber}} — {{taskTitle}})"
+		},
+		"untitledConversation": "Беседа без названия",
+		"globalChat": "Общий чат",
+		"untitledDocument": "Документ без названия"
 	},
 	"userMenu": {
 		"signIn": "Войти",
-		"myProfile": "Мой профиль",
+		"myProfile": "Аккаунт",
 		"apiKeys": "API-ключи",
 		"logOut": "Выйти",
 		"loggingOut": "Выход…"

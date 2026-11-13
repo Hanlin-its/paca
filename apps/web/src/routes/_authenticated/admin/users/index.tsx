@@ -3,11 +3,11 @@ import { createFileRoute, redirect } from "@tanstack/react-router";
 import { Users } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-
 import { DeleteUserDialog } from "@/components/admin/users/DeleteUserDialog";
 import { ResetPasswordDialog } from "@/components/admin/users/ResetPasswordDialog";
 import { UserFormDialog } from "@/components/admin/users/UserFormDialog";
 import { UserRoleDialog } from "@/components/admin/users/UserRoleDialog";
+import { UserSecurityDialog } from "@/components/admin/users/UserSecurityDialog";
 import { UsersFilters } from "@/components/admin/users/UsersFilters";
 import { UsersHeader } from "@/components/admin/users/UsersHeader";
 import {
@@ -22,8 +22,9 @@ import { NoPermissionState } from "@/components/shared/no-permission-state";
 import { Pagination } from "@/components/ui/pagination";
 import { useCanAssignGlobalRole } from "@/hooks/use-can-assign-global-role";
 import { usePermissions } from "@/hooks/use-permissions";
+import { useRolesByIds } from "@/hooks/use-role-search";
+import { useTablePaging } from "@/hooks/use-table-paging";
 import {
-	globalRolesQueryOptions,
 	myPermissionsQueryOptions,
 	type User,
 	usersQueryOptions,
@@ -39,9 +40,9 @@ export const Route = createFileRoute("/_authenticated/admin/users/")({
 			.catch(() => [] as string[]);
 
 		const canAccess =
-			hasPermission(permissions, "users.read") ||
-			hasPermission(permissions, "users.write") ||
-			hasPermission(permissions, "users.delete");
+			hasPermission(permissions, "users:read") ||
+			hasPermission(permissions, "users:write") ||
+			hasPermission(permissions, "users:delete");
 
 		if (!canAccess) {
 			throw redirect({ to: "/home" });
@@ -53,31 +54,28 @@ export const Route = createFileRoute("/_authenticated/admin/users/")({
 function UsersManagementPage() {
 	const { t } = useTranslation("admin");
 	const { hasPermission, isLoading: isPermissionsLoading } = usePermissions();
-	const canRead = hasPermission("users.read");
-	const canWrite = hasPermission("users.write");
+	const canRead = hasPermission("users:read");
+	const canWrite = hasPermission("users:write");
 	// Deleting a user is its own permission, separate from editing one —
 	// mirrors canAssignRole below. Without this the delete button showed for
 	// anyone who could edit a user, even without users.delete, and the
 	// server then refused the request.
-	const canDelete = hasPermission("users.delete");
+	const canDelete = hasPermission("users:delete");
 	// Changing a role is its own permission, separate from editing the user.
 	const canAssignRole = useCanAssignGlobalRole();
 
-	const [page, setPage] = useState(1);
+	const { page, pageSize, setPage, setPageSize } =
+		useTablePaging("admin-users");
 	const [search, setSearch] = useState("");
 	const [role, setRole] = useState("");
 	// Bumped to remount the filter bar (and so empty its search box) when the
 	// "No users match" state clears the filters.
 	const [filtersKey, setFiltersKey] = useState(0);
-	const pageSize = 20;
 	const isFiltering = search.trim() !== "" || role !== "";
 
-	// Role chips need global_roles.read. Without it the chip row is simply
-	// hidden — search still works.
-	const { data: globalRoles } = useQuery({
-		...globalRolesQueryOptions,
-		retry: false,
-	});
+	// Role chips and the role filter need roles:read; without it the filter
+	// is hidden and badges show plain names.
+	const canReadRoles = !!hasPermission("roles:read");
 
 	const {
 		data: pagedUsers,
@@ -101,9 +99,17 @@ function UsersManagementPage() {
 	const [editUser, setEditUser] = useState<User | null>(null);
 	const [deleteUser, setDeleteUser] = useState<User | null>(null);
 	const [resetPasswordUser, setResetPasswordUser] = useState<User | null>(null);
+	const [securityUser, setSecurityUser] = useState<User | null>(null);
 	const [roleUser, setRoleUser] = useState<User | null>(null);
 
 	const users = pagedUsers?.items ?? [];
+	// What the visible users' roles grant (for badge descriptions), looked up
+	// by id rather than loading every role.
+	const globalRoles = useRolesByIds(
+		undefined,
+		[...new Set(users.flatMap((u) => u.roles.map((r) => r.id)))].slice(0, 100),
+		canReadRoles,
+	);
 	const total = pagedUsers?.total ?? 0;
 	const totalPages = Math.max(1, Math.ceil(total / pageSize));
 	const mustChangePasswordCount = pagedUsers?.must_change_password_count ?? 0;
@@ -116,7 +122,7 @@ function UsersManagementPage() {
 		if (!isLoading && !isError && page > totalPages) {
 			setPage(totalPages);
 		}
-	}, [isLoading, isError, page, totalPages]);
+	}, [isLoading, isError, page, totalPages, setPage]);
 
 	// A new filter always starts from the first page.
 	const changeSearch = (value: string) => {
@@ -152,7 +158,7 @@ function UsersManagementPage() {
 			{canRead && !isPermissionsLoading ? (
 				<UsersFilters
 					key={filtersKey}
-					roles={(globalRoles ?? []).map((r) => r.name)}
+					canFilterByRole={canReadRoles}
 					selectedRole={role}
 					isFetching={isFetching}
 					isFiltering={isFiltering}
@@ -195,15 +201,21 @@ function UsersManagementPage() {
 						canDelete={canDelete}
 						canAssignRole={canAssignRole}
 						currentUserId={currentUser?.id}
+						roleDirectory={globalRoles}
 						onEdit={setEditUser}
 						onDelete={setDeleteUser}
 						onResetPassword={setResetPasswordUser}
+						canSecurity={!!hasPermission("settings.security:write")}
+						onSecurity={setSecurityUser}
 						onChangeRole={setRoleUser}
 					/>
 					<Pagination
 						page={page}
 						totalPages={totalPages}
 						onPageChange={setPage}
+						total={total}
+						pageSize={pageSize}
+						onPageSizeChange={setPageSize}
 					/>
 				</div>
 			)}
@@ -236,6 +248,13 @@ function UsersManagementPage() {
 					onOpenChange={(open) => {
 						if (!open) setDeleteUser(null);
 					}}
+				/>
+			) : null}
+
+			{securityUser ? (
+				<UserSecurityDialog
+					user={securityUser}
+					onClose={() => setSecurityUser(null)}
 				/>
 			) : null}
 

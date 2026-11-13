@@ -5,7 +5,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import type { ComponentProps, ReactNode } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // ActivityRow always renders a router <Link>, which needs a RouterProvider
 // ancestor to resolve href/isServer — replace it with a plain anchor so the
@@ -31,11 +31,12 @@ vi.mock("@tanstack/react-router", async () => {
 	};
 });
 
-// agentActivitiesQueryOptions/projectMembersQueryOptions/sprintsQueryOptions
-// all call their fetcher (listAgentActivities/listProjectMembers/listSprints)
+// agentActivitiesQueryOptions calls its fetcher (listAgentActivities)
 // from within the *same* module, so mocking just the fetcher export doesn't
 // intercept that internal call (ESM same-module bindings aren't affected by
 // vi.mock's export override). Mock the *QueryOptions functions directly instead.
+// Members are resolved through the member directory, which calls
+// listProjectMembers from another module, so that one mocks by export.
 const { mockListAgentActivities, mockListProjectMembers, mockListSprints } =
 	vi.hoisted(() => ({
 		mockListAgentActivities: vi.fn(),
@@ -65,10 +66,7 @@ vi.mock("@/lib/project-api", async () => {
 		);
 	return {
 		...actual,
-		projectMembersQueryOptions: () => ({
-			queryKey: ["test", "members"],
-			queryFn: mockListProjectMembers,
-		}),
+		listProjectMembers: mockListProjectMembers,
 	};
 });
 
@@ -78,13 +76,13 @@ vi.mock("@/lib/interaction-api", async () => {
 	);
 	return {
 		...actual,
-		sprintsQueryOptions: () => ({
-			queryKey: ["test", "sprints"],
-			queryFn: mockListSprints,
-		}),
+		// Sprint names are resolved through the sprint directory, which calls
+		// listSprints from another module.
+		listSprints: mockListSprints,
 	};
 });
 
+import { invalidateMemberDirectory } from "@/lib/member-directory";
 import { AgentActivityTab } from "./agent-activity-tab";
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -99,6 +97,9 @@ const AGENT_ID = "agent-1";
 const MEMBER_ID = "3f7c2b10-aaaa-bbbb-cccc-1234567890ab";
 
 describe("AgentActivityTab", () => {
+	// The member directory caches per project across renders; start clean.
+	beforeEach(() => invalidateMemberDirectory(PROJECT_ID));
+
 	it("resolves the assignee's display name instead of a truncated member id", async () => {
 		mockListAgentActivities.mockResolvedValue({
 			items: [
@@ -119,18 +120,27 @@ describe("AgentActivityTab", () => {
 			page_size: 20,
 			next_cursor: null,
 		});
-		mockListProjectMembers.mockResolvedValue([
-			{
-				id: MEMBER_ID,
-				project_id: PROJECT_ID,
-				user_id: "user-1",
-				project_role_id: "role-1",
-				username: "jdoe",
-				full_name: "Jane Doe",
-				role_name: "Member",
-			},
-		]);
-		mockListSprints.mockResolvedValue([]);
+		mockListProjectMembers.mockResolvedValue({
+			items: [
+				{
+					id: MEMBER_ID,
+					project_id: PROJECT_ID,
+					user_id: "user-1",
+					roles: [],
+					username: "jdoe",
+					full_name: "Jane Doe",
+				},
+			],
+			page_size: 100,
+			next_cursor: null,
+			total_count: 1,
+		});
+		mockListSprints.mockResolvedValue({
+			items: [],
+			page_size: 30,
+			next_cursor: null,
+			total_count: 0,
+		});
 
 		render(<AgentActivityTab projectId={PROJECT_ID} agentId={AGENT_ID} />, {
 			wrapper,
@@ -164,8 +174,18 @@ describe("AgentActivityTab", () => {
 			page_size: 20,
 			next_cursor: null,
 		});
-		mockListProjectMembers.mockResolvedValue([]);
-		mockListSprints.mockResolvedValue([]);
+		mockListProjectMembers.mockResolvedValue({
+			items: [],
+			page_size: 100,
+			next_cursor: null,
+			total_count: 0,
+		});
+		mockListSprints.mockResolvedValue({
+			items: [],
+			page_size: 30,
+			next_cursor: null,
+			total_count: 0,
+		});
 
 		render(<AgentActivityTab projectId={PROJECT_ID} agentId={AGENT_ID} />, {
 			wrapper,
@@ -196,8 +216,18 @@ describe("AgentActivityTab", () => {
 			page_size: 20,
 			next_cursor: null,
 		});
-		mockListProjectMembers.mockResolvedValue([]);
-		mockListSprints.mockResolvedValue([]);
+		mockListProjectMembers.mockResolvedValue({
+			items: [],
+			page_size: 100,
+			next_cursor: null,
+			total_count: 0,
+		});
+		mockListSprints.mockResolvedValue({
+			items: [],
+			page_size: 30,
+			next_cursor: null,
+			total_count: 0,
+		});
 
 		render(<AgentActivityTab projectId={PROJECT_ID} agentId={AGENT_ID} />, {
 			wrapper,

@@ -1,4 +1,4 @@
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Activity, CheckSquare, FileText } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -16,8 +16,8 @@ import {
 	agentActivitiesQueryOptions,
 } from "@/lib/agent-api";
 import type { DocActivityContent, DocActivityType } from "@/lib/doc-api";
-import { sprintsQueryOptions } from "@/lib/interaction-api";
-import { projectMembersQueryOptions } from "@/lib/project-api";
+import { useMemberDirectory } from "@/lib/member-directory";
+import { useSprintDirectory } from "@/lib/sprint-directory";
 import { timeAgo } from "@/lib/time-ago";
 import { describeDocActivity } from "../docs/doc-activity-pane";
 
@@ -118,19 +118,16 @@ export function AgentActivityTab({
 	const { data, isLoading, fetchNextPage, hasNextPage, isFetchingNextPage } =
 		useInfiniteQuery(agentActivitiesQueryOptions(projectId, agentId, filters));
 
-	const { data: membersData } = useQuery(projectMembersQueryOptions(projectId));
-	const { data: sprintsData } = useQuery(sprintsQueryOptions(projectId));
+	const getMember = useMemberDirectory(projectId);
+	const getSprint = useSprintDirectory(projectId);
 	const names = useMemo<ActivityNameMaps>(() => {
-		const members: Record<string, string> = {};
-		for (const m of membersData ?? []) {
-			members[m.id] = m.full_name || m.username;
-		}
-		const sprints: Record<string, string> = {};
-		for (const s of sprintsData ?? []) {
-			sprints[s.id] = s.name;
-		}
+		const members = (id: string) => {
+			const m = getMember(id);
+			return m ? m.full_name || m.username : undefined;
+		};
+		const sprints = (id: string) => getSprint(id)?.name;
 		return { members, sprints };
-	}, [membersData, sprintsData]);
+	}, [getMember, getSprint]);
 
 	const items = data?.pages.flatMap((page) => page.items) ?? [];
 	const hasActiveFilters = Object.values(filters).some((v) =>

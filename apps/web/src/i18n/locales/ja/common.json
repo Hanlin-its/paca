@@ -3,7 +3,9 @@
 		"notFound": "Not found",
 		"somethingWentWrong": "Something went wrong",
 		"retry": "Retry",
-		"noPermissionToView": "You don't have permission to view this"
+		"noPermissionToView": "You don't have permission to view this",
+		"loadMore": "もっと読み込む",
+		"loadingMore": "読み込み中…"
 	},
 	"dialog": {
 		"closeLabel": "閉じる",
@@ -39,6 +41,8 @@
 		"previous": "前のページ",
 		"next": "次のページ",
 		"page": "{{page}} ページ",
-		"pageOfTotal": "{{totalPages}} ページ中 {{page}} ページ目"
+		"pageOfTotal": "{{totalPages}} ページ中 {{page}} ページ目",
+		"rowsPerPage": "1ページの行数",
+		"range": "{{total}} 件中 {{from}}–{{to}} 件"
 	}
 }
